@@ -80,26 +80,28 @@ TASK.md 是 Framework 的唯一正式执行入口。
 
 ## 3. Current Working Locations
 
-### Verified prototype
+### Verified prototype（冻结参考）
 
 ``` text
 D:\AdyAI\ai-agent-framework-v0.2-prototype
 ```
 
-这是当前已经经过真实试跑、修复和 52 项测试验证的工作源。
+这是 v0.2 真实试跑、修复和 52 项测试验证的原始工作源。
+已完成正式迁移（AAF-TASK-004）后保持完整冻结，不再作为正式入口更新。
 
-### Formal Framework directory
+### Formal Framework directory（唯一正式入口）
 
 ``` text
 D:\AdyAI\ai-agent-framework
 ```
 
-重要：
+状态：v0.2 已完成正式迁移与正式验证（AAF-TASK-004 / AAF-TASK-005）。
 
-> **当前不得假定正式目录已经同步 prototype 的全部修复。**
-
-v0.2
-正式化阶段必须先盘点两者差异，再决定迁移方式。禁止直接覆盖正式目录。
+- 核心代码、测试、模板、文档已迁移；
+- 52 passed 已在正式目录验证通过；
+- TASK → Router → Agent → REPORT 真实闭环已验证；
+- WorkBuddy 独立 review：FORMAL_REPOSITORY_OK；
+- **本目录是 v0.2 唯一正式入口。**
 
 ### Current production-use project
 
@@ -402,20 +404,21 @@ Framework Blocking Bug:
 None currently known
 
 Working Source:
-D:\AdyAI\ai-agent-framework-v0.2-prototype
+D:\AdyAI\ai-agent-framework
+(formal repository — v0.2 formalized, AAF-TASK-004/005)
 
 Formal Directory:
 D:\AdyAI\ai-agent-framework
-(not yet assumed synchronized)
+(migrated and validated)
 
 Current Phase:
 CLOSING / FREEZE PREPARATION
 
 Immediate Next Step:
-Freeze baseline and inventory prototype vs formal directory
+v0.2 Freeze / Release preparation and GitHub Repositoryization
 
 GitHub:
-Not yet finalized
+Not yet finalized (preparation checklist in AAF-TASK-006)
 
 v0.3:
 NOT STARTED

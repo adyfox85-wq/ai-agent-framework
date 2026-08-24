@@ -1,36 +1,43 @@
-# AI Agent Framework
+# AI Agent Framework v0.2 Prototype
 
-个人 AI Agent Framework —— 个人 AI 工作基础设施。
+A minimal local runner for the validated workflow:
 
-## 项目定位
+`Planner -> TASK.md -> Router -> Hermes -> WorkBuddy -> Codex(optional) -> REPORT.md -> Planner`
 
-用于沉淀和管理个人 AI 工作协作体系，包括：
+The router may skip Hermes for review/visual tasks. Codex is added for code/architecture/high-risk review.
 
-- Agent 角色协议
-- TASK 任务机制
-- 工作流
-- 路由规则
-- 汇报机制
-- 验收机制
+## Requirements
 
-本项目服务于未来所有 AI 协作项目，不属于具体业务项目。
+- Python 3.11+
+- Hermes CLI available as `hermes`
+- Tencent CodeBuddy/WorkBuddy CLI available as `codebuddy`
+- Codex CLI available as `codex` (only required when the route includes Codex)
 
-## 当前版本
+Hermes supports single-query file input; CodeBuddy supports headless `-p`; Codex supports non-interactive `exec`.
 
-v0.1 —— 项目初始化（基础目录结构）
+## First run
 
-## 目录结构
+From this folder:
 
-| 路径 | 用途 |
-|------|------|
-| `docs/` | 文档区：项目范围、决策记录、体系说明 |
-| `protocols/` | 协议区：角色协议、任务协议、路由规则、验收机制、汇报规范 |
-| `templates/` | 模板区：任务模板、汇报模板、验收清单 |
-| `examples/` | 示例区：示例任务、示例报告 |
+```powershell
+python run.py .\TASK.md --workspace "D:\AdyAI\guoxue-skills-lab" --output "D:\AdyAI\guoxue-skills-lab\.aaf\TASK-003" --dry-run
+```
 
-## 边界
+Inspect `route.json`. Then run for real by removing `--dry-run`:
 
-- 不复制 guoxue-skills-lab 项目文件
-- 不修改 Hermes / WorkBuddy 配置
-- 不涉及账号 / token
-- 不创建自动化程序、launcher、消息总线
+```powershell
+python run.py .\TASK.md --workspace "D:\AdyAI\guoxue-skills-lab" --output "D:\AdyAI\guoxue-skills-lab\.aaf\TASK-003"
+```
+
+The final machine handoff is `REPORT.md` in the output directory.
+
+## Bootstrap checks
+
+```powershell
+hermes --version
+codebuddy --version
+codex --version
+python --version
+```
+
+If an agent command is absent, the run stops with `WAITING` and records the missing command in `REPORT.md` instead of silently skipping validation/review.

@@ -1,0 +1,423 @@
+# PROJECT_STATE.md
+
+> Project: AI Agent Framework\
+> Current Version: v0.2\
+> Last Updated: 2026-08-25\
+> Document Type: **Living Project State / 持续更新的当前状态入口**
+>
+> 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
+> 级变更、版本状态变化或关键风险变化，都应更新本文件。
+
+------------------------------------------------------------------------
+
+## 1. Current Status
+
+``` text
+Version: v0.2
+Lifecycle: CLOSING / FREEZE PREPARATION
+
+MVP Core Loop Validation: PASSED
+Regression Baseline: 52 passed
+
+Latest Production Validation:
+TASK-010
+Current Status: SUCCESS
+WorkBuddy: PASS_WITH_WARNING
+Codex: APPROVE
+Unresolved Issues: None identified.
+```
+
+当前结论：
+
+> AI Agent Framework v0.2 自动化 MVP
+> 核心闭环已经通过真实项目连续试跑验证。
+
+当前不再处于"Framework 是否成立"的验证阶段。
+
+当前阶段正式切换为：
+
+``` text
+v0.2 收官
+→ Freeze Preparation
+→ 正式化整理
+→ GitHub Repositoryization
+→ 可迁移性验证
+→ v0.2 Freeze / Release
+```
+
+------------------------------------------------------------------------
+
+## 2. Current Architecture
+
+固定角色：
+
+``` text
+Planner: ChatGPT
+Router: AI Agent Framework
+Executor: Hermes
+Reviewer / Validator: WorkBuddy (CodeBuddy)
+Milestone / Code Reviewer: Codex
+Result Carrier: REPORT.md
+```
+
+正式执行链：
+
+``` text
+需求 / 产品规划
+→ Planner
+→ TASK.md
+→ Framework Router
+→ Hermes（需要执行时）
+→ WorkBuddy
+→ Codex（按任务需要）
+→ REPORT.md
+→ Planner
+```
+
+TASK.md 是 Framework 的唯一正式执行入口。
+
+------------------------------------------------------------------------
+
+## 3. Current Working Locations
+
+### Verified prototype
+
+``` text
+D:\AdyAI\ai-agent-framework-v0.2-prototype
+```
+
+这是当前已经经过真实试跑、修复和 52 项测试验证的工作源。
+
+### Formal Framework directory
+
+``` text
+D:\AdyAI\ai-agent-framework
+```
+
+重要：
+
+> **当前不得假定正式目录已经同步 prototype 的全部修复。**
+
+v0.2
+正式化阶段必须先盘点两者差异，再决定迁移方式。禁止直接覆盖正式目录。
+
+### Current production-use project
+
+``` text
+D:\AdyAI\guoxue-skills-lab
+```
+
+该项目已经完成 TASK-001 ～ TASK-010 及多个 FIX TASK 的真实 Framework
+试跑。
+
+Framework 收官不得随意修改国学业务代码。
+
+禁止修改：
+
+``` text
+D:\AdyAI\guoxue-skills-lab\workbuddy_skills\skills\
+```
+
+------------------------------------------------------------------------
+
+## 4. Validation Baseline
+
+当前已知回归基线：
+
+``` text
+52 passed
+```
+
+已经真实验证：
+
+-   TASK → Router → Agent chain → REPORT；
+-   Hermes execution；
+-   WorkBuddy 独立复核；
+-   Codex APPROVE / REQUEST_CHANGE；
+-   SUCCESS / WAITING 状态；
+-   FIX TASK；
+-   stdin 长 prompt；
+-   Windows WinError 206 修复；
+-   workspace 绝对路径；
+-   CodeBuddy 空输出保护；
+-   Router execution / review / readonly 边界；
+-   resume；
+-   状态聚合；
+-   Unresolved Issues 聚合；
+-   dry-run Route 验证。
+
+TASK-010 在没有新增 Framework 补丁的情况下直接完成：
+
+``` text
+SUCCESS
+PASS_WITH_WARNING
+APPROVE
+None identified
+```
+
+因此 v0.2 MVP 验证阶段已结束。
+
+------------------------------------------------------------------------
+
+## 5. Known Non-blocking Risks / Notes
+
+当前已知但非阻断：
+
+1.  WorkBuddy 某些环境下不能独立复跑 browser smoke。
+2.  国学项目工作树可能包含跨 TASK 历史未提交改动，不能自动解释为当前
+    TASK 越界。
+3.  CodeBuddy 登录态未来可能失效，需要重新 `/login`。
+4.  Codex websocket 在部分网络环境可能失败，但已验证可 fallback HTTPS。
+5.  当前真实运行基线是 Windows；尚不能未经验证宣称 Linux/macOS
+    完全等价。
+6.  verdict 聚合仍依赖 Agent
+    输出遵守当前结论格式规范，后续正式化时应记录该契约。
+
+这些事项当前不要求生成新的 FIX TASK，除非出现新的可复现阻断证据。
+
+------------------------------------------------------------------------
+
+## 6. Current Objective
+
+当前唯一主目标：
+
+> **完成 AI Agent Framework v0.2 的收官、冻结、正式化整理与 GitHub
+> 仓库化。**
+
+当前不是 v0.3 开发阶段。
+
+未经用户明确决定：
+
+``` text
+v0.3 = NOT STARTED
+```
+
+AI 不得自行切换、升级或开展 v0.3 功能实现。
+
+可以记录 future / backlog，但不得提前实施。
+
+------------------------------------------------------------------------
+
+## 7. Next Action
+
+下一步优先事项：
+
+### Step 1 --- Baseline Freeze
+
+冻结当前已经验证的 prototype 状态，确保收官整理前有可靠回滚点。
+
+### Step 2 --- Directory Diff / Inventory
+
+盘点：
+
+``` text
+D:\AdyAI\ai-agent-framework-v0.2-prototype
+```
+
+与：
+
+``` text
+D:\AdyAI\ai-agent-framework
+```
+
+之间的实际差异。
+
+目标：
+
+-   确认哪些修复只存在于 prototype；
+-   确认哪些文件属于测试/备份/临时输出；
+-   确认哪些文件应该进入正式仓库；
+-   确认哪些文件必须排除；
+-   不直接覆盖正式目录。
+
+### Step 3 --- Repository Formalization
+
+在差异盘点后继续：
+
+-   正式目录结构；
+-   README；
+-   安装说明；
+-   TASK / REPORT 规范；
+-   dry-run / run / resume 标准命令；
+-   tests；
+-   changelog / version；
+-   `.gitignore`；
+-   敏感信息检查；
+-   GitHub 仓库化。
+
+### Step 4 --- Final Verification
+
+正式化迁移后：
+
+1.  重跑完整测试；
+2.  基线不得无解释低于当前 `52 passed`；
+3.  从正式目录执行最小 smoke TASK；
+4.  验证完整链路；
+5.  再决定 v0.2 Freeze / Release。
+
+------------------------------------------------------------------------
+
+## 8. Hard Boundaries
+
+没有新的可复现证据时，不得重新：
+
+-   设计基本 Agent 角色；
+-   推翻 TASK 唯一输入机制；
+-   重写已验证 Router；
+-   重做 stdin 长 prompt；
+-   重做 resume；
+-   重做状态聚合；
+-   把 TASK-001 ～ TASK-010 当成未完成重新执行；
+-   为"更漂亮"进行无目标架构重构。
+
+禁止未经风险确认：
+
+-   删除历史 TASK / REPORT；
+-   清空 `.aaf` 历史证据；
+-   删除备份；
+-   覆盖正式目录；
+-   强制 reset / clean；
+-   大范围移动用户文件；
+-   修改 `workbuddy_skills/skills/`。
+
+------------------------------------------------------------------------
+
+## 9. Source-of-Truth Documents
+
+本项目当前有三类恢复文档。
+
+### A. Historical MVP Snapshot --- Frozen
+
+建议正式保存为：
+
+``` text
+docs/status/AI-Agent-Framework-v0.2-MVP-STATUS-HANDOFF-2026-08-25.md
+```
+
+作用：
+
+> 记录 v0.2 MVP 验证完成时的完整历史事实。
+
+原则上冻结，不持续覆盖。
+
+### B. Conversation / Stage Handoff --- Frozen
+
+建议正式保存为：
+
+``` text
+docs/handoffs/AI-Agent-Framework-v0.2-CLOSING-HANDOFF-2026-08-25.md
+```
+
+作用：
+
+> 结束上一超长对话，并规定新阶段的边界、行为限制和恢复规则。
+
+原则上冻结，不持续覆盖。
+
+### C. Current Project State --- Living
+
+本文件正式保存为：
+
+``` text
+PROJECT_STATE.md
+```
+
+建议位于 Framework 仓库根目录。
+
+作用：
+
+> **当前项目状态的持续更新入口。**
+
+后续新对话、换模型、隔一段时间恢复项目时，应优先读取本文件，再按需要查阅历史快照与阶段交接。
+
+------------------------------------------------------------------------
+
+## 10. Update Rules for Future Conversations
+
+后续负责 AI Agent Framework 的对话必须知道本文件存在。
+
+发生以下情况时应更新 `PROJECT_STATE.md`：
+
+-   完成一个 v0.2 收官步骤；
+-   prototype → 正式目录迁移；
+-   测试基线变化；
+-   新增或关闭 Framework 级风险；
+-   GitHub 仓库建立；
+-   v0.2 freeze / release；
+-   用户明确决定进入新的版本阶段。
+
+更新原则：
+
+1.  更新当前事实，不改写历史。
+2.  历史细节进入 handoff / changelog，不无限堆入本文件。
+3.  任何状态结论优先依据真实测试、REPORT 和代码证据。
+4.  不因为新对话上下文缺失而重新规划已完成阶段。
+5.  新对话完成重要工作后，应主动判断是否需要同步更新本文件。
+
+------------------------------------------------------------------------
+
+## 11. Recovery Protocol
+
+新对话恢复项目时，读取顺序：
+
+``` text
+1. PROJECT_STATE.md
+2. docs/status/AI-Agent-Framework-v0.2-MVP-STATUS-HANDOFF-2026-08-25.md
+3. docs/handoffs/AI-Agent-Framework-v0.2-CLOSING-HANDOFF-2026-08-25.md
+4. 必要时查看真实 REPORT / tests / source code
+```
+
+恢复后必须接受以下当前事实：
+
+``` text
+v0.2 MVP Validation: PASSED
+Regression Baseline: 52 passed
+Latest Production Validation: TASK-010 SUCCESS
+Current Lifecycle: CLOSING / FREEZE PREPARATION
+Next Work: prototype/formal directory inventory and v0.2 formalization
+v0.3: NOT STARTED
+```
+
+------------------------------------------------------------------------
+
+## 12. Current State Summary
+
+``` text
+Project:
+AI Agent Framework
+
+Version:
+v0.2
+
+MVP Validation:
+PASSED
+
+Regression:
+52 passed
+
+Latest Real Task:
+TASK-010 SUCCESS
+
+Framework Blocking Bug:
+None currently known
+
+Working Source:
+D:\AdyAI\ai-agent-framework-v0.2-prototype
+
+Formal Directory:
+D:\AdyAI\ai-agent-framework
+(not yet assumed synchronized)
+
+Current Phase:
+CLOSING / FREEZE PREPARATION
+
+Immediate Next Step:
+Freeze baseline and inventory prototype vs formal directory
+
+GitHub:
+Not yet finalized
+
+v0.3:
+NOT STARTED
+DO NOT START WITHOUT EXPLICIT USER DECISION
+```

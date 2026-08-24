@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# pytest
+.pytest_cache/
+
+# Framework 运行/测试产物
+.aaf-*/
+.aaf-run/
+
+# 本地环境
+.venv/
+.env
+.DS_Store

@@ -30,7 +30,7 @@
 | # | 问题 | 建议 |
 |---|---|---|
 | 1 | 标题为 `# AI Agent Framework v0.2 Prototype`（正式仓库不应以 Prototype 为入口） | 改为 `# AI Agent Framework v0.2` 或 `# AI Agent Framework` |
-| 2 | First run 示例指向业务项目（`guoxue-skills-lab`、TASK-003） | 改为中性示例（如临时 workspace + `--dry-run`） |
+| 2 | First run 示例指向业务项目（`<BUSINESS_PROJECT>`、TASK-003） | 改为中性示例（如临时 workspace + `--dry-run`） |
 | 3 | "Hermes supports single-query file input" 描述过时（v0.20.1 无 `--query-file`，实际用 `-q`） | 更新 CLI 调用描述（stdin 长 prompt、`-q` 单查询） |
 
 > 以上建议留待 **AAF-TASK-007（GitHub Repositoryization）** 或单独 README 更新任务处理；本次不修改。

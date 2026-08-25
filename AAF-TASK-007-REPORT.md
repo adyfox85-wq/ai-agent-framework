@@ -15,11 +15,11 @@
 | # | 问题（AAF-TASK-006 记录） | 处理 |
 |---|---|---|
 | 1 | 标题 `AI Agent Framework v0.2 Prototype` | ✅ 改为 `# AI Agent Framework v0.2`，正式定位（个人 AI 工作协作基础设施） |
-| 2 | First run 示例绑定业务项目（guoxue-skills-lab、TASK-003） | ✅ 移除，改为中性示例（`<TASK.md>` + 临时 workspace + dry-run/resume 标准命令） |
+| 2 | First run 示例绑定业务项目（<BUSINESS_PROJECT>、TASK-003） | ✅ 移除，改为中性示例（`<TASK.md>` + 临时 workspace + dry-run/resume 标准命令） |
 | 3 | "Hermes supports single-query file input" 过时描述 | ✅ 修正为真实 CLI 集成（`-q` 单查询 / stdin 长 prompt / Codex 只读 exec） |
 | 附加 | 增加核心机制、测试命令（52 passed）、版本说明 | ✅ 补充 |
 
-验证：README 残留检查 `Prototype|guoxue-skills-lab|TASK-003` = **0**；52 passed 不变；代码零修改。
+验证：README 残留检查 `Prototype|<BUSINESS_PROJECT>|TASK-003` = **0**；52 passed 不变；代码零修改。
 
 ## 2. LICENSE Result
 
@@ -35,8 +35,8 @@
 | token / API key / 密钥 | ✅ **无真实凭据**（命中均为"禁止事项/检查项"正常语境，无 `sk-*`/`ghp_*` 格式） |
 | 私钥 / auth 文件 | ✅ 无 |
 | 账号信息 | ✅ 无 |
-| 本地路径（`D:\AdyAI`） | ⚠️ **WARNING：37 处**在 9 个文件（README/PROJECT_STATE/AAF-REPORT/docs）——公开后可见个人目录结构；README 已移除业务示例；PROJECT_STATE/docs 为状态文档（保留合理） |
-| 私有业务资料 | ⚠️ docs 含 guoxue-skills-lab 业务项目路径引用（历史/状态文档），无业务代码 | 
+| 本地路径（`<ADYAI_ROOT>`） | ⚠️ **WARNING：37 处**在 9 个文件（README/PROJECT_STATE/AAF-REPORT/docs）——公开后可见个人目录结构；README 已移除业务示例；PROJECT_STATE/docs 为状态文档（保留合理） |
+| 私有业务资料 | ⚠️ docs 含 <BUSINESS_PROJECT> 业务项目路径引用（历史/状态文档），无业务代码 | 
 
 **结论**：无敏感凭据进入公开仓库；本地路径为个人项目常规暴露，建议接受或后续专门脱敏（见 Issues）。
 
@@ -57,7 +57,7 @@
 
 ## 5. Issues / Warnings
 
-1. **[WARNING] 本地路径 37 处**：PROJECT_STATE / HANDOFF / AAF-REPORT 含 `D:\AdyAI` 与业务项目路径；公开仓库可见。建议：private 仓库起步，或后续专门任务脱敏（改相对路径/占位符）
+1. **[WARNING] 本地路径 37 处**：PROJECT_STATE / HANDOFF / AAF-REPORT 含 `<ADYAI_ROOT>` 与业务项目路径；公开仓库可见。建议：private 仓库起步，或后续专门任务脱敏（改相对路径/占位符）
 2. **[INFO] README 已改**：正式化完成，行为/代码零变化（52 passed 验证）
 3. **[INFO] LICENSE 已建**：MIT，版权人 guoxuehecan；如需改作者名可在 push 前调整
 4. **[NOTE] Repository name / Description / 可见性待 Ady 决定**：AAF-TASK-008 执行前需确认

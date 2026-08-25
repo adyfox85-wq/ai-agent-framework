@@ -70,4 +70,4 @@ prototype 完整性：未删除、未移动、未修改任何文件（仍完整�
 ## 附：事实 vs 建议
 
 - **事实**：迁移文件清单、git commits、验证输出均为真实执行结果
-- **边界确认**：未删除 prototype、未删除 git 历史、未 reset/clean/reinit、未修改 Router/Runner/架构、未添加功能、未启动 v0.3、未修改 guoxue-skills-lab
+- **边界确认**：未删除 prototype、未删除 git 历史、未 reset/clean/reinit、未修改 Router/Runner/架构、未添加功能、未启动 v0.3、未修改 <BUSINESS_PROJECT>

@@ -69,8 +69,8 @@ git remote add origin git@github.com:guoxuehecan/ai-agent-framework.git
 
 | # | 项 | 现状 |
 |---|---|---|
-| 1 | 本地路径脱敏 | 37 处 `D:\AdyAI` 路径（README/PROJECT_STATE/AAF-REPORT/docs）→ 相对路径或占位符 |
-| 2 | 业务项目引用清理 | docs/PROTOCOL_MIGRATION_PLAN、HANDOFF、AAF-REPORT 含 guoxue-skills-lab 引用 → 中性化或移入 private-only 文档 |
+| 1 | 本地路径脱敏 | 37 处 `<ADYAI_ROOT>` 路径（README/PROJECT_STATE/AAF-REPORT/docs）→ 相对路径或占位符 |
+| 2 | 业务项目引用清理 | docs/PROTOCOL_MIGRATION_PLAN、HANDOFF、AAF-REPORT 含 <BUSINESS_PROJECT> 引用 → 中性化或移入 private-only 文档 |
 | 3 | 文档公开化调整 | 个人目录结构、账号邮箱（adyfox85@gmail.com）、工作路径 → 公开前审查 |
 | 4 | 敏感信息二次扫描 | 公开前重跑 AAF-TASK-007 扫描 |
 

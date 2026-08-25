@@ -31,10 +31,10 @@ Planner(ChatGPT)
 
 ## 二、关键路径与环境
 
--   prototype：`D:\AdyAI\ai-agent-framework-v0.2-prototype`
--   正式 Framework 目录：`D:\AdyAI\ai-agent-framework`
--   当前真实试跑项目：`D:\AdyAI\guoxue-skills-lab`
--   禁止随意修改：`D:\AdyAI\guoxue-skills-lab\workbuddy_skills\skills\`
+-   prototype：`<PROJECT_ROOT>-prototype`
+-   正式 Framework 目录：`<PROJECT_ROOT>`
+-   当前真实试跑项目：`<BUSINESS_PROJECT>`
+-   禁止随意修改：`<BUSINESS_PROJECT>\workbuddy_skills\skills\`
 -   Hermes：v0.20.1
 -   CodeBuddy：2.137.1
 -   Codex CLI：0.149.0-alpha.4.1

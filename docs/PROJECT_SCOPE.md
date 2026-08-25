@@ -21,7 +21,7 @@ AI Agent Framework 是个人 AI 工作基础设施，用于沉淀：
 ## 不在范围内（v0.1）
 
 - 协议迁移（不进行旧项目协议迁移）
-- 复制 guoxue-skills-lab 文件
+- 复制 <BUSINESS_PROJECT> 文件
 - 修改 Hermes 配置
 - 修改 WorkBuddy 配置
 - 修改账号 / token

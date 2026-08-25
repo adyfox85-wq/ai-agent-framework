@@ -10,7 +10,7 @@
 
 ## 1. Formal Git Status
 
-**路径**：`D:\AdyAI\ai-agent-framework`
+**路径**：`<PROJECT_ROOT>`
 
 | 项 | 结果 |
 |---|---|
@@ -101,7 +101,7 @@ __pycache__/
 
 **执行迁移任务（AAF-TASK-004）前逐项确认**：
 
-- [ ] **prototype 备份确认**：`D:\AdyAI\ai-agent-framework-v0.2-prototype` 完整存在（77 文件）；记录核心资产 SHA256（建议：5 核心 .py + 4 tests + run.py + README + PROJECT_STATE）
+- [ ] **prototype 备份确认**：`<PROJECT_ROOT>-prototype` 完整存在（77 文件）；记录核心资产 SHA256（建议：5 核心 .py + 4 tests + run.py + README + PROJECT_STATE）
 - [ ] **prototype 冻结确认**：迁移期间不修改 prototype（当前处于 Freeze Preparation）
 - [ ] **formal Git 状态确认**：branch=`main`、HEAD=`8a8ff60`、工作树无已跟踪修改
 - [ ] **文件冲突确认**：唯一覆盖点 `README.md`（v0.1 → v0.2）；git 历史已兜底

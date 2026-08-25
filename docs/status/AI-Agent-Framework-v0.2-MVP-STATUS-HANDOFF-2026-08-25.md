@@ -89,7 +89,7 @@ Python 3.11.15。
 ### Framework prototype
 
 ```text
-D:\AdyAI\ai-agent-framework-v0.2-prototype
+<PROJECT_ROOT>-prototype
 ```
 
 这是目前经过真实任务修复、验证的 **v0.2 prototype 工作版本**。
@@ -97,7 +97,7 @@ D:\AdyAI\ai-agent-framework-v0.2-prototype
 ### 正式 Framework 目录
 
 ```text
-D:\AdyAI\ai-agent-framework
+<PROJECT_ROOT>
 ```
 
 在本轮 prototype 修复过程中一直要求 **不要修改该正式目录**。
@@ -105,7 +105,7 @@ D:\AdyAI\ai-agent-framework
 ### 真实试跑业务项目
 
 ```text
-D:\AdyAI\guoxue-skills-lab
+<BUSINESS_PROJECT>
 ```
 
 产品：观微记 H5。
@@ -115,7 +115,7 @@ D:\AdyAI\guoxue-skills-lab
 通常位于：
 
 ```text
-D:\AdyAI\guoxue-skills-lab\.aaf\<TASK-ID-or-task-file-stem>\
+<BUSINESS_PROJECT>\.aaf\<TASK-ID-or-task-file-stem>\
 ```
 
 ### TASK 临时下载位置
@@ -123,7 +123,7 @@ D:\AdyAI\guoxue-skills-lab\.aaf\<TASK-ID-or-task-file-stem>\
 目前 Planner 生成的 TASK.md 通常下载到：
 
 ```text
-C:\Users\Admin\Downloads
+<USER_HOME>\Downloads
 ```
 
 ---
@@ -133,13 +133,13 @@ C:\Users\Admin\Downloads
 先进入 Framework：
 
 ```powershell
-cd D:\AdyAI\ai-agent-framework-v0.2-prototype
+cd <PROJECT_ROOT>-prototype
 ```
 
 自动读取 Downloads 最新 MD：
 
 ```powershell
-$task = Get-ChildItem "C:\Users\Admin\Downloads\*.md" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$task = Get-ChildItem "<USER_HOME>\Downloads\*.md" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 $taskId = [System.IO.Path]::GetFileNameWithoutExtension($task.Name)
 ```
 
@@ -147,8 +147,8 @@ $taskId = [System.IO.Path]::GetFileNameWithoutExtension($task.Name)
 
 ```powershell
 python run.py "$($task.FullName)" `
-  --workspace "D:\AdyAI\guoxue-skills-lab" `
-  --output "D:\AdyAI\guoxue-skills-lab\.aaf\$taskId" `
+  --workspace "<BUSINESS_PROJECT>" `
+  --output "<BUSINESS_PROJECT>\.aaf\$taskId" `
   --dry-run
 ```
 
@@ -156,8 +156,8 @@ python run.py "$($task.FullName)" `
 
 ```powershell
 python run.py "$($task.FullName)" `
-  --workspace "D:\AdyAI\guoxue-skills-lab" `
-  --output "D:\AdyAI\guoxue-skills-lab\.aaf\$taskId"
+  --workspace "<BUSINESS_PROJECT>" `
+  --output "<BUSINESS_PROJECT>\.aaf\$taskId"
 ```
 
 对于需要保留旧失败证据的 FIX，可使用新输出目录，例如：
@@ -199,7 +199,7 @@ Planner Notes 必须尽量写明：
 
 ## 6. 已验证的真实闭环
 
-v0.2 已经不是只通过 smoke test，而是在 `guoxue-skills-lab` 上连续运行真实开发任务。
+v0.2 已经不是只通过 smoke test，而是在 `<BUSINESS_PROJECT>` 上连续运行真实开发任务。
 
 已覆盖的核心流程：
 
@@ -527,7 +527,7 @@ Executor 可跑 browser smoke，Reviewer 主要通过代码/数据/构建独立�
 
 ### 跨 TASK 工作树历史未提交
 
-`guoxue-skills-lab` 工作树存在 TASK-003～010 的历史未提交/混合改动风险。
+`<BUSINESS_PROJECT>` 工作树存在 TASK-003～010 的历史未提交/混合改动风险。
 
 这不是 Framework 核心链路失败，但在未来：
 
@@ -709,9 +709,9 @@ Framework v0.2 MVP 已经在 TASK-001～010 真实试跑完成，后续默认视
 ```text
 Framework：AI Agent Framework v0.2
 状态：MVP 核心闭环已验证通过，准备收官
-prototype：D:\AdyAI\ai-agent-framework-v0.2-prototype
-正式目录：D:\AdyAI\ai-agent-framework（此前未修改）
-真实试跑项目：D:\AdyAI\guoxue-skills-lab
+prototype：<PROJECT_ROOT>-prototype
+正式目录：<PROJECT_ROOT>（此前未修改）
+真实试跑项目：<BUSINESS_PROJECT>
 Planner：ChatGPT
 Executor：Hermes
 Reviewer：WorkBuddy / CodeBuddy

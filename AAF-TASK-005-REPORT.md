@@ -14,7 +14,7 @@
 |---|---|
 | Python version | `3.11.15` |
 | Framework import | ✅ 成功 |
-| import 来源路径 | `D:\AdyAI\ai-agent-framework\ai_agent_framework\__init__.py`（**来自 formal 目录** ✅） |
+| import 来源路径 | `<PROJECT_ROOT>\ai_agent_framework\__init__.py`（**来自 formal 目录** ✅） |
 
 ## 2. Test Result
 
@@ -71,4 +71,4 @@
 ## 附：事实 vs 建议 / 边界确认
 
 - 全部结果来自真实执行（import、pytest 输出、真实 TASK 产物、WorkBuddy 独立审查）
-- 未修改核心代码 / Router / Runner / 测试 / 架构；未添加功能；未启动 v0.3；未修改 guoxue-skills-lab；未删除 prototype；未因测试改变正式仓库状态（测试全部在临时目录）
+- 未修改核心代码 / Router / Runner / 测试 / 架构；未添加功能；未启动 v0.3；未修改 <BUSINESS_PROJECT>；未删除 prototype；未因测试改变正式仓库状态（测试全部在临时目录）

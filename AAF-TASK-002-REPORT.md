@@ -10,7 +10,7 @@
 
 ## 1. Migration Target Structure
 
-迁移后的正式目录目标结构（`D:\AdyAI\ai-agent-framework`）：
+迁移后的正式目录目标结构（`<PROJECT_ROOT>`）：
 
 ```
 ai-agent-framework/                          # formal 根（保留现有 .git）
@@ -158,7 +158,7 @@ ai-agent-framework/                          # formal 根（保留现有 .git）
 
 ## 6. Post Migration Verification Plan
 
-迁移完成后（在 formal 目录 `D:\AdyAI\ai-agent-framework` 内执行）：
+迁移完成后（在 formal 目录 `<PROJECT_ROOT>` 内执行）：
 
 | # | 验证项 | 命令/方法 | 通过标准 |
 |---|---|---|---|

@@ -9,7 +9,7 @@
 
 ## 1. Prototype Directory Inventory
 
-**路径**：`D:\AdyAI\ai-agent-framework-v0.2-prototype`
+**路径**：`<PROJECT_ROOT>-prototype`
 
 | 项 | 结果 |
 |---|---|
@@ -68,7 +68,7 @@ ai-agent-framework-v0.2-prototype/
 
 ## 2. Formal Directory Inventory
 
-**路径**：`D:\AdyAI\ai-agent-framework`
+**路径**：`<PROJECT_ROOT>`
 
 | 项 | 结果 |
 |---|---|

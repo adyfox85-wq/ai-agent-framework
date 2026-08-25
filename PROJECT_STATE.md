@@ -83,7 +83,7 @@ TASK.md 是 Framework 的唯一正式执行入口。
 ### Verified prototype（冻结参考）
 
 ``` text
-D:\AdyAI\ai-agent-framework-v0.2-prototype
+<PROJECT_ROOT>-prototype
 ```
 
 这是 v0.2 真实试跑、修复和 52 项测试验证的原始工作源。
@@ -92,7 +92,7 @@ D:\AdyAI\ai-agent-framework-v0.2-prototype
 ### Formal Framework directory（唯一正式入口）
 
 ``` text
-D:\AdyAI\ai-agent-framework
+<PROJECT_ROOT>
 ```
 
 状态：v0.2 已完成正式迁移与正式验证（AAF-TASK-004 / AAF-TASK-005）。
@@ -106,7 +106,7 @@ D:\AdyAI\ai-agent-framework
 ### Current production-use project
 
 ``` text
-D:\AdyAI\guoxue-skills-lab
+<BUSINESS_PROJECT>
 ```
 
 该项目已经完成 TASK-001 ～ TASK-010 及多个 FIX TASK 的真实 Framework
@@ -117,7 +117,7 @@ Framework 收官不得随意修改国学业务代码。
 禁止修改：
 
 ``` text
-D:\AdyAI\guoxue-skills-lab\workbuddy_skills\skills\
+<BUSINESS_PROJECT>\workbuddy_skills\skills\
 ```
 
 ------------------------------------------------------------------------
@@ -213,13 +213,13 @@ AI 不得自行切换、升级或开展 v0.3 功能实现。
 盘点：
 
 ``` text
-D:\AdyAI\ai-agent-framework-v0.2-prototype
+<PROJECT_ROOT>-prototype
 ```
 
 与：
 
 ``` text
-D:\AdyAI\ai-agent-framework
+<PROJECT_ROOT>
 ```
 
 之间的实际差异。
@@ -404,11 +404,11 @@ Framework Blocking Bug:
 None currently known
 
 Working Source:
-D:\AdyAI\ai-agent-framework
+<PROJECT_ROOT>
 (formal repository — v0.2 formalized, AAF-TASK-004/005)
 
 Formal Directory:
-D:\AdyAI\ai-agent-framework
+<PROJECT_ROOT>
 (migrated and validated)
 
 Current Phase:

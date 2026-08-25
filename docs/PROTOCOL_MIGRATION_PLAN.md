@@ -4,8 +4,8 @@
 - 类型：documentation / project-initialization
 - 日期：2026-08-23
 - 状态：规划完成（仅分析，未迁移任何文件）
-- 来源：`D:\AdyAI\guoxue-skills-lab\docs\agent\`（7 个文件，只读分析）
-- 设计依据：`D:\AdyAI\guoxue-skills-lab\docs\agent\AGENT_FRAMEWORK_EXTRACTION_PLAN.md`（TASK-AF-001 抽离方案）
+- 来源：`<BUSINESS_PROJECT>\docs\agent\`（7 个文件，只读分析）
+- 设计依据：`<BUSINESS_PROJECT>\docs\agent\AGENT_FRAMEWORK_EXTRACTION_PLAN.md`（TASK-AF-001 抽离方案）
 
 ---
 
@@ -19,7 +19,7 @@
 | 是否进入 Framework | ✅ 进入（原则层核心资产） |
 | 目标位置 | `protocols/agent-protocol.md` |
 | 需要通用化改写 | ✅ 需要（中-重度） |
-| 需删除的项目专属内容 | ① 标题"观微记 H5 + 国学推演 skills 项目" → 通用化；② 关键路径三行（`D:\AdyAI\guoxue-skills-lab`、`D:\guoxue-skills-acceptance`、`C:\Users\Admin\.workbuddy\skills`）→ 参数化 `{{PROJECT_ROOT}}` / `{{ACCEPTANCE_DIR}}` / `{{DEPLOY_DIR}}`；③ 禁止区域表中项目专属路径（`upstream_export/`、`workbuddy_skills/`、`frontend/`）→ 通用化为规则（冻结快照区 / 核心逻辑区 / 未创建工程区）；④ 红线"推演 offline-first"→ 通用化为 `{{CORE_ENGINE}}` 保持离线；⑤ 第 6 节项目状态摘要（Phase 10.5/10.6、Git `da41989`）→ 整体移除；⑥ 第 7 节 H5 MVP 目标 → 整体移除（项目专属） |
+| 需删除的项目专属内容 | ① 标题"观微记 H5 + 国学推演 skills 项目" → 通用化；② 关键路径三行（`<BUSINESS_PROJECT>`、`D:\guoxue-skills-acceptance`、`<USER_HOME>\.workbuddy\skills`）→ 参数化 `{{PROJECT_ROOT}}` / `{{ACCEPTANCE_DIR}}` / `{{DEPLOY_DIR}}`；③ 禁止区域表中项目专属路径（`upstream_export/`、`workbuddy_skills/`、`frontend/`）→ 通用化为规则（冻结快照区 / 核心逻辑区 / 未创建工程区）；④ 红线"推演 offline-first"→ 通用化为 `{{CORE_ENGINE}}` 保持离线；⑤ 第 6 节项目状态摘要（Phase 10.5/10.6、Git `da41989`）→ 整体移除；⑥ 第 7 节 H5 MVP 目标 → 整体移除（项目专属） |
 
 ### 2. WORKFLOW.md（9606B，198 行）
 
@@ -29,7 +29,7 @@
 | 是否进入 Framework | ✅ 进入（流程层，最重要） |
 | 目标位置 | `protocols/workflow.md` |
 | 需要通用化改写 | ✅ 需要（中度） |
-| 需删除的项目专属内容 | ① `guoxue-skills-lab` 项目名引用 → 通用化；② `workbuddy_skills/` 推演核心 → 通用化"核心逻辑区"；③ 角色工具名（ChatGPT / Hermes+DeepSeek V4 / Workbuddy+H3 / Codex）→ 保留为示例值，标注 `{{ROLE_MAP}}` 可配置；④ `docs/tasks/`、`docs/reviews/` 相对路径 → **保留**（作为框架目录约定）；⑤ 版本记录保留但标注来源（v1.1 ← 旧项目 TASK-AGENT-003） |
+| 需删除的项目专属内容 | ① `<BUSINESS_PROJECT>` 项目名引用 → 通用化；② `workbuddy_skills/` 推演核心 → 通用化"核心逻辑区"；③ 角色工具名（ChatGPT / Hermes+DeepSeek V4 / Workbuddy+H3 / Codex）→ 保留为示例值，标注 `{{ROLE_MAP}}` 可配置；④ `docs/tasks/`、`docs/reviews/` 相对路径 → **保留**（作为框架目录约定）；⑤ 版本记录保留但标注来源（v1.1 ← 旧项目 TASK-AGENT-003） |
 
 ### 3. ROUTING_RULES.md（4296B，80 行）
 
@@ -66,7 +66,7 @@
 | 项 | 内容 |
 | --- | --- |
 | 作用 | 项目**动态状态文件**：Git 基线、Phase 版本、H5 进度、MVP 目标、待办 |
-| 是否进入 Framework | ❌ 内容不进入（全部是 guoxue-skills-lab 专属状态） |
+| 是否进入 Framework | ❌ 内容不进入（全部是 <BUSINESS_PROJECT> 专属状态） |
 | 目标位置 | 不迁移（留在旧项目继续使用） |
 | 需要通用化改写 | 不适用 |
 | 需删除的项目专属内容 | 全部（内容留在旧项目） |
@@ -129,16 +129,16 @@
 ## 四、通用化改写原则（供实施阶段执行）
 
 1. **机制与内容分离**：Framework 提供机制（协议、模板、状态机）；项目提供内容（实例、状态）。
-2. **不引用项目路径**：`D:\AdyAI\guoxue-skills-lab` 等一律替换为 `{{PROJECT_ROOT}}` 等占位符。
+2. **不引用项目路径**：`<BUSINESS_PROJECT>` 等一律替换为 `{{PROJECT_ROOT}}` 等占位符。
 3. **角色工具名配置化**：ChatGPT / Hermes / Workbuddy / Codex 保留为**示例值**，声明 `{{ROLE_MAP}}` 可由项目配置。
 4. **相对目录约定保留**：`docs/tasks/`、`docs/reviews/` 作为框架目录约定保留。
-5. **来源可追溯**：改写后文件头部注明"基于 guoxue-skills-lab docs/agent/ 原文件通用化，原版本 vX.Y"。
+5. **来源可追溯**：改写后文件头部注明"基于 <BUSINESS_PROJECT> docs/agent/ 原文件通用化，原版本 vX.Y"。
 
 ---
 
 ## 五、前置条件与本任务边界
 
-- ✅ 本任务（TASK-AF-INIT-002）已完成：只输出本规划文档，**未迁移任何文件**，未修改 guoxue-skills-lab，未修改 README.md / PROJECT_SCOPE.md。
+- ✅ 本任务（TASK-AF-INIT-002）已完成：只输出本规划文档，**未迁移任何文件**，未修改 <BUSINESS_PROJECT>，未修改 README.md / PROJECT_SCOPE.md。
 - ⚠️ **Git 状态**：当前 `ai-agent-framework/` 尚未初始化 git 仓库，无法产出 git status / diff / commit hash。是否需要 git init 需 Ady 决定（阶段 0）。
 - 风险：无（本任务只读分析 + 新建一个文档）。
 - 未完成事项：实际迁移（阶段 0-4）未执行，等待后续任务授权。

@@ -14,10 +14,21 @@
 
 ``` text
 Version: v0.2
-Lifecycle: CLOSING / FREEZE PREPARATION
+Lifecycle: v0.2 CLOSED
 
 MVP Core Loop Validation: PASSED
 Regression Baseline: 52 passed
+
+Public Release: COMPLETED
+Repository: Public — https://github.com/adyfox85-wq/ai-agent-framework
+Release: v0.2.0-rc1 (2026-08-25, prerelease)
+
+v0.2 Final Status:
+- Migration Completed
+- Validation Completed
+- GitHub Repository Completed
+- Open Source Sanitization Completed
+- Public Release Completed
 
 Latest Production Validation:
 TASK-010
@@ -30,19 +41,19 @@ Unresolved Issues: None identified.
 当前结论：
 
 > AI Agent Framework v0.2 自动化 MVP
-> 核心闭环已经通过真实项目连续试跑验证。
+> 核心闭环已经通过真实项目连续试跑验证，
+> 并已完成正式化迁移、GitHub 公开仓库上线与 v0.2.0-rc1 Release。
 
-当前不再处于"Framework 是否成立"的验证阶段。
-
-当前阶段正式切换为：
+当前阶段：
 
 ``` text
 v0.2 收官
-→ Freeze Preparation
-→ 正式化整理
-→ GitHub Repositoryization
-→ 可迁移性验证
-→ v0.2 Freeze / Release
+→ Freeze Preparation ✅
+→ 正式化整理 ✅
+→ GitHub Repositoryization ✅
+→ Open Source Sanitization ✅
+→ Public Release ✅
+→ v0.2 CLOSED（当前）
 ```
 
 ------------------------------------------------------------------------
@@ -412,13 +423,14 @@ Formal Directory:
 (migrated and validated)
 
 Current Phase:
-CLOSING / FREEZE PREPARATION
+v0.2 CLOSED
 
 Immediate Next Step:
-v0.2 Freeze / Release preparation and GitHub Repositoryization
+v0.3 Planning (NOT STARTED — requires explicit user decision)
 
 GitHub:
-Not yet finalized (preparation checklist in AAF-TASK-006)
+Public — https://github.com/adyfox85-wq/ai-agent-framework
+Release: v0.2.0-rc1 (2026-08-25)
 
 v0.3:
 NOT STARTED

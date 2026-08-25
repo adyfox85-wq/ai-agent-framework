@@ -108,7 +108,7 @@ Python 3.11.15。
 <BUSINESS_PROJECT>
 ```
 
-产品：观微记 H5。
+产品：示例业务 H5。
 
 ### Framework 业务任务输出
 
@@ -237,7 +237,7 @@ Framework Error 修复
 
 ---
 
-## 7. 国学 H5 真实试跑进度
+## 7. 业务 H5 真实试跑进度
 
 截至 TASK-010：
 
@@ -586,9 +586,9 @@ FAILED
 11. Framework Error 可修复并 resume；
 12. REPORT 可作为 Planner 下一轮唯一回流输入。
 
-TASK-010 没有暴露新的 Framework 自身缺陷，因此可以结束“持续把国学 TASK 当 Framework 验证任务”的阶段。
+TASK-010 没有暴露新的 Framework 自身缺陷，因此可以结束“持续把业务 TASK 当 Framework 验证任务”的阶段。
 
-后续国学 H5 的 TASK-011、012……应视为 **Framework 的生产使用**，不是继续证明 Framework 是否存在。
+后续业务 H5 的 TASK-011、012……应视为 **Framework 的生产使用**，不是继续证明 Framework 是否存在。
 
 ---
 
@@ -692,7 +692,7 @@ v0.3 需求应基于生产使用中真实出现的问题，而不是现在提前
 
 然后上传本文件。
 
-如果是国学 H5 Planner 新对话，则不要直接把整个 Framework 历史重新塞进去；只需说明：
+如果是业务 H5 Planner 新对话，则不要直接把整个 Framework 历史重新塞进去；只需说明：
 
 ```text
 项目已正式使用 AI Agent Framework v0.2。

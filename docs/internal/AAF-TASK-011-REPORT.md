@@ -31,10 +31,10 @@
 
 | 检查项 | 结论 |
 |---|---|
-| 无私人环境说明 | ❌ **发现测试文件泄露**：`tests/test_router.py:58,118`、`tests/test_runner.py:148` 含 `C:/Users/Admin/Downloads/TASK-...` 真实 fixture 路径（暴露用户名 Admin） |
-| 无不必要内部信息 | ❌ **发现业务词残留**：`PROJECT_STATE.md:115,169`（"国学业务代码/国学项目工作树"）、`docs/PROTOCOL_MIGRATION_PLAN.md:22`（"观微记 H5 + 国学推演 skills 项目"、`D:\guoxue-skills-acceptance`、`da41989`、Phase 10.5/10.6） |
+| 无私人环境说明 | ❌ **发现测试文件泄露**：`tests/test_router.py:58,118`、`tests/test_runner.py:148` 含 `<USER_HOME>/Downloads/TASK-...` 真实 fixture 路径（暴露用户名 Admin） |
+| 无不必要内部信息 | ❌ **发现业务词残留**：`PROJECT_STATE.md:115,169`（"业务业务代码/业务项目工作树"）、`docs/PROTOCOL_MIGRATION_PLAN.md:22`（"示例业务 H5 + 业务推演 skills 项目"、`D:\<ACCEPTANCE_DIR>`、`da41989`、Phase 10.5/10.6） |
 | 历史事实保留 | ✅ 未删除任何历史（脱敏仅泛化） |
-| **AAF-TASK-010 遗漏确认** | ⚠️ 010 扫描范围仅 `.md` 的 `AdyAI/guoxue-skills-lab` 字符串，未覆盖 `.py` 测试 fixture 与"国学/观微记"独立业务词——由 WorkBuddy 独立复核发现（已验证属实） |
+| **AAF-TASK-010 遗漏确认** | ⚠️ 010 扫描范围仅 `.md` 的 `AdyAI/<BUSINESS_PROJECT>` 字符串，未覆盖 `.py` 测试 fixture 与"业务/示例业务"独立业务词——由 WorkBuddy 独立复核发现（已验证属实） |
 
 ## 4. Repository Structure Result
 
@@ -52,8 +52,8 @@
 | 优先级 | 项 | 说明 |
 |---|---|---|
 | **P1** | 剥离内部过程文档 | 10 个 AAF-REPORT、PROJECT_STATE、IDEA、docs/handoffs、docs/status 移出公开仓库（或移入 docs/internal/ 并从公开视图隔离） |
-| **P1** | 清除测试 fixture 路径 | `tests/test_router.py`、`tests/test_runner.py` 的 `C:/Users/Admin/Downloads/...` → 中性路径（如 `<TMP>/TASK-...` 或仓库内 fixtures/） |
-| **P2** | 业务词中性化 | PROJECT_STATE"国学"、PROTOCOL_MIGRATION_PLAN"观微记/国学推演"→ 通用词；`D:\guoxue-skills-acceptance` 等路径 → 占位符 |
+| **P1** | 清除测试 fixture 路径 | `tests/test_router.py`、`tests/test_runner.py` 的 `<USER_HOME>/Downloads/...` → 中性路径（如 `<TMP>/TASK-...` 或仓库内 fixtures/） |
+| **P2** | 业务词中性化 | PROJECT_STATE"业务"、PROTOCOL_MIGRATION_PLAN"示例业务/业务推演"→ 通用词；`D:\<ACCEPTANCE_DIR>` 等路径 → 占位符 |
 | **P2** | README 公开适配 | 英文版或中英双语；"个人"定位 → 通用框架描述；说明 3 个依赖 CLI 的来源/可选性 |
 | **P3** | 结构清理 | 空目录 examples/protocols 处理；补最小可运行示例；补安装说明（uv/pyproject） |
 | P3 | Release note | 发布时写 v0.2.0-rc1 说明（MVP 能力 + 已知限制） |
@@ -61,7 +61,7 @@
 
 ## 6. Remaining Recommendations
 
-1. **修正 AAF-TASK-010 的"Public Release Ready"结论**：010 声称的"残留 0"仅对 `.md` 的 `AdyAI/guoxue-skills-lab` 成立；测试 .py 与业务词尚未脱敏——**公开前必须完成 P1/P2**
+1. **修正 AAF-TASK-010 的"Public Release Ready"结论**：010 声称的"残留 0"仅对 `.md` 的 `AdyAI/<BUSINESS_PROJECT>` 成立；测试 .py 与业务词尚未脱敏——**公开前必须完成 P1/P2**
 2. 建议创建修复任务（AAF-TASK-012 或并入发布准备）：执行 P1/P2/P3 后重跑全量验证（52 passed + 二次扫描）
 3. 修复后 WorkBuddy 需再次独立复核（公开视角），通过后才可 Public Release
 4. 发布决策权在 Ady（本任务未改 Public、未建 Release）

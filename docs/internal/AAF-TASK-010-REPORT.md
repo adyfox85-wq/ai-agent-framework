@@ -14,20 +14,20 @@
 
 | 原值 | 替换为 |
 |---|---|
-| `D:\AdyAI\ai-agent-framework-v0.2-prototype` | `<PROJECT_ROOT>-prototype` |
-| `D:\AdyAI\ai-agent-framework` | `<PROJECT_ROOT>` |
-| `D:\AdyAI\guoxue-skills-lab` | `<BUSINESS_PROJECT>` |
-| `D:\AdyAI\`（其他） | `<ADYAI_ROOT>/` |
+| `<PROJECT_ROOT>-prototype` | `<PROJECT_ROOT>-prototype` |
+| `<PROJECT_ROOT>` | `<PROJECT_ROOT>` |
+| `<BUSINESS_PROJECT>` | `<BUSINESS_PROJECT>` |
+| `<ADYAI_ROOT>/`（其他） | `<ADYAI_ROOT>/` |
 | `C:\Users\<user>` | `<USER_HOME>` |
-| 独立词 `guoxue-skills-lab` | `<BUSINESS_PROJECT>` |
+| 独立词 `<BUSINESS_PROJECT>` | `<BUSINESS_PROJECT>` |
 
 处理文件：AAF-TASK-001/002/003/004/005/006/007/008-REPORT、PROJECT_STATE.md、docs/PROTOCOL_MIGRATION_PLAN.md、docs/PROJECT_SCOPE.md、docs/handoffs/CLOSING-HANDOFF、docs/status/MVP-STATUS-HANDOFF（README、AUTOMATION_NOTES 原本干净，无需改）。
 
-**最终残留检查**：`AdyAI` = 0、`guoxue-skills-lab` = 0、`C:\Users` = 0 ✅
+**最终残留检查**：`AdyAI` = 0、`<BUSINESS_PROJECT>` = 0、`C:\Users` = 0 ✅
 
 ## 2. Business Reference Result
 
-- `guoxue-skills-lab` 业务项目名/路径 → `<BUSINESS_PROJECT>`（10 个文件）
+- `<BUSINESS_PROJECT>` 业务项目名/路径 → `<BUSINESS_PROJECT>`（10 个文件）
 - 保留：验证事实（TASK-001~010 真实试跑记录）、架构说明（业务项目只作为被驱动工作区）
 - 调整：私有业务名称、私有项目路径全部泛化
 - **Framework 不再可被误解为单一业务项目**

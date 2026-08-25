@@ -19,7 +19,7 @@
 | 是否进入 Framework | ✅ 进入（原则层核心资产） |
 | 目标位置 | `protocols/agent-protocol.md` |
 | 需要通用化改写 | ✅ 需要（中-重度） |
-| 需删除的项目专属内容 | ① 标题"观微记 H5 + 国学推演 skills 项目" → 通用化；② 关键路径三行（`<BUSINESS_PROJECT>`、`D:\guoxue-skills-acceptance`、`<USER_HOME>\.workbuddy\skills`）→ 参数化 `{{PROJECT_ROOT}}` / `{{ACCEPTANCE_DIR}}` / `{{DEPLOY_DIR}}`；③ 禁止区域表中项目专属路径（`upstream_export/`、`workbuddy_skills/`、`frontend/`）→ 通用化为规则（冻结快照区 / 核心逻辑区 / 未创建工程区）；④ 红线"推演 offline-first"→ 通用化为 `{{CORE_ENGINE}}` 保持离线；⑤ 第 6 节项目状态摘要（Phase 10.5/10.6、Git `da41989`）→ 整体移除；⑥ 第 7 节 H5 MVP 目标 → 整体移除（项目专属） |
+| 需删除的项目专属内容 | ① 标题"业务项目 A（H5 + 推演 skills）" → 通用化；② 关键路径三行（`<BUSINESS_PROJECT>`、`<ACCEPTANCE_DIR>`、`<USER_HOME>\.workbuddy\skills`）→ 参数化 `{{PROJECT_ROOT}}` / `{{ACCEPTANCE_DIR}}` / `{{DEPLOY_DIR}}`；③ 禁止区域表中项目专属路径（`upstream_export/`、`workbuddy_skills/`、`frontend/`）→ 通用化为规则（冻结快照区 / 核心逻辑区 / 未创建工程区）；④ 红线"推演 offline-first"→ 通用化为 `{{CORE_ENGINE}}` 保持离线；⑤ 第 6 节项目状态摘要（Phase 10.5/10.6、Git `da41989`）→ 整体移除；⑥ 第 7 节 H5 MVP 目标 → 整体移除（项目专属） |
 
 ### 2. WORKFLOW.md（9606B，198 行）
 

@@ -145,7 +145,7 @@ def test_stale_route_json_is_overwritten_on_normal_run(tmp_path, monkeypatch):
 def test_real_task_dry_run_then_real_run_keeps_correct_route(tmp_path, monkeypatch):
     """真实 TASK-005-FIX-001：先 dry-run 得到正确 Route，再正式运行（mock Agent），Route 不得变回旧值。"""
     from pathlib import Path as _P
-    real = _P(r'C:/Users/Admin/Downloads/TASK-005-FIX-001-profile-detail-implementation.md')
+    real = _P(__file__).resolve().parent / 'fixtures' / 'TASK-005-FIX-001.md'
     if not real.exists():
         import pytest
         pytest.skip('real TASK-005-FIX-001 file not present')

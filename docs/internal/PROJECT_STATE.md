@@ -112,7 +112,7 @@ TASK.md 是 Framework 的唯一正式执行入口。
 该项目已经完成 TASK-001 ～ TASK-010 及多个 FIX TASK 的真实 Framework
 试跑。
 
-Framework 收官不得随意修改国学业务代码。
+Framework 收官不得随意修改业务项目代码。
 
 禁止修改：
 
@@ -166,7 +166,7 @@ None identified
 当前已知但非阻断：
 
 1.  WorkBuddy 某些环境下不能独立复跑 browser smoke。
-2.  国学项目工作树可能包含跨 TASK 历史未提交改动，不能自动解释为当前
+2.  业务项目工作树可能包含跨 TASK 历史未提交改动，不能自动解释为当前
     TASK 越界。
 3.  CodeBuddy 登录态未来可能失效，需要重新 `/login`。
 4.  Codex websocket 在部分网络环境可能失败，但已验证可 fallback HTTPS。

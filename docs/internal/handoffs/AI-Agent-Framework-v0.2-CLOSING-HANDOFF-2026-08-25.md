@@ -156,7 +156,7 @@ TASK-010 是 v0.2 MVP 验证阶段的收官观察点。
 -   把 TASK-001～TASK-010 当成未完成重新执行；
 -   为"更漂亮"进行无目标架构重构。
 
-Framework 收官不得随意修改国学业务项目。
+Framework 收官不得随意修改业务业务项目。
 
 当前验证修复发生在 prototype。**不得默认正式目录已经同步 prototype
 的全部修复。** 正式化时必须先盘点差异，再迁移，禁止直接覆盖。
@@ -215,7 +215,7 @@ v0.3"的限制。
 6.  Router 错路由、Agent 调用异常、结果丢失、状态误聚合、resume
     失败等才属于 Framework 自身 bug。
 7.  不依赖模糊记忆恢复历史；优先读取交接文件、REPORT、测试和代码。
-8.  TASK-010 后国学项目进入 Framework 的生产使用阶段，不再默认承担 v0.2
+8.  TASK-010 后业务项目进入 Framework 的生产使用阶段，不再默认承担 v0.2
     验证职责。
 9.  收官必须保留 WAITING、REQUEST_CHANGE、FIX、APPROVE、SUCCESS
     等真实历史证据。

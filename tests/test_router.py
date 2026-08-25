@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from ai_agent_framework.router import decide_route
 
 
@@ -55,7 +57,7 @@ def test_readonly_review_with_modify_word_skips_hermes():
 
 # --- 真实 TASK-005-FIX-001 回归（完整真实内容，禁止事项含"不实现 X"不得否决执行） ---
 
-REAL_TASK_005_FIX_001 = r'C:/Users/Admin/Downloads/TASK-005-FIX-001-profile-detail-implementation.md'
+REAL_TASK_005_FIX_001 = str(Path(__file__).resolve().parent / 'fixtures' / 'TASK-005-FIX-001.md')
 
 
 def _load_real_task() -> str:
@@ -115,7 +117,7 @@ def test_pure_check_hooks_skips_hermes():
     assert route.agents[0] == 'workbuddy'
 
 
-REAL_TASK_008_FIX_001 = r'C:/Users/Admin/Downloads/TASK-008-FIX-001-report-detail-hooks.md'
+REAL_TASK_008_FIX_001 = str(Path(__file__).resolve().parent / 'fixtures' / 'TASK-008-FIX-001.md')
 
 
 def test_real_task_008_fix_001_routes_hermes_workbuddy_codex():

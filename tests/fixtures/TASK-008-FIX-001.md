@@ -188,7 +188,7 @@ Rendered fewer hooks than expected
 
 - `workbuddy_skills/`
 - `upstream_export/`
-- hecan 后端；
+- core 后端；
 - Phase 10.6 核心逻辑。
 
 ---

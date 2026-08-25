@@ -259,9 +259,9 @@ TASK-005 第一阶段已实现。
 5. `frontend/src/pages/HomePage.tsx`
 6. `frontend/src/components/MetricCard.tsx`
 7. `frontend/src/data/mock.ts`
-8. `docs/2026-08-22-guanweiji-h5-home-frontend-handoff.md`
+8. `docs/2026-08-22-demo-h5-home-frontend-handoff.md`
 9. `docs/2026-08-22-h5-web-bridge-context.md`
-10. `docs/2026-08-22-hecan-h5-api-contract.md`
+10. `docs/2026-08-22-core-h5-api-contract.md`
 
 以仓库当前代码和最新 REPORT 为最高优先级。
 

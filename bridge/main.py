@@ -17,6 +17,14 @@ from pathlib import Path
 from . import config as cfg_mod
 from . import task_io
 from . import ui
+from .launcher import (
+    AlreadyRunningError,
+    FrameworkLauncher,
+    RESULT_FAILED,
+    RESULT_FAILED_TO_START,
+    RESULT_FINISHED,
+    RESULT_REPORT_NOT_FOUND,
+)
 from .win32 import HotkeyConflictError, HotkeyListener, read_clipboard_text, unregister_hotkey
 
 CONFIG_CHECK_INTERVAL = 2.0  # 秒：热键触发时检查配置变化（无需重启 Bridge）
@@ -31,6 +39,7 @@ class Bridge:
         self.listener: HotkeyListener | None = None
         self.events: queue.Queue = queue.Queue()
         self.busy = False  # 防抖：一次只处理一个热键
+        self.launcher = FrameworkLauncher(on_finished=self._on_framework_finished)
         self._cfg_mtime = self._config_mtime()
         self._apply_hotkey()
         self.root.after(100, self._poll_events)
@@ -91,11 +100,42 @@ class Bridge:
     def _poll_events(self) -> None:
         try:
             while True:
-                self.events.get_nowait()
-                self._handle_hotkey()
+                event = self.events.get_nowait()
+                if event == "hotkey":
+                    self._handle_hotkey()
+                elif isinstance(event, tuple) and event[0] == "framework_finished":
+                    self._handle_framework_finished(event[1], event[2])
         except queue.Empty:
             pass
         self.root.after(100, self._poll_events)
+
+    def _on_framework_finished(self, last, output: str) -> None:
+        """launcher 等待线程回调：入队，主线程提示（tkinter 线程安全）。"""
+        self.events.put(("framework_finished", last, output))
+
+    def _handle_framework_finished(self, last, output: str) -> None:
+        if last.result == RESULT_FINISHED:
+            ui.show_info(
+                "AAF TASK FINISHED",
+                f"Task ID: {last.task_id}\nREPORT: {last.report_path}\nexit={last.exit_code}",
+            )
+        elif last.result == RESULT_REPORT_NOT_FOUND:
+            ui.show_error(
+                "AAF Bridge — REPORT_NOT_FOUND",
+                f"Task ID: {last.task_id} 执行结束（exit=0）但未找到 REPORT.md。\n"
+                f"不得视为任务成功。",
+            )
+        elif last.result == RESULT_FAILED:
+            ui.show_error(
+                "AAF TASK FAILED",
+                f"Task ID: {last.task_id}\nexit={last.exit_code}\n"
+                f"详见输出目录中的 REPORT/日志。",
+            )
+        elif last.result == RESULT_FAILED_TO_START:
+            ui.show_error(
+                "AAF Bridge — FAILED_TO_START",
+                f"Task ID: {last.task_id} 启动失败（TASK.md 已保留）。",
+            )
 
     def _handle_hotkey(self) -> None:
         if self.busy:
@@ -147,10 +187,27 @@ class Bridge:
         except task_io.TaskParseError as e:
             ui.show_error("AAF Bridge", str(e))
             return
-        ui.show_info(
-            "AAF TASK CREATED",
-            f"Task ID: {task_id}\nTask Name: {task_name}\n\n{target}",
-        )
+
+        # 自动启动 Framework 执行链（subprocess 调用 run.py，后台运行）
+        output_dir = self.launcher.default_output_dir(workspace, task_id)
+        try:
+            started = self.launcher.launch(target, workspace, output_dir, task_id)
+        except AlreadyRunningError:
+            ui.show_error(
+                "AAF Bridge — AAF_TASK_ALREADY_RUNNING",
+                f"已有 Framework TASK 在执行中，不允许并发。\n"
+                f"新任务已保留：{target}\n"
+                f"请等待当前任务结束后重新提交。",
+            )
+            return
+        if not started:
+            ui.show_error(
+                "AAF Bridge — FAILED_TO_START",
+                f"Framework 启动失败（TASK.md 已保留）:\n{target}\n"
+                f"Last result: {self.launcher.last.result if self.launcher.last else 'n/a'}",
+            )
+            return
+        ui.show_info("AAF TASK RUNNING", f"Task ID: {task_id}\nTASK.md: {target}\nFramework 已在后台执行。")
 
 
 def main() -> int:

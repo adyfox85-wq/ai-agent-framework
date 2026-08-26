@@ -191,16 +191,35 @@ def rollover(
     elif (ws / "PROJECT_STATE.md").exists():
         ps_text = _read_text(ws / "PROJECT_STATE.md") or ""
 
+    # 正式 Boundary Source（PROJECT_SCOPE）优先继承；缺失退回 PROJECT_STATE 逻辑
+    from .project_boundary import UNKNOWN as B_UNKNOWN, load_boundary
+
+    boundary = load_boundary(ws)
+    boundary_scope_items = boundary.current_scope if boundary.configured else []
+
     project = project or _section(ps_text, "Project") or _section(ps_text, "项目") or UNKNOWN
     phase = phase or _section(ps_text, "Current Phase") or _section(ps_text, "当前阶段") or UNKNOWN
-    core_goal = core_goal or _section(ps_text, "Core Goal") or _section(ps_text, "核心目标") or UNKNOWN
-    frozen_boundaries = frozen_boundaries or _section(ps_text, "Frozen Boundaries") or _section(ps_text, "冻结边界") or UNKNOWN
+    # 显式参数 → PROJECT_SCOPE（正式 Boundary Source 优先）→ PROJECT_STATE → UNKNOWN
+    if core_goal is None:
+        if boundary.configured and boundary.core_goal != B_UNKNOWN:
+            core_goal = boundary.core_goal
+        else:
+            core_goal = _section(ps_text, "Core Goal") or _section(ps_text, "核心目标") or UNKNOWN
+    if frozen_boundaries is None:
+        if boundary.configured and boundary.frozen_boundaries:
+            frozen_boundaries = "\n".join(boundary.frozen_boundaries)
+        else:
+            frozen_boundaries = _section(ps_text, "Frozen Boundaries") or _section(ps_text, "冻结边界") or UNKNOWN
     completed_work = completed_work or _section(ps_text, "Completed") or _section(ps_text, "已完成") or UNKNOWN
     open_items = open_items or _section(ps_text, "Open Items") or _section(ps_text, "未完成") or UNKNOWN
     blocking_issues = blocking_issues or _section(ps_text, "Blocking") or _section(ps_text, "阻塞") or UNKNOWN
     important_decisions = important_decisions or _section(ps_text, "Decisions") or _section(ps_text, "决策") or UNKNOWN
     next_step = next_step or _section(ps_text, "Next Step") or _section(ps_text, "下一步") or UNKNOWN
-    do_not_reopen = do_not_reopen or _section(ps_text, "Do Not Reopen") or _section(ps_text, "不要重开") or UNKNOWN
+    if do_not_reopen is None:
+        if boundary.configured and boundary.frozen_boundaries:
+            do_not_reopen = "\n".join(boundary.frozen_boundaries)
+        else:
+            do_not_reopen = _section(ps_text, "Do Not Reopen") or _section(ps_text, "不要重开") or UNKNOWN
 
     recent = _recent_task_context(ws)
     task_ids = [t["task_id"] for t in recent]
@@ -290,6 +309,13 @@ def rollover(
 ## Frozen Boundaries
 {frozen_boundaries}
 
+## Current Scope
+"""
+    for item in boundary_scope_items:
+        next_start += f"- {item}\n"
+    if not boundary_scope_items:
+        next_start += "- (not configured)\n"
+    next_start += f"""
 ## Latest Completed Task
 {task_ids[0] if task_ids else UNKNOWN}
 

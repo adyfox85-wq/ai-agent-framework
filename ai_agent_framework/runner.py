@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .adapters import build_prompt, run_agent
+from . import project_boundary
 from . import task_lifecycle
 from .report import build_report, verdict_blocked
 from .router import Route, decide_route
@@ -67,6 +68,21 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
             output_dir = resume_from
             _ls('RUNNING', reason='RESUMED')  # WAITING/... → RUNNING
         else:
+            # --- Boundary Check（Validation 通过后、Router 前；warning-first，fail-open）---
+            # 不阻断执行；边界模块自身错误也 fail-open（外围功能不使核心链路不可用）
+            try:
+                boundary = project_boundary.load_boundary(workspace)
+                bcheck = project_boundary.check_task(boundary, task)
+                project_boundary.write_boundary_json(output_dir, task_id, bcheck, boundary.source_path)
+            except project_boundary.BoundaryError as exc:
+                bcheck = project_boundary.BoundaryCheckResult(
+                    configured=False,
+                    warnings=[f"BOUNDARY_CHECK_ERROR: {exc}"],
+                    matched_boundaries=[],
+                    severity="NONE",
+                    checked_at=datetime.now().isoformat(timespec="seconds"),
+                )
+                project_boundary.write_boundary_json(output_dir, task_id, bcheck, None)
             route = decide_route(task)
             results = {}
             _ls('CREATED')  # 通过 Validation，尚未执行 Agent 链

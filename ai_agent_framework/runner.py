@@ -8,6 +8,7 @@ from pathlib import Path
 from .adapters import build_prompt, run_agent
 from .report import build_report, verdict_blocked
 from .router import Route, decide_route
+from .task_validation import TaskValidationError, validate_task_text
 
 
 def _result_is_valid(body: str) -> bool:
@@ -39,6 +40,12 @@ def _load_resume_state(output_dir: Path) -> tuple[Route, dict[str, str]]:
 
 def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = False, resume_from: Path | None = None) -> Path:
     task = task_file.read_text(encoding='utf-8')
+
+    # 正式 Task Validation（权威执行边界）：失败即中止，不进 Router / 不启动 Agent
+    result = validate_task_text(task)
+    if not result.valid:
+        raise TaskValidationError(result)
+
     if resume_from is not None:
         route, results = _load_resume_state(resume_from)
         output_dir = resume_from
@@ -100,7 +107,13 @@ def main() -> None:
     p.add_argument('--dry-run', action='store_true', help='Route only; do not invoke agents')
     p.add_argument('--resume-from', type=Path, default=None, help='Resume an existing run output dir (reuses completed agent results)')
     args = p.parse_args()
-    report = run(args.task, args.workspace, args.output, args.dry_run, args.resume_from)
+    try:
+        report = run(args.task, args.workspace, args.output, args.dry_run, args.resume_from)
+    except TaskValidationError as exc:
+        # 校验失败：清晰错误 + 非零退出；不进入 Router / 不启动 Agent
+        print(str(exc))
+        print(f"Task: {args.task}")
+        raise SystemExit(2)
     print(report)
 
 

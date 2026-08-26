@@ -26,7 +26,8 @@ MULTI_LINE_FIELDS = {
 }
 
 # 下一节检测：markdown 标题（# ...）或 大写字段行（如 Requirements: / Scope:）
-_SECTION_RE = re.compile(r"^\s*(#{1,6}\s+\S|[A-Z][A-Za-z /()\-]{2,40}:)")
+# 大节边界：# 或 ## 标题（### 及更深是内容子节，不截断）、或大写字段名
+_SECTION_RE = re.compile(r"^[ \t]*(#{1,2}[ \t]+\S|[A-Z][A-Za-z /()\-]{2,40}:)")
 
 # 不安全文件名字符（Task ID 用作文件名）
 _UNSAFE_FILENAME_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
@@ -63,6 +64,9 @@ def _read_single_line_field(body: str, field_key: str) -> str:
         rest = body[m.end():]
         for line in rest.splitlines():
             if line.strip():
+                # 标题后第一个非空行若是另一节标题（# 开头）→ 本字段值为空
+                if line.lstrip().startswith("#"):
+                    return ""
                 return line.strip()
     return ""
 

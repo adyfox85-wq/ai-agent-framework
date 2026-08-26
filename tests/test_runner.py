@@ -1,6 +1,20 @@
 from pathlib import Path
 import ai_agent_framework.runner as runner_mod
 
+# 合法极简 TASK（满足 Formal Task Validation：Task ID / Task Name / Objective / Acceptance）
+MINIMAL_VALID_TASK = """# Task ID
+T-EXEC
+
+# Task Name
+执行链测试
+
+# Objective
+实现功能并验收
+
+# Acceptance
+1. 通过
+"""
+
 
 # --- Bug2 回归：最终状态聚合 ---
 
@@ -58,7 +72,7 @@ def test_missing_executor_stops_chain_and_waiting(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_mod, 'run_agent', fake_run_agent)
 
     task_file = tmp_path / 'TASK.md'
-    task_file.write_text('实现一个前端功能并验收', encoding='utf-8')
+    task_file.write_text(MINIMAL_VALID_TASK, encoding='utf-8')
     ws = tmp_path / 'ws'
     ws.mkdir()
     out = tmp_path / 'out'
@@ -82,7 +96,7 @@ def test_missing_validator_stops_codex(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_mod, 'run_agent', fake_run_agent)
 
     task_file = tmp_path / 'TASK.md'
-    task_file.write_text('重构核心 TypeScript 路由架构', encoding='utf-8')
+    task_file.write_text(MINIMAL_VALID_TASK, encoding='utf-8')
     ws = tmp_path / 'ws'
     ws.mkdir()
     out = tmp_path / 'out'
@@ -101,7 +115,7 @@ def test_workbuddy_fail_never_reports_success(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_mod, 'run_agent', fake_run_agent)
 
     task_file = tmp_path / 'TASK.md'
-    task_file.write_text('实现一个功能', encoding='utf-8')
+    task_file.write_text(MINIMAL_VALID_TASK, encoding='utf-8')
     ws = tmp_path / 'ws'
     ws.mkdir()
     out = tmp_path / 'out'
@@ -122,7 +136,7 @@ def test_stale_route_json_is_overwritten_on_normal_run(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_mod, 'run_agent', fake_run_agent)
 
     task_file = tmp_path / 'TASK.md'
-    task_file.write_text('实现我的命盘详情页面功能', encoding='utf-8')
+    task_file.write_text(MINIMAL_VALID_TASK, encoding='utf-8')
     ws = tmp_path / 'ws'
     ws.mkdir()
 

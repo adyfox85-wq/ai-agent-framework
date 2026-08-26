@@ -129,3 +129,59 @@ def test_real_task_008_fix_001_routes_hermes_workbuddy_codex():
     task = p.read_text(encoding='utf-8')
     route = decide_route(task)
     assert route.agents == ['hermes', 'workbuddy', 'codex']
+
+
+# --- Router hotfix：局部 readonly 约束不得压过明确执行意图（AAF-MAINT-001 回归） ---
+
+def test_local_readonly_constraint_does_not_suppress_execution_case1():
+    # Case 1: 创建文件 + 局部"不修改 Framework 功能代码" → 必须含 Hermes
+    route = decide_route('创建 AAF_MASTER_BACKLOG.md，但不修改任何 Framework 功能代码')
+    assert route.agents[0] == 'hermes'
+    assert 'workbuddy' in route.agents
+
+
+def test_local_readonly_constraint_does_not_suppress_execution_case2():
+    # Case 2: 更新文档 + 局部"不修改 Router/Bridge 代码" → 必须含 Hermes
+    route = decide_route('更新 PROJECT_STATE.md，不修改任何 Router/Bridge 代码')
+    assert route.agents[0] == 'hermes'
+    assert 'workbuddy' in route.agents
+
+
+def test_true_global_readonly_skips_hermes_case3():
+    # Case 3: 只读检查 + 全局"不修改任何文件" → 不含 Hermes
+    route = decide_route('只读检查仓库，不修改任何文件')
+    assert 'hermes' not in route.agents
+    assert route.agents[0] == 'workbuddy'
+
+
+def test_code_readonly_review_routes_workbuddy_codex_case4():
+    # Case 4: 代码只读审查 + 全局"不修改任何文件" → workbuddy -> codex
+    route = decide_route('对代码做只读审查，不修改任何文件')
+    assert route.agents == ['workbuddy', 'codex']
+
+
+def test_normal_execution_task_unchanged_case5():
+    # Case 5: 普通执行任务 → 现有行为不退化
+    route = decide_route('实现登录页面功能')
+    assert route.agents == ['hermes', 'workbuddy']
+
+
+def test_normal_review_task_unchanged_case6():
+    # Case 6: 普通 review 任务 → 现有行为不退化
+    route = decide_route('复核 Hermes 生成的结果报告')
+    assert route.agents[0] == 'workbuddy'
+    assert 'hermes' not in route.agents
+
+
+def test_english_local_readonly_constraint_does_not_suppress_execution_case7():
+    # Case 7: 英文局部约束（without modifying any framework code）→ 必须含 Hermes
+    route = decide_route('create docs without modifying any framework code')
+    assert route.agents[0] == 'hermes'
+    assert 'workbuddy' in route.agents
+
+
+def test_english_global_readonly_still_skips_hermes_case8():
+    # Case 8: 英文文件级全局只读 → 不含 Hermes
+    route = decide_route('review the page design, without modifying any file')
+    assert 'hermes' not in route.agents
+    assert route.agents[0] == 'workbuddy'

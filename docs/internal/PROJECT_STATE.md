@@ -1,9 +1,9 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.3**\
-> Last Updated: 2026-08-26\
-> Document Type: **Living Project State / 持续更新的当前状态入口**
+> Current Version: **v0.3（CLOSED，当前为维护/观察期）**\
+> Last Updated: 2026-08-27\
+> Document Type: **Living Project State / 持续更新的当前状态入口**\
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
 > 级变更、版本状态变化或关键风险变化，都应更新本文件。
@@ -18,26 +18,100 @@
 Version: v0.3
 Core Implementation: COMPLETE
 Core Acceptance: PASS
-Lifecycle: READY_FOR_CLOSURE
+Lifecycle: CLOSED（v0.3 已收官，当前处于维护/观察期）
 
 v0.3 三大核心方向：
 1. Task Automation     ✅ COMPLETE（000-A/B/C + 001 Validation + 002 Lifecycle + 003 Archive）
 2. Session Continuity  ✅ COMPLETE（004）
 3. Project Boundary    ✅ COMPLETE（005）
 
-Regression Baseline: 191 passed（commit d1919b6 起，零回归）
-E2E 主链验收: PASS（Bridge 校验 → Validation → Boundary → Lifecycle → Router → REPORT → Handoff）
+Regression Baseline: 206 passed（commit 457df93 起；本文件更新前已复跑验证）
 Review: WorkBuddy APPROVE（v0.3 READY_TO_CLOSE）
-Milestone Audit: Codex 本机不可用（公司电脑待执行，NON_BLOCKING）
-Remote Sync: SUCCESS（d1919b6 已同步；如后续 push 失败会标记 REMOTE_SYNC_PENDING）
+Remote Sync: SUCCESS
 
 当前阶段：
-v0.3 收官
-→ 三大方向实现 ✅
-→ Core Acceptance PASS ✅（AAF-V03-006）
-→ READY_FOR_CLOSURE（当前）
+v0.3 CLOSED
+→ 维护 / 观察期（当前）
+→ Master Backlog 已建立（AAF-MAINT-001-FIX-002）
 → v0.4 未启动（必须由 Planner / User 显式决定）
 ```
+
+### 0.1 Maintenance Period（当前维护/观察期）
+
+v0.3 已 CLOSED，当前为维护 / 观察期。此期间只做：
+
+- 文档、登记、恢复资产维护（如本任务）；
+- 已确认真实问题的 hotfix（须独立记录，不重开 v0.3 Scope）。
+
+**不**做：新功能实现；v0.4 规划以外的工作；自动进入下一 TASK。
+
+### 0.2 近期 Hotfix 与真实事故记录
+
+| 事项 | 状态 | 记录 |
+|---|---|---|
+| Codex command discovery hotfix | COMPLETE | commit **7cbf594**（Codex 升级 hash 目录变化导致 discovery 失败 → registry PATH 优先 + hash 目录 fallback；198 passed） |
+| Router local readonly constraint hotfix | COMPLETE | commit **457df93**（execution intent 与局部限制区分；206 passed；WorkBuddy APPROVE + Codex APPROVE） |
+| AAF-MAINT-001 routing incident | 已登记 | 局部范围限制被误判为任务级 review 模式 → Hermes 被跳过；Root cause 与修复见 `AAF-HOTFIX-ROUTER-READONLY.md`；事故登记 RW-011 |
+| AAF-MAINT-001-FIX-001 self-triggering routing incident | 已登记 | 为描述前一次事故引用 Router 分类短语 → 全文信号匹配再次触发 review route → Hermes 第二次被跳过；Runtime Diagnose 排除 stale route / wrong import / truncation，根因为 self-triggering reference trap；事故登记 RW-013 |
+
+两个事故任务证据保留：
+
+``` text
+.aaf/AAF-MAINT-001/
+.aaf/AAF-MAINT-001-FIX-001/
+```
+
+不删除、不覆盖。
+
+### 0.3 Current Usability Gaps（当前已知可用性缺口）
+
+详见 `docs/internal/AAF_MASTER_BACKLOG.md`（完整登记），摘要：
+
+- Bridge 不自动开机启动、无 Tray（RW-004）；
+- 项目切换需人工改 config（RW-003）；
+- hotkey listener 偶发失活，重启恢复（RW-012）；
+- TASK parser 对换行格式兼容性有限（RW-008）；
+- 无运行时状态可视化（RW-006）；
+- 无会话过长提醒/承接 UX（CTX-001）。
+
+### 0.4 Source / Mirror / Recovery Policy（长期政策）
+
+``` text
+Repository（GitHub / local repo）:
+  authoritative source —— 唯一权威长期知识源
+
+ChatGPT（Project / conversation）:
+  planner / discussion interface —— 规划和协作界面，
+  不能作为唯一长期知识来源
+
+Obsidian（D:\AdyAI\Obsidian-Vault\AI Agent Framework\）:
+  human-readable mirror and recovery layer —— MIRROR ONLY，
+  非独立权威版本；不开发自动同步程序或 Obsidian plugin
+```
+
+ChatGPT disaster recovery principle（详见 RW-009）：
+
+``` text
+GitHub / local repo → README → PROJECT_STATE
+→ AAF_MASTER_BACKLOG → latest closing handoff
+→ 创建新的 ChatGPT Project / Planner conversation → 继续维护
+```
+
+即使旧 ChatGPT Project 或 conversation 不存在，Framework 仍能恢复到
+可继续升级的状态。
+
+### 0.5 Future Planning Rule（未来规划规则）
+
+``` text
+Before planning new AAF work:
+FIRST READ:
+docs/internal/AAF_MASTER_BACKLOG.md
+```
+
+以后任何被正式确认"稍后处理"的问题，**必须进入 Master Backlog 才算
+长期登记完成**。
+
+v0.4 保持 NOT STARTED；必须由 Planner / User 显式决定启动。
 
 ------------------------------------------------------------------------
 

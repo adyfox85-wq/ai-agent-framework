@@ -1,0 +1,441 @@
+# AAF_MASTER_BACKLOG.md
+
+> Project: AI Agent Framework
+> Document Type: **Living Long-Term Backlog / 长期问题与恢复登记**
+> Established: 2026-08-27（AAF-MAINT-001-FIX-002）
+> Last Updated: 2026-08-27
+> Location: `docs/internal/AAF_MASTER_BACKLOG.md`
+
+## Purpose
+
+集中登记 AI Agent Framework 全部已确认的真实使用问题、观察项、防漂移
+验证缺口、会话承接缺口、历史待恢复优化项与恢复/耐久性规则。
+
+目标：即使任何 ChatGPT Project / conversation 丢失，只要保留
+GitHub / 本地 repo / Obsidian 镜像，就不会遗忘后续仍需处理的事项。
+
+## Long-Term Maintenance Rules（长期维护规则）
+
+```
+Authoritative Source:
+  AI Agent Framework repository（本仓库，含 docs/internal/ 与 git history）
+
+Obsidian:
+  用于阅读、搜索和恢复的镜像（MIRROR ONLY，非独立权威源）
+
+ChatGPT Project / Conversation:
+  用于规划和协作，但不能作为唯一长期知识来源
+```
+
+## Status Vocabulary
+
+仅使用以下状态：
+
+```
+OPEN
+PARTIAL
+OBSERVATION
+SOLVED
+RECOVERY_PENDING
+DEFERRED
+```
+
+## Priority Vocabulary
+
+仅使用以下优先级：
+
+```
+P0
+P1
+P2
+P3
+```
+
+---
+
+# 1. Real-World Usage / Usability Issues（RW）
+
+## RW-001 — Bridge 提示音与弹窗视觉体验
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-001 |
+| Title | Bridge 提示音与弹窗视觉体验 |
+| Category | Real-world usage / UX |
+| Status | OPEN |
+| Priority | P2 |
+| Evidence / Origin | 真实使用观察 |
+| Current Implementation | 现状：有提示音与确认/完成弹窗，但体验一般 |
+| Remaining Gap | - 当前提示音体验一般<br>- 当前确认/完成弹窗较基础 |
+| Decision | 后续与 Desktop/Tray UI 一起考虑；当前不单独开发 |
+| Target | 与 Tray / Desktop UI 合并优化提示音与弹窗体验 |
+| Do Not Forget | 属于体验优化，不是功能缺陷；不因美观单独重构 Bridge |
+
+---
+
+## RW-002 — 新用户 onboarding / 产品定位
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-002 |
+| Title | 新用户 onboarding / 产品定位 |
+| Category | Real-world usage / Documentation |
+| Status | PARTIAL |
+| Priority | P2 |
+| Evidence / Origin | 新用户上手路径观察 |
+| Current Implementation | README / QUICKSTART / TROUBLESHOOTING 已完成主要工作（commit d97ab38） |
+| Remaining Gap | 持续验证：陌生用户是否能仅凭仓库上手 |
+| Decision | AAF 当前应描述为**本地 Multi-Agent Orchestration Framework / Tool**：<br>- 不是单纯 Meta Skill<br>- 不是 SaaS、IDE 或 ChatGPT 替代品<br>- 继续观察陌生用户上手情况 |
+| Target | 新用户仅凭仓库可理解定位并完成 Quick Start |
+| Do Not Forget | 产品定位说明要持续与 README 保持一致，防止表述漂移 |
+
+---
+
+## RW-003 — Bridge 自动识别与切换项目
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-003 |
+| Title | Bridge 自动识别与切换项目 |
+| Category | Real-world usage / Bridge |
+| Status | OPEN |
+| Priority | P1 |
+| Evidence / Origin | 真实事件：从 H5 workspace 切换回 AAF workspace 时，Bridge 因 current_workspace 不一致拒绝任务，需要人工修改 config 才能继续 |
+| Current Implementation | 无自动切换；依赖人工修改 Bridge config（如 `~/.aaf-bridge/config.json` 的 current_project / current_workspace） |
+| Remaining Gap | - 自动识别 TASK Workspace<br>- 新 workspace 明确确认<br>- Recent Projects<br>- 安全切换<br>- 不静默执行陌生路径 |
+| Decision | 当前不实现（登记待办）；默认行为保持人工确认 |
+| Target | Bridge 能自动识别 TASK 指定的 workspace，并在切换前明确确认 |
+| Do Not Forget | **不静默执行陌生路径**；切换必须显式确认，安全优先 |
+
+---
+
+## RW-004 — Bridge 启动方式与 Windows Tray
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-004 |
+| Title | Bridge 启动方式与 Windows Tray |
+| Category | Real-world usage / Bridge lifecycle |
+| Status | OPEN |
+| Priority | P1 |
+| Evidence / Origin | 真实使用观察（电脑重启后需手工启动） |
+| Current Implementation | 当前电脑重启后 Bridge 不会自动启动；用户需要手工启动 python module；Terminal 关闭后 Bridge 停止 |
+| Remaining Gap | 候选方向：<br>- Windows Tray<br>- 无终端后台启动<br>- Start / Restart / Exit<br>- Current Project<br>- Open Status / Logs |
+| Decision | 当前不实现（登记待办） |
+| Target | Bridge 常驻可管理（Tray / 后台启动 / 状态入口） |
+| Do Not Forget | 与 RW-006 / RW-010 相关联；不做成大型独立应用 |
+
+---
+
+## RW-005 — Framework 执行速度与阶段耗时
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-005 |
+| Title | Framework 执行速度与阶段耗时 |
+| Category | Observation / Performance |
+| Status | OBSERVATION |
+| Priority | P2 |
+| Evidence / Origin | 真实 TASK-011 体感比手工流程慢 |
+| Current Implementation | 各阶段（Validation / Boundary / Hermes / WorkBuddy / Codex / REPORT）已有既有执行链，但无阶段耗时可观测数据 |
+| Remaining Gap | 先记录并测量各阶段耗时：<br>- Validation<br>- Boundary<br>- Hermes<br>- WorkBuddy<br>- Codex<br>- REPORT |
+| Decision | 先增加可观测性，再判断性能优化；**不能为了提速直接删除质量保障阶段** |
+| Target | 各阶段耗时可观测、可对比 |
+| Do Not Forget | 提速不得以牺牲质量保障阶段为代价 |
+
+---
+
+## RW-006 — Runtime 状态可视化
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-006 |
+| Title | Runtime 状态可视化 |
+| Category | Observation / Tooling |
+| Status | OPEN |
+| Priority | P1 |
+| Evidence / Origin | 真实使用中无法直观看到任务当前处于哪个阶段 |
+| Current Implementation | 无统一可视化；状态分散在 task.json / run.json / REPORT |
+| Remaining Gap | 未来可看到：<br>- Current Project<br>- Current Task<br>- Validation<br>- Boundary<br>- Hermes<br>- WorkBuddy<br>- Codex<br>- REPORT<br>- elapsed<br>- last activity<br>- WAITING / SUCCESS / FAILED<br>- FRAMEWORK_ERROR<br>- suspected stuck |
+| Decision | 建议未来与 Tray / Desktop UI 合并，而不是建设大型 Web Dashboard |
+| Target | 单窗口可读的运行时状态 |
+| Do Not Forget | 拒绝大而全的 Web Dashboard；保持轻量 |
+
+---
+
+## RW-007 — Agent executable discovery reliability
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-007 |
+| Title | Agent executable discovery reliability |
+| Category | Real-world usage / Environment |
+| Status | PARTIAL |
+| Priority | P2 |
+| Evidence / Origin | 真实事件：Codex 升级后安装 hash 目录变化导致 command discovery 失败（TASK-011 中 `MISSING_COMMAND: codex`） |
+| Current Implementation | 已通过 commit **7cbf594** 处理当前 OpenAI Codex hash-directory upgrade 场景（registry PATH 优先 + hash 目录 fallback，仅针对 codex） |
+| Remaining Gap | Hermes / WorkBuddy 当前主要依赖 PATH，尚未出现同类真实故障；继续 Observation |
+| Decision | 不提前建设大型通用 executable manager |
+| Target | 三个 Agent executable 在当前环境可稳定发现 |
+| Do Not Forget | fallback 仅针对已出现真实故障的 codex；不扩为通用 manager |
+
+---
+
+## RW-008 — TASK / Bridge parser compatibility
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-008 |
+| Title | TASK / Bridge parser compatibility |
+| Category | Real-world usage / Parser |
+| Status | OPEN |
+| Priority | P1 |
+| Evidence / Origin | 真实问题：最初 TASK 中以下单行字段出现换行格式时 Bridge 校验失败：Task ID / Task Name / Workspace。另：Planner 富文本 / Markdown 转义曾造成 marker 和文本格式风险 |
+| Current Implementation | README 已提供规避方式（推荐单行字段、纯文本代码块输出 TASK）；Bridge parser 对单行格式工作正常 |
+| Remaining Gap | 未来希望同时支持：<br>- `Task ID: VALUE`（单行）<br>- 字段名后一行再给 VALUE<br>- Markdown heading 形式<br>parser 代码层仍有兼容性缺口 |
+| Decision | 当前不修改 parser（登记待办）；使用 README 规避方式 |
+| Target | parser 兼容多种合理排版，且不受 Markdown 转义影响 |
+| Do Not Forget | README 规避 ≠ 代码层已兼容；缺口仍在 |
+
+---
+
+## RW-009 — ChatGPT Project / Conversation disaster recovery
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-009 |
+| Title | ChatGPT Project / Conversation disaster recovery |
+| Category | Durability / Recovery |
+| Status | PARTIAL |
+| Priority | P0 |
+| Evidence / Origin | 长期维护原则：AAF 后续维护不能依赖某一个永久存在的 ChatGPT Project 或历史 conversation |
+| Current Implementation | 已有恢复资产雏形：README、PROJECT_STATE、closing handoffs；本任务新增 Master Backlog |
+| Remaining Gap | 完整 Recovery flow 需持续演练并保持资产最新：<br><br>GitHub / local repo<br>→ README<br>→ PROJECT_STATE<br>→ AAF_MASTER_BACKLOG<br>→ latest closing handoff<br>→ 创建新的 ChatGPT Project / Planner conversation<br>→ 继续维护 |
+| Decision | 即使旧 ChatGPT Project 或 conversation 不存在，Framework 仍能恢复到可继续升级的状态 |
+| Target | 零 ChatGPT 依赖的恢复链验证通过 |
+| Do Not Forget | ChatGPT 是规划/协作界面，不是唯一长期知识来源 |
+
+---
+
+## RW-010 — Desktop App / Windows Program Packaging
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-010 |
+| Title | Desktop App / Windows Program Packaging |
+| Category | Future capability / Packaging |
+| Status | OPEN |
+| Priority | P2 |
+| Evidence / Origin | 长期候选方向（与 RW-004 / RW-006 相关联） |
+| Current Implementation | 无桌面壳层；Bridge 以 python module 运行 |
+| Remaining Gap | 长期候选：<br>- Tray<br>- Status Window<br>- Project selector<br>- Settings<br>- Start / Stop / Restart Bridge |
+| Decision | 原则：复用现有 Framework Core，增加小型桌面壳层。<br>**明确不扩展到**：<br>- SaaS<br>- 多用户后台<br>- 云端管理平台<br>- Agent marketplace<br>- 无限自主循环 |
+| Target | 轻量桌面壳层，不改变 Framework Core 边界 |
+| Do Not Forget | 小而本地；禁止膨胀为平台 |
+
+---
+
+## RW-011 — Router local constraint classification incident
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-011 |
+| Title | Router local constraint classification incident |
+| Category | Incident / Router |
+| Status | SOLVED |
+| Priority | P1 |
+| Evidence / Origin | AAF-MAINT-001 因局部范围限制被错误路由（局部禁止修改产品代码的约束被误判为任务级 review 模式），Hermes 未执行；route 被错误定为复核类（非执行类），实际执行动作（创建 backlog / 更新 PROJECT_STATE / commit+push）全部被压制 |
+| Current Implementation | 已修复：commit **457df93**（execution intent 与局部限制能够区分；206 tests passed；WorkBuddy APPROVE；Codex APPROVE；Remote Sync SUCCESS）。详见 `docs/internal/AAF-HOTFIX-ROUTER-READONLY.md` |
+| Remaining Gap | 无（该 incident 已解决）；相关语义隔离问题见 RW-013 |
+| Decision | **要求保留该事故历史，不因为已经解决而删除** |
+| Target | 同类局部约束不再触发错误路由（已达成） |
+| Do Not Forget | `.aaf/AAF-MAINT-001/` 保留为真实事故证据；不删除、不覆盖 |
+
+---
+
+## RW-012 — Bridge hotkey listener runtime reliability
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-012 |
+| Title | Bridge hotkey listener runtime reliability |
+| Category | Real-world usage / Bridge |
+| Status | OPEN |
+| Priority | P1 |
+| Evidence / Origin | 真实使用至少两次出现：<br>- Bridge 进程看似仍存在<br>- Ctrl+Alt+A 无响应<br>- 重启 Bridge 后恢复<br><br>另一次电脑重启后无响应属于 Bridge 尚未配置自动启动（见 RW-004），是**不同场景**，应分别说明 |
+| Current Implementation | 无 listener 健康检测；无自恢复；README Known Limitations 已登记该 issue |
+| Remaining Gap | - hotkey health<br>- listener self-recovery<br>- restart UX<br>- singleton awareness |
+| Decision | 当前不实现（登记待办）；出现时安全重启 Bridge |
+| Target | listener 可自检、可自恢复、重启 UX 顺畅 |
+| Do Not Forget | **Bridge process 存活不能单独证明 hotkey listener 健康** |
+
+---
+
+## RW-013 — Router self-triggering reference trap
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-013 |
+| Title | Router self-triggering reference trap |
+| Category | Incident / Router |
+| Status | OPEN |
+| Priority | P1 |
+| Evidence / Origin | AAF-MAINT-001-FIX-001 为描述前一次 Router incident（RW-011），在 Background 中引用 Router 自己用于分类的特殊短语，导致当前 Router 再次根据全文命中 review route，Hermes 第二次被跳过 |
+| Current Implementation | Runtime Diagnose 已确认：<br>- current source loaded（Router source 正确）<br>- no stale route（route.json 非 stale）<br>- no wrong import（import path 正确）<br>- no routing truncation（TASK 在 routing 前未截断）<br>- Direct Probe reproduced the same route（与 stored route.json 一致）<br><br>根因属于 self-triggering reference trap：当前 Router 基于全文 keyword/signal 判断，任务中"讨论规则本身"和"真正发出规则要求"没有语义隔离 |
+| Remaining Gap | 当前 Router 基于全文 keyword/signal 判断，"讨论规则本身"和"真正发出规则要求"没有语义隔离 |
+| Decision | **本任务只登记，不修改 Router**（Framework runtime implementation 保持现状） |
+| Target | Future candidate：评估结构化字段优先、section-aware routing、或其他不会被引用文本自触发的方案 |
+| Do Not Forget | - 本任务及后续登记文档**不原样引用任何 Router 触发短语**，防止再次自我触发<br>- `.aaf/AAF-MAINT-001-FIX-001/` 保留为真实事故证据 |
+
+---
+
+# 2. Anti-Drift（BND）
+
+## BND-001 — Planner-layer Anti-Drift Validation
+
+| 字段 | 内容 |
+|---|---|
+| ID | BND-001 |
+| Title | Planner-layer Anti-Drift Validation |
+| Category | Anti-Drift / Governance |
+| Status | PARTIAL |
+| Priority | P2 |
+| Evidence / Origin | 防漂移原则：suggestion 不得自动成为 requirement |
+| Current Implementation | v0.3 Framework 层已有：<br>- PROJECT_SCOPE<br>- Boundary Check<br>- warning-first<br>- suggestion 不自动成为项目要求<br>- 不自动扩大 scope<br>- 不自动写 backlog<br>- 不自动产生下一 TASK |
+| Remaining Gap | ChatGPT Planner 长期对话中仍需验证：<br>- context compression<br>- weighting change<br>- accumulated requirements<br>- model tendency<br><br>是否会导致：<br>- 思路漂移<br>- scope creep<br>- 历史决定遗忘<br>- suggestion 被误升级成 requirement |
+| Decision | 必须明确：**Framework 层完成，不等于 Planner conversation 层已经完全解决** |
+| Target | Planner 长期对话中思路漂移与 scope creep 可被识别并控制 |
+| Do Not Forget | Framework 层机制不能替代 Planner 层验证；持续观察 |
+
+---
+
+# 3. Session Continuity（CTX）
+
+## CTX-001 — Context Length / Conversation Rollover UX
+
+| 字段 | 内容 |
+|---|---|
+| ID | CTX-001 |
+| Title | Context Length / Conversation Rollover UX |
+| Category | Session continuity / UX |
+| Status | PARTIAL |
+| Priority | P1 |
+| Evidence / Origin | 真实需求：ChatGPT conversation 过长需要无遗失承接 |
+| Current Implementation | v0.3 已有：<br>- explicit rollover<br>- SESSION_SUMMARY.md<br>- NEXT_SESSION_START.md<br>- bounded recent context |
+| Remaining Gap | 用户真正希望实现：<br>1. ChatGPT conversation 接近过长时获得提醒；<br>2. 整理当前阶段状态；<br>3. 生成完整承接材料；<br>4. 引导进入新的 conversation；<br>5. 新 conversation 可直接继续；<br>6. 不遗失：<br>   - 当前状态<br>   - 已完成 TASK<br>   - 未完成问题<br>   - 边界<br>   - 决策<br>   - 下一步 |
+| Decision | 原则：不做 infinite memory；不自动无限生成会话 |
+| Target | 一次显式 rollover 完成 1-6 的完整承接体验 |
+| Do Not Forget | 承接材料须可被新 conversation 直接读取并继续 |
+
+---
+
+# 4. Historical Recovery（HIST）
+
+## HIST-001 — Historical Framework Optimization Set Recovery
+
+| 字段 | 内容 |
+|---|---|
+| ID | HIST-001 |
+| Title | Historical Framework Optimization Set Recovery |
+| Category | Historical recovery |
+| Status | RECOVERY_PENDING |
+| Priority | P2 |
+| Evidence / Origin | 用户记得早期曾讨论过一组约 10 个 Framework 优化项 |
+| Current Implementation | 无（尚未恢复） |
+| Remaining Gap | 当前没有足够可靠证据恢复其精确原文 |
+| Decision | 必须保留其"存在"这一事实，但**不能根据今天的问题、模型常识或推测重新凑成十项**（本任务未自行重构） |
+| Target | 记录：`Known historical optimization set exists; exact original list not yet recovered.` |
+| Do Not Forget | 后续候选恢复来源：<br>- old handoffs<br>- PROJECT_STATE history<br>- ChatGPT exported conversations<br>- Obsidian notes<br>- local Markdown records |
+
+---
+
+# 5. Recovery / Durability（恢复与耐久性）
+
+## 5.1 长期恢复资产
+
+以下资产是 Framework 长期维护的恢复链（按读取顺序）：
+
+```
+1. README
+2. PROJECT_STATE（docs/internal/PROJECT_STATE.md）
+3. AAF_MASTER_BACKLOG（docs/internal/AAF_MASTER_BACKLOG.md）
+4. latest closing handoff（docs/internal/handoffs/）
+5. git history
+```
+
+## 5.2 角色与权威关系
+
+```
+Repository（GitHub / local repo）:
+  authoritative source —— 唯一权威长期知识源
+
+ChatGPT（Project / conversation）:
+  planner / discussion interface —— 用于规划和协作
+
+Obsidian（D:\AdyAI\Obsidian-Vault\AI Agent Framework\）:
+  human-readable mirror and recovery layer —— 用于阅读、搜索和恢复
+```
+
+## 5.3 ChatGPT 丢失后的恢复原则
+
+即使旧 ChatGPT Project 或 conversation 不存在：
+
+```
+GitHub / local repo
+→ README
+→ PROJECT_STATE
+→ AAF_MASTER_BACKLOG
+→ latest closing handoff
+→ 创建新的 ChatGPT Project / Planner conversation
+→ 继续维护
+```
+
+Framework 仍能恢复到可继续升级的状态（见 RW-009）。
+
+## 5.4 Obsidian 镜像政策
+
+- Obsidian 中的 AAF 文档是 **MIRROR ONLY** 镜像。
+- 镜像文件顶部声明来源与"MIRROR ONLY"。
+- 不将镜像作为独立权威版本维护。
+- 镜像由维护任务显式建立；**不开发自动同步程序或 Obsidian plugin**。
+
+---
+
+# 6. Update Rules（更新规则）
+
+1. 本文件是 **Living** 文档，随真实证据持续更新。
+2. 以后任何被正式确认"稍后处理"的问题，**必须进入 Master Backlog 才算长期登记完成**。
+3. 新条目使用本文件规定的 Status / Priority 词汇，禁止自造状态。
+4. 每个正式条目至少包含：ID / Title / Category / Status / Priority /
+   Evidence / Origin / Current Implementation / Remaining Gap / Decision /
+   Target / Do Not Forget。
+5. 登记未来功能方向时必须同时写明边界（不做哪些），防止范围膨胀。
+6. 已解决事故（SOLVED）保留历史记录，不删除、不覆盖。
+7. 描述 Router 相关事件时，**不原样引用任何 Router 触发短语**，
+   防止全文信号匹配再次自我触发。
+8. **Before planning new AAF work: FIRST READ this file.**
+9. 事故证据目录 `.aaf/AAF-MAINT-001/` 与 `.aaf/AAF-MAINT-001-FIX-001/`
+   保留为真实历史证据，不删除、不覆盖。
+
+---
+
+# 7. Summary（当前登记总览）
+
+| ID | Title | Status | Priority |
+|---|---|---|---|
+| RW-001 | Bridge 提示音与弹窗视觉体验 | OPEN | P2 |
+| RW-002 | 新用户 onboarding / 产品定位 | PARTIAL | P2 |
+| RW-003 | Bridge 自动识别与切换项目 | OPEN | P1 |
+| RW-004 | Bridge 启动方式与 Windows Tray | OPEN | P1 |
+| RW-005 | Framework 执行速度与阶段耗时 | OBSERVATION | P2 |
+| RW-006 | Runtime 状态可视化 | OPEN | P1 |
+| RW-007 | Agent executable discovery reliability | PARTIAL | P2 |
+| RW-008 | TASK / Bridge parser compatibility | OPEN | P1 |
+| RW-009 | ChatGPT Project / Conversation disaster recovery | PARTIAL | P0 |
+| RW-010 | Desktop App / Windows Program Packaging | OPEN | P2 |
+| RW-011 | Router local constraint classification incident | SOLVED | P1 |
+| RW-012 | Bridge hotkey listener runtime reliability | OPEN | P1 |
+| RW-013 | Router self-triggering reference trap | OPEN | P1 |
+| BND-001 | Planner-layer Anti-Drift Validation | PARTIAL | P2 |
+| CTX-001 | Context Length / Conversation Rollover UX | PARTIAL | P1 |
+| HIST-001 | Historical Framework Optimization Set Recovery | RECOVERY_PENDING | P2 |

@@ -1,14 +1,47 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: v0.2\
-> Last Updated: 2026-08-25\
+> Current Version: **v0.3**\
+> Last Updated: 2026-08-26\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
 > 级变更、版本状态变化或关键风险变化，都应更新本文件。
+>
+> 下方 v0.2 及更早内容属于历史状态，保留不删除；当前状态以顶部 v0.3 块为准。
 
 ------------------------------------------------------------------------
+
+## 0. v0.3 Current Status（当前状态）
+
+``` text
+Version: v0.3
+Core Implementation: COMPLETE
+Core Acceptance: PASS
+Lifecycle: READY_FOR_CLOSURE
+
+v0.3 三大核心方向：
+1. Task Automation     ✅ COMPLETE（000-A/B/C + 001 Validation + 002 Lifecycle + 003 Archive）
+2. Session Continuity  ✅ COMPLETE（004）
+3. Project Boundary    ✅ COMPLETE（005）
+
+Regression Baseline: 191 passed（commit d1919b6 起，零回归）
+E2E 主链验收: PASS（Bridge 校验 → Validation → Boundary → Lifecycle → Router → REPORT → Handoff）
+Review: WorkBuddy APPROVE（v0.3 READY_TO_CLOSE）
+Milestone Audit: Codex 本机不可用（公司电脑待执行，NON_BLOCKING）
+Remote Sync: SUCCESS（d1919b6 已同步；如后续 push 失败会标记 REMOTE_SYNC_PENDING）
+
+当前阶段：
+v0.3 收官
+→ 三大方向实现 ✅
+→ Core Acceptance PASS ✅（AAF-V03-006）
+→ READY_FOR_CLOSURE（当前）
+→ v0.4 未启动（必须由 Planner / User 显式决定）
+```
+
+------------------------------------------------------------------------
+
+## 1. Historical Status（v0.2 及更早，保留不删除）
 
 ## 1. Current Status
 

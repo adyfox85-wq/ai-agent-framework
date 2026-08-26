@@ -19,6 +19,8 @@ from typing import Any
 from . import config as cfg_mod
 from .launcher import RunInfo
 
+from ai_agent_framework.task_archive import archived_report_path
+
 HANDOFF_BEGIN = "AAF_PLANNER_HANDOFF_BEGIN"
 HANDOFF_END = "AAF_PLANNER_HANDOFF_END"
 
@@ -51,12 +53,20 @@ def load_last_run() -> RunInfo | None:
 
 
 def read_report(report_path: str | None) -> str | None:
-    """读取正式 REPORT.md 正文；缺失返回 None（调用方提示 REPORT_NOT_FOUND）。"""
+    """读取正式 REPORT.md 正文；缺失返回 None（调用方提示 REPORT_NOT_FOUND）。
+
+    兼容归档：原路径不存在时，尝试 .aaf/archive/<Task-ID>/ 变体兜底
+    （任务归档后 Bridge Copy Last Report 仍然有效，不修改 last_run.json）。
+    """
     if not report_path:
         return None
     p = Path(report_path)
     if not p.exists():
-        return None
+        archived = archived_report_path(p)
+        if archived is not None and archived.exists():
+            p = archived
+        else:
+            return None
     try:
         return p.read_text(encoding="utf-8")
     except OSError:

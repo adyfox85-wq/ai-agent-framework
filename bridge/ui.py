@@ -65,3 +65,64 @@ def show_info(title: str, message: str) -> None:
 
 def show_error(title: str, message: str) -> None:
     messagebox.showerror(title, message)
+
+
+def clipboard_set_text(root: tk.Tk, text: str) -> bool:
+    """写入系统剪贴板（tkinter 路径，需在主线程）。成功返回 True。"""
+    try:
+        root.clipboard_clear()
+        root.clipboard_append(text)
+        root.update()  # 让剪贴板内容生效
+        return True
+    except tk.TclError:
+        return False
+
+
+def clipboard_get_text(root: tk.Tk) -> str:
+    """读取系统剪贴板（tkinter 路径，需在主线程）。被占用时返回 ''。"""
+    try:
+        return root.clipboard_get()
+    except tk.TclError:
+        return ""
+
+
+def show_finished(root: tk.Tk, task_id: str, report_path: str, on_copy) -> None:
+    """任务完成窗口：显示结果 + [Copy Report] / [Close]。
+
+    on_copy 由调用方提供（执行 handoff 构建 + 写剪贴板 + 提示）。
+    """
+    win = tk.Toplevel(root)
+    win.title("AAF TASK FINISHED")
+    win.attributes("-topmost", True)
+    win.resizable(False, False)
+
+    tk.Label(win, text="AAF TASK FINISHED", font=("Segoe UI", 12, "bold"), fg="#1a7f37").pack(
+        padx=12, pady=(12, 4), anchor="w"
+    )
+    tk.Label(win, text=f"Task ID: {task_id}", font=("Segoe UI", 10)).pack(padx=12, anchor="w")
+    tk.Label(
+        win,
+        text=f"REPORT: {report_path}",
+        font=("Segoe UI", 9),
+        wraplength=460,
+        justify="left",
+    ).pack(padx=12, pady=(2, 6), anchor="w")
+
+    btns = tk.Frame(win)
+    btns.pack(pady=8)
+
+    def do_copy():
+        try:
+            on_copy()
+        finally:
+            win.destroy()
+
+    tk.Button(btns, text="Copy Report", width=12, command=do_copy).pack(side="left", padx=8)
+    tk.Button(btns, text="Close", width=12, command=win.destroy).pack(side="left", padx=8)
+
+    win.grab_set()
+    win.update_idletasks()
+    x = root.winfo_screenwidth() // 2 - win.winfo_width() // 2
+    y = root.winfo_screenheight() // 2 - win.winfo_height() // 2
+    win.geometry(f"+{max(0, x)}+{max(0, y)}")
+    win.focus_force()

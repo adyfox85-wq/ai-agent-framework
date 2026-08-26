@@ -41,9 +41,39 @@ def _windows_path() -> str:
 
 def _require(cmd: str) -> str:
     found = shutil.which(cmd, path=_windows_path())
+    if not found and cmd == 'codex':
+        # real-world hotfix：Codex 自动升级会更换 hash 版本目录，
+        # registry PATH 可能残留旧目录导致 PATH discovery 失效。
+        # 仅对 codex 增加受控 fallback（不改变 hermes / codebuddy 解析）。
+        found = _codex_fallback()
     if not found:
         raise RuntimeError(f'MISSING_COMMAND: {cmd}')
     return found
+
+
+CODEX_FALLBACK_DIR = Path(os.environ.get('LOCALAPPDATA', '')) / 'OpenAI' / 'Codex' / 'bin'
+
+
+def _codex_fallback() -> str | None:
+    """Windows Codex known-install fallback：%LOCALAPPDATA%\\OpenAI\\Codex\\bin\\*\\codex.exe。
+
+    多版本 hash 目录按 mtime 最新选当前有效版本（新版本目录更新时间更近）；
+    0 candidate 或 candidate 不可用 → None（调用方保持 MISSING_COMMAND 语义）。
+    """
+    try:
+        if not CODEX_FALLBACK_DIR.is_dir():
+            return None
+        candidates = [
+            d / 'codex.exe'
+            for d in CODEX_FALLBACK_DIR.iterdir()
+            if d.is_dir() and (d / 'codex.exe').is_file()
+        ]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return str(candidates[0])
+    except OSError:
+        return None
 
 
 def run_agent(agent: str, prompt: str, workspace: Path, timeout: int = 3600) -> str:

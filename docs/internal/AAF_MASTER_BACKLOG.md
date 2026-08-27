@@ -370,7 +370,7 @@ P3
 | Category | Environment / Git Operations |
 | Status | OBSERVATION |
 | Priority | P3 |
-| Evidence / Origin | 真实维护任务中 git push 曾出现直连 GitHub TLS EOF；使用本机 Clash SOCKS5 临时代理（socks5h://127.0.0.1:7897）后 push 成功。 |
+| Evidence / Origin | 真实维护任务中 git push 曾出现直连 GitHub TLS EOF；使用本机 Clash SOCKS5 临时代理（socks5h://127.0.0.1:7897）后 push 成功。<br><br>2026-08-27 复现（AAF-MAINT-003）：直连 TLS EOF 再次出现；本次 socks5h://127.0.0.1:7897 模式不通（curl 000），同端口 HTTP 代理模式 http://127.0.0.1:7897 可用并 push 成功。 |
 | Current Implementation | AAF Core 不管理 Git 网络代理。Git push 由执行环境完成。 |
 | Remaining Gap | 观察该问题是否重复发生。 |
 | Decision | 当前不把代理配置写入 Framework Core。如未来频繁复现，再考虑：documentation / environment preflight / clearer push failure guidance。 |

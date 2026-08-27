@@ -2,7 +2,7 @@
 
 > Project: AI Agent Framework\
 > Current Version: **v0.4（IN PROGRESS — Phase A COMPLETE）**\
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-001-FIX-001）\
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-001-FIX-002）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -34,13 +34,16 @@ Phase A 目标：task.json = live canonical runtime view
 （started_at / stage / stage_started_at / last_activity_at / agent / phases），
 统一 Runtime State reader（legacy 兼容），runner EXTEND ONLY 阶段写入。
 
-Phase A Closure（AAF-v0.4-TASK-001-FIX-001，2026-08-27）：
+Phase A Closure（AAF-v0.4-TASK-001-FIX-001 + FIX-002，2026-08-27）：
 - Tests: 216 passed
 - Review: COMPLETE（WorkBuddy APPROVE + Codex APPROVE）
-- Remote Sync: SYNCED（5a8b76a）；FIX-001 closure commit f81c7ee: REMOTE_SYNC_PENDING
-  （2026-08-27 push TLS EOF，RW-018；网络恢复后 git push origin main）
+- Remote Sync: SYNCED — closure commits f81c7ee、ca06c29 均已纳入 origin/main；
+  HEAD == origin/main（ca06c29），ahead/behind = 0/0
+- 历史记录：FIX-001 初次 push 曾因 TLS EOF 失败（RW-018 Git/network observation），
+  后续 WorkBuddy 独立验证中成功执行 push；当前无 PENDING
 - Unresolved: None blocking
-- Commit: 5a8b76a8662ea675cdfff8f4d33c5bb6f3517d7f（closure: f81c7ee）
+- Commit: 5a8b76a（Phase A implementation）；f81c7ee（FIX-001 closure）；
+  ca06c29（FIX-002 closure，HEAD == origin/main）
 
 Next Phase Candidate: Phase B — Bridge Background / Tray Skeleton（不得自动启动）
 
@@ -51,8 +54,8 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
 
 ### 0.1 Phase A — Runtime State Foundation（COMPLETE）
 
-- TASK: AAF-v0.4-TASK-001（2026-08-27）；closure: AAF-v0.4-TASK-001-FIX-001（2026-08-27）
-- 状态：COMPLETE（WorkBuddy APPROVE + Codex APPROVE；216 passed；commit 5a8b76a；Remote Sync SYNCED）
+- TASK: AAF-v0.4-TASK-001（2026-08-27）；closure: AAF-v0.4-TASK-001-FIX-001 + FIX-002（2026-08-27）
+- 状态：COMPLETE（WorkBuddy APPROVE + Codex APPROVE；216 passed；Remote Sync SYNCED；HEAD == origin/main = ca06c29）
 - 范围：task.json live runtime state / Runtime State reader / runner 阶段写入 / PROJECT_STATE 同步
 - 禁止（Phase A 不实现）：Tray / status window / pystray / autostart / progress bar / stuck 算法 /
   Safe Cancel（CANCELLED / control.json / state.lock / launch registry / force kill）/

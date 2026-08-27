@@ -61,8 +61,11 @@
 ## Git / Remote Sync
 
 - Commit: `5a8b76a8662ea675cdfff8f4d33c5bb6f3517d7f`（feat(v0.4-phase-a): runtime state foundation — task.json live state + reader）
-- Push: SUCCESS（origin/main 已同步至 5a8b76a）
-- Closure commit `f81c7ee`（本 FIX-001 文档 closure）：**REMOTE_SYNC_PENDING**（2026-08-27 push 失败：TLS EOF / Connection reset，RW-018；直连 + 7897 http/socks5 + 7892 共 6 次重试均失败；网络恢复后重跑 `git push origin main`）
+- Closure commits: `f81c7ee`（FIX-001 文档 closure）+ `ca06c29`（FIX-002 文档 closure）
+- Remote Sync: **SUCCESS / SYNCED** — WorkBuddy 在后续独立验证中成功执行 push；
+  最终 HEAD == origin/main == `ca06c294231a35f8898e5f182c59df047faf61ff`，ahead/behind = 0/0
+- 历史记录：Hermes 初次 push 曾失败（2026-08-27 TLS EOF / Connection reset，RW-018；直连 + 7897
+  http/socks5 + 7892 共 6 次重试均失败）；仅作历史说明，当前 Remote Sync 状态为 SYNCED，无 PENDING
 - Phase Start Handoff: 已纳入版本控制，保留启动时原样（历史快照，未因 Phase A 完成而改写）
 
 ## Unresolved Issues

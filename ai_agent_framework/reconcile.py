@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import cancel as cancel_mod
+from .context_packet import sha256_text
 from .lock_utils import LockError, LockTimeout, task_state_lock
 from .report import build_report
 from .task_lifecycle import (
@@ -142,11 +143,13 @@ def _build_report_from_artifacts(output_dir: Path, canonical, task_id: str) -> s
     - CANCELLED：从 cancel.request（若仍存在）读取 requested_at
     """
     task_text = ""
+    task_ref_path = None
     try:
         task_json = read_status(output_dir) or {}
         tp = task_json.get("task_path")
         if tp and Path(tp).exists():
             task_text = Path(tp).read_text(encoding="utf-8")
+            task_ref_path = str(tp)
     except Exception:
         task_text = ""
 
@@ -176,7 +179,12 @@ def _build_report_from_artifacts(output_dir: Path, canonical, task_id: str) -> s
         if req is not None:
             terminal["cancel_requested_at"] = req.requested_at
         terminal["task_id"] = task_id
-    return build_report(task_text, route, results, canonical.status, integrity_notes=None, terminal=terminal)
+    return build_report(
+        task_text, route, results, canonical.status, integrity_notes=None, terminal=terminal,
+        task_path=task_ref_path,
+        task_hash=sha256_text(task_text) if task_text else None,
+        output_dir=output_dir,
+    )
 
 
 def reconcile_terminal_artifacts(

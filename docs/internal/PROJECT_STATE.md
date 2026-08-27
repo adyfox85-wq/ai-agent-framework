@@ -2,7 +2,7 @@
 
 > Project: AI Agent Framework\
 > Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE；E-Ownership / Force Cancel COMPLETE — 005-A + FIX-001/002/003 与 005-B 已交付，005-B 待 WorkBuddy/Codex 复核；剩余 TASK-005-C Status Window Cancel UX + Real Windows Closure 未交付 → Phase E 不得标 COMPLETE）；Phase F NOT STARTED）**\
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-005-B — Phase E Process Ownership / Force Cancel / Recovery Integration 交付同步）\
+> Last Updated: 2026-08-28（AAF-MAINT-CONTEXT-001 — Context Compaction / Stage Packet Protocol 交付同步）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -492,6 +492,53 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
 - Next Phase Step（唯一）：**AAF-v0.4-TASK-005-C — Phase E Status Window Cancel UX +
   Real Windows E2E Closure**（不得自动执行；005-B + 005-C 全部完成后 Phase E 才可标
   COMPLETE）
+
+### 0.2 Maintenance — Context Compaction / Stage Packet Protocol（AAF-MAINT-CONTEXT-001，2026-08-28）
+
+- 类型：维护任务（非 Phase 任务）；Phase E 状态未被改变（IN PROGRESS 保持）；
+  **Next Step 恢复为 AAF-v0.4-TASK-005-B-FIX-001**（005-B 的 pending blocker；
+  本任务不实现其 force-recovery blocker）
+- 解决的问题（正式登记 CTX-002，见 AAF_MASTER_BACKLOG.md）：TASK / stage prompt /
+  REPORT 层层全文叠加导致 Context 膨胀——Hermes 完成后 WorkBuddy 接收 Hermes narrative
+  全文，Codex 再叠加 Hermes + WorkBuddy 全文（eager full-content chaining）
+- 交付内容：
+  - **Anti-Bloat Policy**：`docs/internal/AAF_TASK_EXECUTION_POLICY.md`（durable
+    Framework policy：TASK = current delta；引用优先；同语义不重复；FIX 只写
+    parent blocker + delta；长度增加需新信息依据；摘要只导航、artifacts 才是真相）
+  - **Compact TASK Schema**：`templates/TASK.md` 正式最小结构
+    （Task ID / Name / Workspace / Objective / Context / Source of Truth /
+    Requirements / Scope / Out of Scope / Validation / Acceptance / Route Hint）；
+    `task_validation.py` OPTIONAL_FIELDS 增加 Context / Source of Truth /
+    Validation / Out of Scope / Scope / Out of Scope（旧必填集不变，向后兼容）
+  - **Semantic Coverage Guard**：`context_packet.verify_semantic_coverage`——
+    unique requirement / safety invariant / acceptance semantics 覆盖率检查
+    （压缩是去重，不是删约束）
+  - **Stage Context Packet 协议**（`adapters.py`）：WorkBuddy 只接收 TASK 引用 +
+    Hermes 结构化摘要 + changed files/commit/evidence 路径；Codex 再叠加 WorkBuddy
+    结构化 verdict；上游 narrative 全文按需读取；独立验证指令保留；引用缺失 →
+    显式 FALLBACK_EMBEDDED 全文或 FAIL（不静默缺上下文）
+  - **Structured Stage Results**：`<agent>_result.json`（agent / status / verdict /
+    blocking_rework / commit / tests / changed_files / evidence_paths / findings /
+    warnings + summary 导航字段）；框架只写确定性可验证事实，不猜测 LLM 语义
+  - **Context Manifest**：`context_manifest.json`（TASK path+hash、stage result
+    paths+hashes、workspace、HEAD、prompt 指标）；`check_references` 完整性检查
+    （文件变化 → hash 不匹配检出）
+  - **REPORT De-duplication**（`report.py`）：`## Original Task` 全文 → `## Task
+    Reference`（Task ID / Path / Hash）；Agent Results = 摘要 + 完整结果路径；
+    无引用信息的 legacy 调用方保持旧格式
+  - **Context Size 可观测性**：每 stage prompt chars/bytes + embedded/referenced
+    artifact counts 写入 manifest；同一 fixture 上 old full-chain 25,609 chars →
+    new packet 3,301 chars（-87.1%，embedded=0）
+  - **Backward Compatibility**：旧目录无 `<agent>_result.json` → 自动 legacy
+    全文嵌入 fallback；旧 REPORT 无 Task Reference 参数保持原格式
+  - **Anti-Regression 测试**：`tests/test_context_compaction.py` 23 项（req 11
+    全项 + req 12 guard：REPORT 不恢复 full TASK 嵌入 / prompt builder 不恢复
+    无条件全文拼接 / Policy 存在且被模板引用）
+- 测试：**532 passed**（509 基线 + 23 新增，零下降）
+- 边界遵守：Phase E force-recovery blocker 未实现；Cancel UI / Phase F /
+  RW-020–024 产品修复 / Agent model-provider 未动；`.aaf/` 历史产物未动；
+  005-B-FIX-001 技术结论未修改
+- WorkBuddy / Codex 独立复核由本任务 route 阶段执行（verdict 见任务 REPORT.md）
 
 ### 0.2 v0.3 历史状态（CLOSED，保留）
 

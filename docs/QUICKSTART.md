@@ -87,6 +87,13 @@ AAF_TASK_END
 
 关键：字段写单行（`Task ID: MY-001`），不要用 Markdown 转义。
 
+> **Anti-Bloat 规则（正式 Policy：`docs/internal/AAF_TASK_EXECUTION_POLICY.md`）**：
+> TASK = current delta，不是项目知识库。背景 / 历史 / 设计引用
+> `PROJECT_STATE.md` / `AAF_MASTER_BACKLOG.md` 的 path/section 即可，不要复制全文。
+> 完整模板见 `templates/TASK.md`（Compact Schema：Task ID / Task Name / Workspace /
+> Objective / Context / Source of Truth / Requirements / Scope / Out of Scope /
+> Validation / Acceptance / Route Hint）。
+
 ## Step 6 — Copy TASK
 
 复制上面的 TASK 全文（含 AAF_TASK_BEGIN / AAF_TASK_END）。
@@ -243,6 +250,16 @@ Framework 完成后 Bridge 提供「复制报告」按钮（把 REPORT 转成 Pl
 - Agent 结果
 - Unresolved Issues
 - 决定下一步（修复、收口或新任务）
+
+> **REPORT 结构（v0.4 起，Stage Context Packet 协议）**：REPORT 不再复制整份
+> Original Task 与全部 Agent narrative 全文——`## Task Reference`（Task ID / Path /
+> Hash）指向 TASK 文件，Agent Results 为摘要 + 完整结果路径。需要完整上下文时：
+> - `context_manifest.json`（任务输出目录）：TASK / stage artifacts 的 path+hash 引用
+> - `<agent>_result.md`：各 Agent 完整 narrative（按需读取，追溯用）
+> - `<agent>_result.json`：机器可读结构化结果（verdict / commit / changed_files /
+>   evidence_paths）
+> 验证以 Repository artifacts 为准（摘要只用于导航）；旧任务目录没有 JSON 时
+> 框架自动 fallback 到旧格式，不受影响。
 
 ---
 

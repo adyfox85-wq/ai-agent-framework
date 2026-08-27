@@ -3,7 +3,7 @@
 > Project: AI Agent Framework
 > Document Type: **Living Long-Term Backlog / 长期问题与恢复登记**
 > Established: 2026-08-27（AAF-MAINT-001-FIX-002）
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-004-FIX-001 — Phase D closure audit sync：RW-020 / RW-021 证据追加 + RW-023 / RW-024 登记）
+> Last Updated: 2026-08-28（AAF-MAINT-CONTEXT-001 — Context Compaction / Stage Packet Protocol 交付：CTX-002 登记）
 > Location: `docs/internal/AAF_MASTER_BACKLOG.md`
 
 ## Purpose
@@ -644,6 +644,24 @@ Cluster 只是帮助未来统一设计，
 
 ---
 
+## CTX-002 — TASK / Stage Prompt / REPORT Context Bloat（层层全文叠加）
+
+| 字段 | 内容 |
+|---|---|
+| ID | CTX-002 |
+| Title | TASK / Stage Prompt / REPORT Context Bloat（eager full-content chaining） |
+| Category | Framework protocol / Context 管理 |
+| Status | SOLVED（2026-08-28，AAF-MAINT-CONTEXT-001 交付） |
+| Priority | P1 |
+| Evidence / Origin | 真实运行观察：Hermes → WorkBuddy → Codex 层层全文叠加——WorkBuddy prompt 嵌入 Hermes narrative 全文，Codex prompt 再嵌入 Hermes + WorkBuddy 全文；REPORT 再复制整份 Original Task 与全部 Agent 全文。同一信息在 prompt / REPORT 中重复 3–5 次 |
+| Current Implementation | **Stage Context Packet 协议（reference-based / lazy-loading）**：<br>- 正式 Anti-Bloat Policy：`docs/internal/AAF_TASK_EXECUTION_POLICY.md`<br>- Compact TASK Schema：`templates/TASK.md`（TASK = current delta）<br>- 下游 prompt 只接收 TASK 引用 + 结构化摘要（`<agent>_result.json`）+ changed files / commit / evidence 路径；narrative 全文按需读取<br>- `context_manifest.json`：TASK / stage artifacts path+hash 可追溯引用（`check_references` 完整性检查）<br>- REPORT `## Original Task` 全文 → `## Task Reference`（Task ID / Path / Hash）<br>- Semantic Coverage Guard（`verify_semantic_coverage`）：压缩是去重，不是删约束<br>- Context size 每 stage 可观测（chars/bytes + embedded/referenced counts）<br>- 测量证据：同一 fixture old full-chain 25,609 chars → new packet 3,301 chars（-87.1%）<br>- Anti-Regression 测试：`tests/test_context_compaction.py`（23 项） |
+| Remaining Gap | 无 blocking gap。Guard 是确定性子串检查；改写措辞的语义等价性依赖 WorkBuddy 独立验证（设计如此，非缺陷） |
+| Decision | 新协议作为默认路径；旧目录自动 legacy fallback（Backward Compat） |
+| Target | 已达成：重复输入明显下降、零信息丢失、独立验证逻辑与安全边界不变 |
+| Do Not Forget | 不得恢复 eager full-content chaining；Anti-Bloat 规则见 Policy §12 反回归 guard |
+
+---
+
 # 4. Historical Recovery（HIST）
 
 ## HIST-001 — Historical Framework Optimization Set Recovery
@@ -764,4 +782,5 @@ Framework 仍能恢复到可继续升级的状态（见 RW-009）。
 | RW-024 | Completion Dialog Copy Report UX（复制报告二次弹窗 + Z 序问题） | OPEN | P2 |
 | BND-001 | Planner-layer Anti-Drift Validation | PARTIAL | P2 |
 | CTX-001 | Context Length / Conversation Rollover UX | PARTIAL | P1 |
+| CTX-002 | TASK / Stage Prompt / REPORT Context Bloat（层层全文叠加） | SOLVED | P1 |
 | HIST-001 | Historical Framework Optimization Set Recovery | RECOVERY_PENDING | P2 |

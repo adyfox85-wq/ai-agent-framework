@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import winreg
 from pathlib import Path
 
+from .context_packet import read_stage_result
 from .subprocess_utils import no_console_kwargs
+from .task_validation import parse_task_fields
 
 
 ROLE_INSTRUCTIONS = {
@@ -15,15 +18,260 @@ ROLE_INSTRUCTIONS = {
     'codex': '你是 Reviewer。基于 TASK、执行结果和复核结果做独立审查，重点检查代码/架构/逻辑/风险。不要代替 Executor 修改文件。给出 APPROVE / REQUEST_CHANGE 及证据。',
 }
 
+# Anti-Bloat Policy（docs/internal/AAF_TASK_EXECUTION_POLICY.md）：
+# 下游 Agent（WorkBuddy / Codex）不再默认接收上游 narrative 全文——
+# 只接收 TASK 引用 + 结构化 stage 摘要 + artifact 路径；全文按需读取。
+# 旧任务 / 缺结构化 JSON 的目录自动 fallback 到 legacy 全文嵌入（Backward Compat）。
 
-def build_prompt(agent: str, task: str, previous_results: dict[str, str], workspace: Path | None = None) -> str:
-    prior = '\n\n'.join(f'## {name.upper()} RESULT\n{body}' for name, body in previous_results.items())
-    ws = (
+
+def _ws_block(workspace: Path | None) -> str:
+    return (
         f'\n\n# WORKSPACE\n工作目录（绝对路径）：{workspace}\n'
         '所有文件创建、修改、检查都必须在 WORKSPACE 目录内进行；不要在其他位置创建任务产物。\n'
         if workspace else ''
     )
-    return f"{ROLE_INSTRUCTIONS[agent]}\n\n# ORIGINAL TASK\n{task}\n\n# PREVIOUS RESULTS\n{prior or '(none)'}\n{ws}"
+
+
+def _task_ref_block(task: str, task_path, task_hash: str | None) -> str:
+    """TASK REFERENCE：Task ID / Path / Hash + 必须读取全文 + 缺失引用 fail-fast。"""
+    task_id = parse_task_fields(task).get('Task ID') or '(unknown)'
+    lines = [
+        '# TASK REFERENCE',
+        f'- Task ID: {task_id}',
+    ]
+    if task_path:
+        lines.append(f'- Task Path: {task_path}')
+    if task_hash:
+        lines.append(f'- Task Hash: {task_hash}')
+    lines += [
+        '',
+        '你必须首先读取 TASK 文件全文（以它为唯一权威输入）再进行复核/审查。',
+        '如果无法读取 TASK 文件 → 必须报告 FAIL / REQUEST_CHANGE 并明确列出缺失引用，',
+        '不得在缺失 TASK 上下文的情况下静默继续审查。',
+    ]
+    return '\n'.join(lines)
+
+
+def _rel(path: str, workspace) -> str:
+    """展示用相对路径（agent cwd = workspace；绝对路径超出 sandbox 时相对路径仍可达）。"""
+    try:
+        rel = os.path.relpath(path, str(workspace))
+        if not rel.startswith('..'):
+            return rel
+    except (ValueError, OSError):
+        pass
+    return path
+
+
+def _upstream_summary_block(agent: str, output_dir: Path, workspace: Path) -> str:
+    """上游结构化 stage 摘要（来自 <agent>_result.json）；缺失 → 显式标注。"""
+    stage = read_stage_result(output_dir, agent)
+    if stage is None:
+        return (
+            f'## {agent.upper()} STAGE SUMMARY\n'
+            f'（缺失 {output_dir / f"{agent}_result.json"} —— 上游无结构化结果；'
+            f'必须读取其 narrative 全文 {_rel(str(output_dir / f"{agent}_result.md"), workspace)} 复核）'
+        )
+    lines = [
+        f'## {agent.upper()} STAGE SUMMARY（结构化，来自 {_rel(str(output_dir / f"{agent}_result.json"), workspace)}）',
+        f'- status: {stage.get("status")}',
+        f'- verdict: {stage.get("verdict")}',
+        f'- blocking_rework: {stage.get("blocking_rework")}',
+    ]
+    if stage.get('commit'):
+        lines.append(f'- commit: {stage["commit"]}')
+    changed = stage.get('changed_files') or []
+    if changed:
+        lines.append(f'- changed_files ({len(changed)}):')
+        lines.extend(f'  - {c}' for c in changed[:20])
+        if len(changed) > 20:
+            lines.append(f'  - …（共 {len(changed)} 项，完整列表见 result.json）')
+    evidence = stage.get('evidence_paths') or []
+    if evidence:
+        lines.append('- evidence_paths:')
+        lines.extend(f'  - {_rel(str(p), workspace)}' for p in evidence)
+    summary = (stage.get('summary') or '').strip()
+    if summary:
+        lines.append(f'- summary（仅导航，不是验证真相）: {summary[:200]}')
+    return '\n'.join(lines)
+
+
+def _narrative_reference_block(agent: str, output_dir: Path, workspace: Path, previous_results: dict[str, str]) -> tuple[str, bool]:
+    """上游 narrative 引用块。返回 (块文本, 是否已嵌入全文)。
+
+    - 引用文件存在 → 只给路径（lazy-load）
+    - 引用文件缺失 → 显式 fallback 嵌入全文（No-Information-Loss Fallback，Requirement 9），
+      并标注 FALLBACK_EMBEDDED，绝不静默缺上下文
+    """
+    md = output_dir / f'{agent}_result.md'
+    marker = f'## {agent.upper()} NARRATIVE REFERENCE'
+    if md.exists():
+        return (
+            f'{marker}\n'
+            f'- Full narrative: {_rel(str(md), workspace)}（按需读取；不默认注入全文。'
+            f'如无法读取 → 报告 FAIL，不得静默继续）'
+        ), False
+    body = previous_results.get(agent, '(narrative missing)')
+    return (
+        f'{marker}\n'
+        f'- 引用文件缺失: {_rel(str(md), workspace)}\n'
+        f'- FALLBACK_EMBEDDED: 以下为上游完整 narrative 全文（缺失引用 fallback，Requirement 9）：\n'
+        f'<narrative>\n{body}\n</narrative>'
+    ), True
+
+
+def _packet_prompt(
+    agent: str,
+    task: str,
+    previous_results: dict[str, str],
+    workspace: Path | None,
+    output_dir: Path,
+    task_path,
+    task_hash: str | None,
+) -> tuple[str, dict]:
+    """Stage Context Packet 协议 prompt（Requirement 4）。
+
+    WorkBuddy：TASK 引用 + Hermes 结构化摘要 + changed files/commit/evidence 路径 + repo access；
+    Codex：TASK 引用 + Hermes 结构化执行事实 + WorkBuddy 结构化 verdict/findings + diff 路径。
+    上游 narrative 全文只按需读取（引用缺失时显式 fallback 嵌入）。
+    """
+    ws = _ws_block(workspace)
+    ref = _task_ref_block(task, task_path, task_hash)
+    out = Path(output_dir)
+    embedded = 0
+    referenced = 0
+
+    if agent == 'workbuddy':
+        upstream_agents = ['hermes']
+        validation_instruction = (
+            '# INDEPENDENT VALIDATION\n'
+            '你必须独立验证，不得只相信上游 summary（摘要只用于导航，Repository artifacts 才是验证真相）：\n'
+            '1. 读取 TASK 文件全文，核对本轮 Requirements / Acceptance / Scope；\n'
+            '2. 检查仓库实际状态：changed files / commit / evidence paths 是否真实存在且与声明一致；\n'
+            '3. 独立验证 acceptance semantics 与 safety invariants 是否满足；\n'
+            '4. 引用文件缺失或无法读取 → 报告 FAIL 并列出缺失项，不得静默降级验证质量。'
+        )
+    else:  # codex
+        upstream_agents = ['hermes', 'workbuddy']
+        validation_instruction = (
+            '# INDEPENDENT REVIEW\n'
+            '你必须独立审查，不得只相信上游 summary（摘要只用于导航，Repository artifacts 才是验证真相）：\n'
+            '1. 读取 TASK 文件全文，核对本轮 Requirements / Acceptance / Scope；\n'
+            '2. 独立检查代码/架构/逻辑/风险：读取 changed files 与相关 repo/diff 路径；\n'
+            '3. 核查 Hermes 执行事实与 WorkBuddy verdict/findings 的证据链是否闭合；\n'
+            '4. 引用文件缺失或无法读取 → 报告 REQUEST_CHANGE 并列出缺失项，不得静默继续审查。'
+        )
+
+    blocks = [ref]
+    for up in upstream_agents:
+        blocks.append(_upstream_summary_block(up, out, workspace))
+        nblock, embedded_now = _narrative_reference_block(up, out, workspace, previous_results)
+        blocks.append(nblock)
+        embedded += 1 if embedded_now else 0
+        referenced += 0 if embedded_now else 1
+    blocks.append(validation_instruction)
+    blocks.append(ws)
+
+    prompt = f"{ROLE_INSTRUCTIONS[agent]}\n\n" + '\n\n'.join(blocks)
+    metrics = {'embedded_artifact_count': embedded, 'referenced_artifact_count': referenced}
+    return prompt, metrics
+
+
+_SECTION_START_RE = re.compile(r'^[ \t]*(#{1,2}[ \t]+\S|[A-Z][A-Za-z /()\-]{2,40}[:：]|\d+\.\s)')
+_SOURCE_OF_TRUTH_RE = re.compile(r'(?im)^[ \t]*Source of Truth[ \t]*[:：][ \t]*$')
+
+
+def _extract_source_of_truth_paths(task: str) -> list[str]:
+    """从 TASK 的 Source of Truth 节提取路径类引用（用于 Hermes prompt 的引用清单）。"""
+    m = _SOURCE_OF_TRUTH_RE.search(task)
+    if not m:
+        return []
+    paths = []
+    for line in task[m.end():].splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if _SECTION_START_RE.match(s) and not s.startswith(('-', '*')):
+            break
+        if s.startswith(('-', '*')):
+            item = s.lstrip('-* ').strip()
+            if item and ('/' in item or '\\' in item or '.' in item):
+                paths.append(item)
+    return paths
+
+
+def _hermes_prompt(task: str, workspace: Path | None, task_path, task_hash: str | None) -> tuple[str, dict]:
+    """Hermes（Executor）：TASK 全文（= current delta）+ Source of Truth 引用清单。"""
+    sources = _extract_source_of_truth_paths(task)
+    blocks = ['# ORIGINAL TASK', task]
+    if sources:
+        src_lines = ['# SOURCE OF TRUTH（Repository 权威来源；按需读取，不重复全文）']
+        src_lines += [f'- {s}' for s in sources]
+        blocks.append('\n'.join(src_lines))
+    ws = _ws_block(workspace)
+    if ws:
+        blocks.append(ws.strip())
+    prompt = f"{ROLE_INSTRUCTIONS['hermes']}\n\n" + '\n\n'.join(blocks)
+    metrics = {
+        'embedded_artifact_count': 0,
+        'referenced_artifact_count': len(sources),
+    }
+    return prompt, metrics
+
+
+def legacy_build_prompt(agent: str, task: str, previous_results: dict[str, str], workspace: Path | None = None) -> str:
+    """Legacy prompt（Backward Compatibility，Requirement 8）：全文嵌入 TASK + 全部前序结果。
+
+    仅用于：旧目录 / 缺结构化 stage JSON 的任务 / 未提供 output_dir 的调用方。
+    """
+    prior = '\n\n'.join(f'## {name.upper()} RESULT\n{body}' for name, body in previous_results.items())
+    return f"{ROLE_INSTRUCTIONS[agent]}\n\n# ORIGINAL TASK\n{task}\n\n# PREVIOUS RESULTS\n{prior or '(none)'}\n{_ws_block(workspace)}"
+
+
+def _structured_results_available(agent: str, output_dir: Path) -> bool:
+    """下游是否需要 / 是否有结构化上游结果：
+    - workbuddy 依赖 hermes_result.json
+    - codex 依赖 hermes_result.json + workbuddy_result.json
+    缺失 → legacy fallback（旧任务 / 中断目录可继续运行）。
+    """
+    out = Path(output_dir)
+    if agent == 'workbuddy':
+        return (out / 'hermes_result.json').exists()
+    if agent == 'codex':
+        return (out / 'hermes_result.json').exists() and (out / 'workbuddy_result.json').exists()
+    return False
+
+
+def build_prompt_measured(
+    agent: str,
+    task: str,
+    previous_results: dict[str, str],
+    workspace: Path | None = None,
+    output_dir: Path | None = None,
+    task_path=None,
+    task_hash: str | None = None,
+) -> tuple[str, dict]:
+    """构建 stage prompt；返回 (prompt, metrics)。
+
+    metrics = {embedded_artifact_count, referenced_artifact_count}（Requirement 10）。
+    """
+    if agent == 'hermes':
+        return _hermes_prompt(task, workspace, task_path, task_hash)
+    if output_dir is not None and _structured_results_available(agent, Path(output_dir)):
+        return _packet_prompt(agent, task, previous_results, workspace, Path(output_dir), task_path, task_hash)
+    prompt = legacy_build_prompt(agent, task, previous_results, workspace)
+    metrics = {
+        'embedded_artifact_count': len(previous_results),
+        'referenced_artifact_count': 0,
+    }
+    return prompt, metrics
+
+
+def build_prompt(agent: str, task: str, previous_results: dict[str, str], workspace: Path | None = None,
+                 output_dir: Path | None = None, task_path=None, task_hash: str | None = None) -> str:
+    """构建 stage prompt（Stage Context Packet 协议；旧调用保持兼容）。"""
+    prompt, _ = build_prompt_measured(agent, task, previous_results, workspace, output_dir, task_path, task_hash)
+    return prompt
 
 
 def _registry_path(key: int, subkey: str, name: str = 'Path') -> str:

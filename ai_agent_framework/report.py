@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
+
+from .task_validation import parse_task_fields
 
 
 def _summarize(text: str, limit: int = 6000) -> str:
@@ -88,9 +91,17 @@ def build_report(
     status: str,
     integrity_notes: list[str] | None = None,
     terminal: dict | None = None,
+    *,
+    task_path=None,
+    task_hash: str | None = None,
+    output_dir=None,
 ) -> str:
-    """生成 REPORT.md 文本。
+    """生成 REPORT.md 文本（REPORT De-duplication，Requirement 7）。
 
+    - 提供 ``task_path`` / ``task_hash``（Runner / Reconcile 新协议路径）→
+      ``## Original Task`` 不再复制全文，改为 ``## Task Reference``（Task ID / Path / Hash）；
+      未提供（legacy 外部调用方）→ 保留旧 ``## Original Task`` 全文嵌入（Backward Compat）。
+    - Agent Results：摘要 + 完整结果 artifact 路径（output_dir 提供时）；不复制上游 narrative 全文。
     - ``terminal``：canonical terminal metadata（TerminalResult.to_dict() 或等价 dict），
       提供时附加 ``## Terminal Generation``（派生产物 provenance，§6B.4）
     - status == CANCELLED：追加 ``## Cancellation`` 中文说明（§6.6 / req 17）；
@@ -98,8 +109,12 @@ def build_report(
     """
     agent_sections = []
     for name in route:
-        body = _summarize(results.get(name, '(not run)'))
-        agent_sections.append(f'### {name}\n{body}')
+        body = _summarize(results.get(name, '(not run)'), 1200)
+        section = f'### {name}\n{body}'
+        if output_dir is not None:
+            md = Path(output_dir) / f'{name}_result.md'
+            section += f'\n- Full result: {md}'
+        agent_sections.append(section)
     results_text = '\n\n'.join(agent_sections)
 
     if status == 'CANCELLED':
@@ -117,6 +132,24 @@ def build_report(
     if terminal and terminal.get('terminal_generation') is not None:
         extra += f'\n\n## Terminal Generation\n{terminal["terminal_generation"]}'
 
+    if task_path or task_hash:
+        # Requirement 7：REPORT 不再全文复制 Original Task，改为可追溯引用
+        task_id = parse_task_fields(task).get('Task ID') or '(unknown)'
+        ref_lines = [
+            '## Task Reference',
+            f'- Task ID: {task_id}',
+        ]
+        if task_path:
+            ref_lines.append(f'- Task Path: {task_path}')
+        if task_hash:
+            ref_lines.append(f'- Task Hash: {task_hash}')
+        if output_dir is not None:
+            ref_lines.append(f'- Artifacts: {output_dir}')
+        task_section = '\n'.join(ref_lines)
+    else:
+        # Legacy 调用方（未提供引用信息）：保留全文嵌入，确保自包含
+        task_section = f'## Original Task\n{_summarize(task, 8000)}'
+
     return f'''# REPORT
 
 ## Current Status
@@ -125,8 +158,7 @@ def build_report(
 ## Route
 {' -> '.join(route)}
 
-## Original Task
-{_summarize(task, 8000)}
+{task_section}
 
 ## Agent Results
 {results_text}

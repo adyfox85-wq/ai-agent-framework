@@ -199,13 +199,19 @@ Demo Task
 │   ├── route.json         # 执行链路由
 │   ├── run.json           # 本轮运行结果
 │   ├── boundary.json      # 边界检查结果
-│   ├── REPORT.md          # 正式结果
-│   ├── hermes_result.md   # Agent 结果
-│   ├── workbuddy_result.md
-│   └── codex_result.md
+│   ├── context_manifest.json  # Stage Context Packet 引用清单（TASK/stage artifacts 的 path+hash）
+│   ├── REPORT.md          # 正式结果（Task Reference + 摘要，不复制全文）
+│   ├── hermes_result.md   # Agent 完整 narrative（追溯）
+│   ├── hermes_result.json # Agent 结构化短结果（verdict/commit/changed_files/evidence_paths）
+│   ├── workbuddy_result.md / workbuddy_result.json
+│   └── codex_result.md / codex_result.json
 ├── archive/               # 显式归档的任务包
 └── sessions/              # Session rollover 材料
 ```
+
+> 新协议（Anti-Bloat Policy：`docs/internal/AAF_TASK_EXECUTION_POLICY.md`）：
+> 下游 Agent prompt 只接收 TASK 引用 + 结构化摘要 + artifact 路径，不再默认
+> 注入上游 narrative 全文；REPORT 不再复制整份 Original Task。
 
 ## Lifecycle
 

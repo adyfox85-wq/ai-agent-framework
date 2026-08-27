@@ -7,9 +7,20 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from .adapters import build_prompt, run_agent
+from .adapters import build_prompt_measured, run_agent
 from . import cancel as cancel_mod
 from . import control as control_mod
+from .context_packet import (
+    build_stage_result,
+    file_bytes,
+    git_changed_files,
+    git_head,
+    measure_prompt,
+    sha256_file,
+    sha256_text,
+    write_manifest,
+    write_stage_result,
+)
 from . import proc_identity
 from . import project_boundary
 from . import task_lifecycle
@@ -182,6 +193,7 @@ def _check_cancel(output_dir: Path, task_id: str, task_file: Path, workspace: Pa
 def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = False, resume_from: Path | None = None,
         launch_id: str | None = None) -> Path:
     task = task_file.read_text(encoding='utf-8')
+    task_hash = sha256_text(task)  # Stage Packet 引用完整性（Requirement 6）
 
     # 正式 Task Validation（权威执行边界）：失败即中止，不进 Router / 不启动 Agent / 不进 Lifecycle
     result = validate_task_text(task)
@@ -189,6 +201,7 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
         raise TaskValidationError(result)
 
     task_id = parse_task_fields(task)["Task ID"]
+    head_at_start = git_head(workspace)  # manifest HEAD（非 git 仓库 → None，不虚构）
 
     # --- Runner ownership handshake（TASK-005-B req 5/8；§6A.6-4） ---
     # control.json 缺失 → 跳过（direct/legacy 无 ownership 契约）；存在但不匹配 →
@@ -273,6 +286,7 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
         )
 
         dry = bool(dry_run)
+        prompt_metrics: dict[str, dict] = {}
         if dry:
             status = 'DRY_RUN'  # 保留现有 dry-run 语义（route only，不执行 Agent）
             final_status = 'CREATED'  # 未正式执行 Agent 链 → 终态保持 CREATED，不伪装 SUCCESS
@@ -290,14 +304,37 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     return output_dir / 'REPORT.md'
                 stage_name = agent.upper()
                 _ls('RUNNING', stage=stage_name, agent=agent, phase_state='RUNNING')
-                prompt = build_prompt(agent, task, results, workspace)
+                # Stage Context Packet 协议（Requirement 4）：下游 prompt 只引用结构化摘要 +
+                # artifact 路径；旧目录 / 缺 JSON 自动 legacy fallback（Requirement 8）
+                head_before = git_head(workspace)
+                prompt, prompt_meta = build_prompt_measured(
+                    agent, task, results, workspace,
+                    output_dir=output_dir, task_path=task_file, task_hash=task_hash,
+                )
                 (output_dir / f'{agent}_prompt.md').write_text(prompt, encoding='utf-8')
+                # Context size 可观测性（Requirement 10）：每 stage 记录 prompt chars/bytes +
+                # embedded/referenced artifact counts
+                prompt_metrics[agent] = {
+                    **measure_prompt(prompt, prompt_meta.get('embedded_artifact_count', 0),
+                                     prompt_meta.get('referenced_artifact_count', 0)),
+                    'path': str(output_dir / f'{agent}_prompt.md'),
+                }
                 try:
                     result_text = run_agent(agent, prompt, workspace)
                 except Exception as exc:
                     result_text = f'FRAMEWORK_ERROR\n{type(exc).__name__}: {exc}'
                 results[agent] = result_text
                 (output_dir / f'{agent}_result.md').write_text(result_text, encoding='utf-8')
+                # Structured stage result（Requirement 5）：机器可读短结果，narrative 保留追溯
+                stage = build_stage_result(
+                    agent=agent,
+                    result_text=result_text,
+                    output_dir=output_dir,
+                    head_before=head_before,
+                    head_after=git_head(workspace),
+                    changed_files=git_changed_files(workspace),
+                )
+                write_stage_result(output_dir, stage)
                 valid = _result_is_valid(result_text)
                 _ls('RUNNING', stage=stage_name, agent=agent, phase_state=('SUCCESS' if valid else 'FAILED'))
                 if not valid:
@@ -317,7 +354,31 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
             if 'workbuddy' in route.agents and not _result_is_valid(results.get('workbuddy', '')):
                 integrity_notes.append('Required validator WorkBuddy did not run or produced no valid result')
 
-        report = build_report(task, route.agents, results, status, integrity_notes)
+        # Context Manifest / Integrity（Requirement 6）：stage 产物 path+hash 可追溯引用；
+        # 引用模式不因文件后来变化而失去可追溯性（check_references 可验证）
+        manifest_stages = {}
+        for agent in route.agents:
+            md = output_dir / f'{agent}_result.md'
+            js = output_dir / f'{agent}_result.json'
+            manifest_stages[agent] = {
+                'result_md': {'path': str(md), 'hash': sha256_file(md), 'bytes': file_bytes(md)},
+                'result_json': {'path': str(js), 'hash': sha256_file(js), 'bytes': file_bytes(js)},
+            }
+        write_manifest(
+            output_dir,
+            task_path=task_file,
+            task_hash=task_hash,
+            task_bytes=len(task.encode('utf-8')),
+            workspace=str(workspace),
+            head=head_at_start,
+            stages=manifest_stages,
+            prompts=prompt_metrics,
+        )
+
+        report = build_report(
+            task, route.agents, results, status, integrity_notes,
+            task_path=task_file, task_hash=task_hash, output_dir=output_dir,
+        )
         report_path = output_dir / 'REPORT.md'
 
         # REPORT 阶段完成 + 终态（dry-run: CREATED + reason=DRY_RUN；REPORT 生成后回填 report_path）
@@ -357,7 +418,9 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 )
                 # REPORT 跟随 canonical（附加 Terminal Generation provenance，§6B.4）
                 report = build_report(
-                    task, route.agents, results, status, integrity_notes, terminal=canonical.to_dict()
+                    task, route.agents, results, status, integrity_notes,
+                    terminal=canonical.to_dict(),
+                    task_path=task_file, task_hash=task_hash, output_dir=output_dir,
                 )
                 report_path.write_text(report, encoding='utf-8')
         else:

@@ -3,6 +3,7 @@
 > 文档类型: 设计规格（Design Specification）
 > 任务: AAF-DESIGN-001 — Desktop Shell and Runtime Control Minimal Design
 > 修订: AAF-DESIGN-001-FIX-001（2026-08-27）— 关闭 Codex 两个 blocking findings（Force Cancel 终态双写竞态、PID/token 防误杀协议未闭合）。权威修订见 §6A；§6/§8.3/§13.3/§14/§15/§16/§19 已同步修正。仅修订设计文档，不实现。
+> 修订: AAF-DESIGN-001-FIX-002（2026-08-27）— 关闭 Codex 三个 blocking findings（①terminal commit 缺真正跨进程互斥；②terminal commit 后中断缺派生产物 reconciliation；③Launcher restart 缺独立可信的 ownership 恢复依据）。权威修订见 §6B；§6A/§15/§16/§19 已同步修正。仅修订设计文档，不实现。
 > 日期: 2026-08-27
 > 状态: **DESIGN COMPLETED / IMPLEMENTATION NOT STARTED**
 > 范围: 本任务只产出可执行的设计规格与实施拆分。**不实现** Tray / GUI / progress bar / cancel / autostart / project switching / packaging / heartbeat / 新 runtime schema。
@@ -36,6 +37,7 @@
 | 19-22. 只设计 / 不启动 v0.4 / backlog 不标 SOLVED / PROJECT_STATE | §18 |
 | 23-24. WorkBuddy / Codex 审查指引 | §19 |
 | FIX-001: Safe Cancel / process ownership / 终态一致性（两个 blocking findings 关闭） | §6A（权威修订） |
+| FIX-002: 原子终态提交（state.lock）/ artifact reconciliation / 持久 launch registry（三个 blocking findings 关闭） | §6B（权威修订） |
 
 ---
 
@@ -493,6 +495,7 @@ Codex（AAF-DESIGN-001 审查）指出两个阻断项，本节逐一关闭：
   - 终止它**拥有且已验证**的 runner process tree（§6A.8 校验全部通过后 taskkill /T /F）
   - 记录 termination evidence（control.json + 本地记录；exit code 是 evidence，不是判定）
 - **不存在第三条写终态路径。** wait thread 的 result（FINISHED / FAILED / REPORT_NOT_FOUND / FAILED_TO_START）是 **Bridge 视角的收尾分类**，不是 Task 终态裁决（现状即如此，§1.1 launcher 模块头注释；修订后显式化）。
+- **互斥补充（FIX-002）**：上述所有写终态入口共享同一把 per-task exclusive `state.lock`（§6B.1）。锁不改变 authority 归属（谁有写权仍由本节决定），只保证跨进程 read/check/write 串行（§6B.2）。
 
 ### 6A.2 终态优先规则（Terminal-State Precedence）
 
@@ -511,7 +514,7 @@ if terminal_state_exists(task.json):            # SUCCESS | WAITING | FAILED | C
 | Core 已接受 cancel、进入 cancelling 状态，Runner 尚未提交终态 | **Cancel path 胜出**（终态 = CANCELLED） |
 | 只有 Launcher 观察到非零 exit code（process-exit observation） | **只是 evidence**：不能单独把 Cancel 改写为 FAILED（§6A.5） |
 
-实现约束：所有写终态入口（Runner 收敛、recovery finalizer）写前必须**原子读取现有 task.json**；已存在终态 → 放弃写入并返回现有终态。这是双写竞态的闭合机制。
+实现约束：所有写终态入口（Runner 收敛、recovery finalizer）写前必须在 **per-task `state.lock` 内**原子读取现有 task.json（read/check/write 同锁，§6B.2）；已存在终态 → 放弃写入并返回现有终态。这是双写竞态的闭合机制——互斥由锁提供，`os.replace` 只承担单文件完整替换，不再被当作跨进程 CAS（FIX-002，§6B.1/§6B.23）。
 
 ### 6A.3 最小中间状态（设计级，仅提案）
 
@@ -526,7 +529,7 @@ if terminal_state_exists(task.json):            # SUCCESS | WAITING | FAILED | C
 
 ```text
 A. Core/Lifecycle 确定 terminal outcome（SUCCESS | WAITING | FAILED | CANCELLED）
-B. 原子更新 task.json（唯一权威终态载体；tmp + os.replace，复用现有原子写模式）
+B. 原子更新 task.json（唯一权威终态载体；**必须在 state.lock 内完成 read/check/write**，§6B.2；tmp + os.replace 仅承担完整文件替换，不再被当作跨进程 CAS，§6B.23）
 C. 写 run.json（status 跟随 B 的终态）
 D. 生成 REPORT.md（Current Status 行与终态一致）
 E. Launcher/Bridge 读取 Core terminal result（task.json）→ 更新 last_run.json
@@ -554,6 +557,7 @@ E. Launcher/Bridge 读取 Core terminal result（task.json）→ 更新 last_run
 
 - **不得把"force cancel 导致的非零退出码"直接认定为 FAILED**：exit code 只作为 evidence 记录（RunInfo.exit_code），不参与状态判定。
 - 该规则同时消灭 Finding 1 的竞态：wait thread 不再有独立裁决权，只镜像 Core 结果。
+- **FIX-002 补充**：canonical terminal 存在但派生产物（run.json / REPORT.md）不完整 → wait thread 触发 Core reconciliation（§6B.7-C / §6B.22），之后 last_run 跟随 canonical result。
 
 ### 6A.6 Process Ownership 协议（launch_id）
 
@@ -570,7 +574,7 @@ E. Launcher/Bridge 读取 Core terminal result（task.json）→ 更新 last_run
    runner_pid / runner_creation_time / launch_id / task_id / workspace
    （写回时校验 launch_id / task_id / workspace 与预写值一致；不一致 → 视为 ownership 异常，
     记录并拒绝接管）
-5. Launcher 保存自身 ownership record（control.json 内 launcher_pid + 内存句柄）
+5. Launcher 保存自身 ownership record（**持久化到 Bridge launch registry**：`~/.aaf-bridge/launches/<launch_id>.json`，§6B.11；control.json 内 launcher_pid + 内存句柄为辅助）
 ```
 
 - 同一 task 的**新一次 launch 必须生成新 launch_id**；旧 control 被 supersede（`superseded_by` 记录新 launch_id）→ 旧 control 立即 stale（§6A.10）。
@@ -601,7 +605,8 @@ E. Launcher/Bridge 读取 Core terminal result（task.json）→ 更新 last_run
 - Launcher：创建（launch 前预写）+ 更新 `cancel_requested` / `force_terminate_requested` / `superseded_by`。
 - Runner：启动后写回 `runner_pid` / `runner_creation_time`（并校验绑定字段）。
 - 全部原子写（tmp + os.replace），与 task.json 同一模式。
-- `task.json` 内 `pid` 字段（§13.3 提案）与 control.json 互为冗余；**ownership 判定以 control.json 为准**。
+- `task.json` 内 `pid` 字段（§13.3 提案）与 control.json 互为冗余；**运行期 ownership 判定以 control.json 为准**。
+- **FIX-002**：control.json 是 task-owned 证据；**独立第二记录 = Bridge launch registry**（`~/.aaf-bridge/launches/<launch_id>.json`，§6B.11）。Launcher restart 恢复必须 registry + control + live process 三方验证（§6B.13），不是 control.json 自我比较（§6B.14）。
 
 ### 6A.8 强制终止前的 Ownership Verification
 
@@ -622,19 +627,29 @@ Force terminate（taskkill /T /F）执行前，**必须全部通过**以下校�
 
 ### 6A.9 Launcher / Tray Restart 场景
 
-Launcher / Tray 重启后，**可以重新读取 control.json**，但**只有在全部满足**时才重新取得该 runner 的管理权：
+> **FIX-002 修正（权威版本见 §6B.13）**：重启后**不得仅信任 control.json**——它是 task-owned 单记录，无法独立证明 launch 归属。必须同时读取 Bridge launch registry 与 task control artifact，并与 live Windows process identity 三方验证：
+
+```text
+A. ~/.aaf-bridge/launches/<launch_id>.json   （Bridge launch registry，§6B.11）
+B. .aaf/<Task-ID>/control.json               （task control artifact，§6A.7）
+C. live Windows process identity             （PID + creation time + command line）
+```
+
+**只有在全部满足**时才重新取得该 runner 的管理权（十项校验见 §6B.13）：
 
 ```text
 - PID 仍存在（进程存活）
 - creation time 一致（未被 PID recycle 顶替）
-- launch_id 一致
-- command line 一致
+- launch_id 一致（registry 与 control 交叉一致）
+- command line 一致（与 registry.expected_command_line 相符）
 - task 未有 terminal outcome（task.json 无终态）
+- registry 未 EXITED / SUPERSEDED；control 未 stale / superseded
 ```
 
-- 全部满足 → 恢复管理权（可继续观察、可响应 cancel / force cancel）。
-- 任一不满足 → 状态显示 **ownership uncertain / stale control**，并**拒绝 force kill**；UI 提示用户（如：存在孤儿 runner，建议人工处理或走恢复流程）。
+- 全部满足 → **ownership = REAUTHENTICATED**（可继续观察、可响应 cancel / force cancel）。
+- 任一不满足 → **ownership = UNCERTAIN**，并**拒绝 force kill**；UI 提示用户（如：存在孤儿 runner，建议人工处理或走恢复流程）。
 - 重启后**不得自动 force kill**；**不得自动改写 task.json**（终态裁决权仍在 Core，§6A.1）。
+- **launcher_instance_id 不得作为恢复前提**（§6B.16）：重启后 instance 身份必然不同，恢复只依赖持久记录 + 实况进程，不依赖旧进程内存身份。
 
 ### 6A.10 Lease / Stale 规则
 
@@ -681,16 +696,19 @@ Force Cancel 动作：Launcher 终止它拥有且已验证的 runner process tre
 ```text
 finalize_cancelled_task(output_dir, task_id, workspace, launch_id, evidence)
     → 属于 Lifecycle Core（不是 UI/Launcher 逻辑）
-    → 原子、幂等：
-      1. 原子确认当前无 terminal state（读 task.json；已存在终态 → 幂等返回现有终态，不改写）
-      2. 写 task.json status=CANCELLED（原子；reason=FORCE_CANCELLED + evidence）
-      3. 写 run.json（status=CANCELLED）
-      4. 写 REPORT.md（Current Status=CANCELLED；注明强制终止时间与证据）
-      5. 返回 canonical result（供 Launcher 更新 last_run.json）
+    → 原子、幂等（FIX-002 强化，权威版本见 §6B.21）：
+      1. acquire per-task state.lock（§6B.1）
+      2. 锁内 canonical reload（重读 task.json）
+      3. terminal arbitration：已有终态 → 不改写，幂等返回现有 canonical result
+      4. 无终态 → 确定 outcome=CANCELLED，原子提交 task.json
+         （status=CANCELLED + terminal_generation；reason=FORCE_CANCELLED + evidence）
+      5. reconcile run.json（status=CANCELLED，跟随 canonical generation）
+      6. reconcile REPORT.md（Current Status=CANCELLED；注明强制终止时间与证据）
+      7. 返回 canonical result（供 Launcher 更新 last_run.json）
 ```
 
 - 设计实现形态：独立 CLI 入口（如 `python -m ai_agent_framework.finalize_cancelled --output <dir> …`）或库调用；**推荐 CLI 入口**——Launcher 通过子进程调用，避免 import Core 内部执行逻辑（§14.4 防侵入规则）。
-- 幂等：重复调用（如 Launcher 重启后再调）返回相同结果，不重复改写。
+- 幂等：重复调用（如 Launcher 重启后再调）返回相同结果，不重复改写；**已存在终态也必须走 reconciliation**（补齐 run.json / REPORT.md，§6B.21），不再"发现终态直接 return"。
 - 等价方案可接受，但必须保持"**Core 是唯一终态裁决者**"（§6A.1）。
 
 ### 6A.13 Race：Agent 刚完成时用户点 Cancel
@@ -731,7 +749,8 @@ finalize_cancelled_task(output_dir, task_id, workspace, launch_id, evidence)
 - 跨进程取消（cancel.request 契约 + 检查点收敛）；
 - process ownership（launch_id / creation time / command line 校验）；
 - recovery finalization（finalize_cancelled_task 独立入口）；
-- multi-artifact 一致性（task.json / run.json / REPORT / last_run 提交顺序与幂等规则）。
+- multi-artifact 一致性（task.json / run.json / REPORT / last_run 提交顺序与幂等规则）；
+- **FIX-002 追加**：cross-process terminal lock（state.lock，§6B.1–§6B.3）、persistent launch registry + 三方验证（§6B.11–§6B.14）、reconciliation protocol（§6B.6–§6B.8）。**评级保持 MEDIUM**（§6B.24）。
 
 ### 6A.17 Heartbeat 观测补充
 
@@ -771,6 +790,474 @@ finalize_cancelled_task(output_dir, task_id, workspace, launch_id, evidence)
 | 19. Core Intrusion Risk = MEDIUM | §6A.16 |
 | 20. heartbeat 非阻塞机制 | §6A.17 |
 | 21. 无 runtime 实现 | §6A.18 |
+
+---
+
+## 6B. 原子终态提交与进程所有权恢复协议（AAF-DESIGN-001-FIX-002 修订）
+
+> **本节是 §6A 之上的第二层权威修订（2026-08-27，AAF-DESIGN-001-FIX-002）。** 凡与本节冲突的 §6/§6A 表述，一律以本节为准；§6A 中对应表述已就地修正并标注指引。本节只定义设计级协议——**当前代码不实现**（§6B.25）。FIX-001 的验收基线（§6A.19）保持不变；本节在其上追加第三批关闭项。
+
+### 6B.0 修订背景：三个 blocking findings
+
+Codex（FIX-001 复审）指出三个阻断项，本节逐一关闭：
+
+| # | Blocking Finding | 关闭位置 |
+|---|---|---|
+| A | **terminal commit 缺少真正跨进程互斥**：`read task.json → 判断无 terminal state → os.replace` 不是跨进程 compare-and-set；Runner 与 recovery finalizer 仍可能同时读到 RUNNING，随后分别写 SUCCESS 与 CANCELLED | §6B.1–§6B.5（state.lock + 锁内临界区 + generation） |
+| B | **terminal commit 后中断缺少派生产物 reconciliation**：Core 在 task.json terminal commit 后崩溃时，没有规定如何基于已提交的 terminal truth 幂等补齐缺失/冲突的 run.json / REPORT.md | §6B.6–§6B.10（reconciliation protocol） |
+| C | **Launcher restart 缺少独立可信的 ownership 恢复依据**：原内存 ownership record 丢失后只剩 task-owned control.json，launch_id 没有独立的第二可信记录可交叉验证 | §6B.11–§6B.16（Bridge launch registry + 三方验证） |
+
+### 6B.1 跨进程互斥协议：Core-owned per-task state.lock
+
+**正式选定：Core-owned per-task OS-level exclusive state lock。**
+
+路径：
+
+```text
+.aaf/<Task-ID>/state.lock
+```
+
+（与 task.json 同目录；每个 task 一把独立锁。）
+
+- **所有可能写 terminal state 的 Core 路径都必须先获取同一把 per-task exclusive lock**：
+  1. normal Runner finalization（正常收敛）
+  2. soft-cancel finalization（检查点取消收敛）
+  3. recovery cancel finalization（`finalize_cancelled_task`）
+  4. crash recovery finalization（§6B.9 场景）
+- **Launcher / Desktop UI 不取得该锁来写 Task terminal state**——它们没有终态写权（§6A.1）；锁只被 Core 路径使用。
+- 锁与 §6A.1 的 authority 模型正交：authority 决定"谁能写"，锁决定"同一时刻只有一个写者在做 read/check/write"。
+
+### 6B.2 Lock Critical Section（锁内临界区）
+
+terminal finalizer 必须按以下顺序在**同一把锁内**完成：
+
+```text
+A. acquire exclusive state.lock（阻塞/短超时；失败行为见 §6B.19）
+B. reload canonical task.json from disk（锁内重读，禁止使用锁外缓存的旧值）
+C. inspect current lifecycle status
+D. if terminal already exists:
+     返回现有 canonical terminal result（幂等；不写任何东西）
+E. otherwise: 确定 allowed terminal outcome（SUCCESS | WAITING | FAILED | CANCELLED）
+F. atomically commit task.json terminal state（tmp + os.replace）
+G. persist terminal generation / revision（与 F 同一次原子提交，§6B.4）
+H. release state.lock 仅当 canonical terminal commit 已 durable（os.replace 返回后）
+```
+
+**关键原则：read/check/write 必须全部发生在同一把跨进程锁内。**
+
+不得再用：
+
+```text
+read
+→ unlock / no lock
+→ os.replace
+```
+
+冒充 CAS。`os.replace` 只承担"完整文件替换"的原子性（单个文件不会半写坏），**不承担**"多进程 read-modify-write 串行化"——后者由 state.lock 提供（§6B.23 修正旧表述）。
+
+### 6B.3 Windows 第一版锁实现方向（设计指定，不实现）
+
+Desktop Shell 第一版为 Windows-local，**优先使用 Python 标准库可实现的 Windows OS file locking**：
+
+- **指定：`msvcrt.locking` exclusive file lock 封装**（`LK_NBLCK` 非阻塞尝试 + 重试/短超时，或 `LK_LOCK` 阻塞式），或等价 Windows OS-level exclusive lock（如 `CreateFile` + `LockFileEx` 经 ctypes 实现）。
+- **封装位置：Lifecycle/Core utility**（如 `ai_agent_framework/lock_utils.py`）——**UI / Launcher 不复制锁逻辑**（§14.4 防侵入规则同样适用于锁）。
+- 锁文件语义：`state.lock` 是锁的载体文件，锁本身是 OS 级文件锁；**文件存在 ≠ 锁被占用**（§6B.20）。
+- 本任务**不实现该锁**；实现归口 Phase E（§6B.25）。
+
+### 6B.4 terminal_generation（终态代次）
+
+在 task.json schema 中加入 **`terminal_generation`**（monotonically increasing revision，整数）：
+
+- **生成规则**：terminal commit 时写入 `(prev_generation or 0) + 1`；非终态更新不递增；只有 terminal commit 递增。
+- **用途**：
+  - diagnostics（诊断哪一次 commit 是最终裁决）
+  - reconciliation（派生产物应跟随哪一代 terminal commit）
+  - stale writer detection（旧代次写者不得覆盖新代次）
+  - derived artifact provenance（run.json / REPORT.md 记录其跟随的 generation）
+- **边界**：generation **不是代替 lock 的 CAS**。第一版以 exclusive lock 为主互斥手段；generation 用于识别"派生产物是否跟随同一 terminal commit"（§6B.8/§6B.9）。
+
+### 6B.5 Canonical Terminal Record（canonical 终态记录）
+
+task.json 的 terminal commit 至少包含：
+
+```jsonc
+{
+  "status": "SUCCESS",                    // SUCCESS | WAITING | FAILED | CANCELLED
+  "terminal_generation": 12,              // 单调递增（§6B.4）
+  "terminal_at": "2026-08-27T10:05:00",
+  "terminal_reason": "NORMAL_COMPLETION", // 或 CANCEL_REQUESTED | FORCE_CANCELLED | FRAMEWORK_ERROR | ...
+  "launch_id": "<uuid4-hex>",
+  "task_id": "AAF-XXX",
+  "workspace": "D:\\...",
+  // 如适用：
+  "cancel_mode": "soft" | "force",        // 仅取消终态
+  "exit_evidence": { "exit_code": 1, "observed_at": "..." }  // 仅 evidence，不参与判定
+}
+```
+
+- **task.json 的 terminal record 是唯一 canonical terminal truth。**
+- run.json / REPORT.md / last_run.json / control.json 都不是 canonical terminal truth（§6B.10）。
+
+### 6B.6 Core-owned Reconciliation Protocol
+
+正式定义：
+
+```text
+reconcile_terminal_artifacts(task_id, workspace, output_dir, launch_id)
+```
+
+**归属于 Lifecycle Core**（与 `finalize_cancelled_task` 同属 Core，不是 UI/Launcher 逻辑）。
+
+职责：
+
+1. 读取 canonical task.json terminal state（若无终态 → 返回设计错误"无 canonical terminal，无法 reconciliation"，**不臆造终态**）
+2. 幂等检查并补齐派生产物：`run.json`、`REPORT.md`
+3. **返回 canonical result 给 Launcher**（供 last_run.json 更新）
+
+硬约束：
+
+- **不得改变已经提交的 terminal status / generation**（canonical 不可变；§6B.8 关键原则）。
+- 幂等：重复调用返回相同结果，不重复改写。
+- Launcher **不自行修文件**；Launcher 只能调用 Core reconciliation entry point，或展示"需要恢复 / reconciliation failed"（§6B.7-D）。
+
+### 6B.7 Reconciliation 触发时机
+
+至少四个：
+
+```text
+A. normal finalization terminal commit 后（§6A.4 顺序内：task.json 提交后、返回前）
+B. recovery finalizer 启动时（finalize_cancelled_task 内，§6B.21）
+C. Launcher wait thread 发现 runner 已退出但派生产物不完整时（§6B.22）
+D. Bridge / Desktop Shell 打开已终止任务但检测到 artifact inconsistency 时
+   （如 run.json 缺失、run.json generation 落后于 canonical）
+```
+
+- Launcher 在 C/D 场景**不修文件**：调用 Core reconciliation entry point（CLI 或库调用，与 §6A.12 同一形态），或展示"需要恢复 / reconciliation failed"。
+
+### 6B.8 Reconciliation 行为（generation 对齐）
+
+示例：canonical = task.json `CANCELLED` generation 7。
+
+| 派生产物状态 | 行为 |
+|---|---|
+| run.json missing | 根据 canonical terminal record 重建 generation 7 的 run.json（status=CANCELLED + terminal_generation=7） |
+| REPORT.md missing | 根据 canonical terminal record + 已有 agent artifacts 生成取消 REPORT（Current Status=CANCELLED，注明取消原因/时间） |
+| run.json generation 6 | 视为 stale derived artifact → 重建为 generation 7 |
+| run.json generation 7 但 status 与 canonical 冲突 | 视为损坏 → 按 canonical 重建 generation 7 |
+| REPORT 指向旧 terminal result | 重建或明确刷新为 generation 7（更新 Current Status 行） |
+| 派生产物完整且 generation == canonical generation | 无操作（幂等完成） |
+
+**关键原则：derived artifacts 可以被修复；canonical terminal state 不被改变。**
+
+### 6B.9 Partial Commit Crash 场景（完整例子）
+
+```text
+Core acquires state.lock
+→ task.json SUCCESS generation 12 committed（F 完成，durable）
+→ process crashes before run.json（G 未写 / H 未释放锁——OS 自动释放，§6B.20）
+```
+
+恢复后：
+
+```text
+recovery / reconciliation 读取 task.json
+→ 看到 SUCCESS generation 12（canonical terminal truth）
+→ 不得改成 CANCELLED / FAILED（terminal state 不可变，§6B.6）
+→ 补 run.json（generation 12，status=SUCCESS）
+→ 补 REPORT（Current Status=SUCCESS）
+→ Launcher 最终写 last_run 跟随 SUCCESS
+```
+
+任何后续 late event（cancel 请求、非零 exit evidence、Launcher 观察）都**不能改写**已提交的 SUCCESS（§6A.2 终态优先在锁内强制执行，§6B.2-D）。
+
+### 6B.10 last_run.json 仍不是 canonical truth
+
+- 属 **Bridge convenience state**（`~/.aaf-bridge/last_run.json`）。
+- 必须根据 Core canonical result 更新（§6A.4-E / §6A.5 / §6B.22）。
+- **可以重建**（Launcher 可随时从 task.json canonical 重建）。
+- 冲突时**永远服从 task.json terminal record**。
+- **不参与 terminal arbitration**（不参与 SUCCESS / CANCELLED / FAILED 的裁决）。
+
+### 6B.11 Bridge Persistent Launch Registry（第二份独立 ownership 记录）
+
+正式选定第二份独立记录：**Bridge-owned launch registry**。
+
+路径：
+
+```text
+~/.aaf-bridge/launches/<launch_id>.json
+# 即 C:\Users\<user>\.aaf-bridge\launches\<launch_id>.json
+```
+
+（`~/.aaf-bridge/` 是 Bridge 私有 state root——与 §1.1 的 config.json / last_run.json 同根。）
+
+它与 `.aaf/<Task-ID>/control.json` 是**两份不同 ownership evidence**（§6B.14）。
+
+Schema（**只做 proposal**）：
+
+```jsonc
+{
+  "launch_id": "<uuid4-hex>",
+  "task_id": "AAF-XXX",
+  "workspace": "D:\\...",
+  "expected_runner_entry": "run.py",                        // 预期 runner 入口（规范化）
+  "expected_command_line": ["python", "run.py", "<task>",
+                            "--workspace", "<ws>", "--output", "<dir>"],  // 预期 argv
+  "launcher_instance_id": "<bridge-instance-uuid>",          // §6B.16
+  "created_at": "2026-08-27T10:00:00",
+  "runner_pid": 12345,                                       // 启动后回填
+  "runner_creation_time": "2026-08-27T10:00:00.000",         // 启动后回填（Windows 进程创建时间）
+  "state": "PREPARED"                                        // PREPARED | RUNNING | EXITED | SUPERSEDED
+}
+```
+
+`state` 状态机（proposal）：
+
+```text
+PREPARED → RUNNING → EXITED
+                 ↘ SUPERSEDED（新 launch 覆盖旧 launch 时；旧 registry 标记 SUPERSEDED + 指向新 launch_id）
+```
+
+### 6B.12 启动顺序（Launcher 启动 Runner 前 → handshake）
+
+```text
+A. generate launch_id
+B. create persistent Bridge launch registry entry = PREPARED
+C. create task control.json with same launch_id（§6A.7）
+D. launch runner
+E. obtain PID / creation time（proc.pid + Windows process creation time）
+F. update both records to RUNNING（registry + control.json）
+G. Runner handshake 回写 control.json（runner_pid / runner_creation_time，§6A.6-4）
+```
+
+**要求：Bridge registry 与 task control artifact 必须能够交叉验证**（字段对齐：launch_id / task_id / workspace / runner_pid / runner_creation_time）。启动失败（B/C 之后、D 失败）：registry 标记 EXITED 或记录 FAILED_TO_START，control 相应清理，避免 phantom RUNNING。
+
+### 6B.13 Launcher Restart 后的重新认证（Reauthentication）
+
+Launcher / Tray 重启后，**不得仅信任 control.json**。必须同时读取：
+
+```text
+A. ~/.aaf-bridge/launches/<launch_id>.json   （Bridge launch registry）
+B. .aaf/<Task-ID>/control.json               （task control artifact）
+```
+
+并验证（全部通过才恢复管理权）：
+
+| # | 校验项 | 通过条件 |
+|---|---|---|
+| 1 | launch_id 相同 | registry.launch_id == control.launch_id |
+| 2 | task_id 相同 | registry.task_id == control.task_id |
+| 3 | canonical workspace 相同 | registry.workspace == control.workspace |
+| 4 | runner PID 相同 | 实况进程 PID == registry.runner_pid == control.runner_pid |
+| 5 | process creation time 相同 | 实况创建时间 == registry.runner_creation_time == control.runner_creation_time（防 PID recycle） |
+| 6 | normalized command line 与 registry expected command 相符 | 实况命令行规范化后 == registry.expected_command_line 规范化 |
+| 7 | process 当前存在 | PID 存活 |
+| 8 | task 尚无 terminal state | task.json 无终态 |
+| 9 | registry 未 EXITED / SUPERSEDED | registry.state ∈ {PREPARED, RUNNING} |
+| 10 | control 未 stale / superseded | 非 stale（§6A.10）且 superseded_by == null |
+
+- 全部通过 → **ownership = REAUTHENTICATED**（可继续观察、可响应 cancel / force cancel）。
+- **任一失败 → ownership = UNCERTAIN → REFUSE FORCE TERMINATION**（UI 显示原因，如：存在孤儿 runner，建议人工处理或走恢复流程）。
+- 重启后**不得自动 force kill**；**不得自动改写 task.json**（终态裁决权仍在 Core，§6A.1）。
+
+### 6B.14 为什么 Bridge registry 是独立可信证据
+
+- registry 位于 **Bridge 私有 state root**（`~/.aaf-bridge/launches/`），**不是 Task workspace 的 control.json 本身**。
+- 因此 Launcher restart 后不是：
+
+```text
+control.json vs control.json   ← 自我比较，无意义
+```
+
+而是**三方验证**：
+
+```text
+Bridge launch registry        （launch 发起方的持久记录）
+vs
+Task control artifact         （task-owned 契约）
+vs
+Live Windows process identity （PID + creation time + command line）
+```
+
+- 两份记录由不同写者（Bridge vs Launcher/Runner）、落在不同目录（Bridge root vs task workspace）；一份被丢失/损坏/篡改时，另一份仍可交叉验证。
+
+### 6B.15 Registry Stale / Cleanup 规则
+
+以下任一情况 → registry 视为 stale / 失效：
+
+- Task terminal（task.json 已有终态）
+- process exited（PID 无存活进程）
+- PID recycled（creation time 不一致）
+- registry older generation（同一 launch_id 被更新的 registry 记录取代）
+- launch superseded（registry.state == SUPERSEDED）
+- workspace moved / deleted（registry.workspace 不存在）
+
+处理：
+
+- **上述情况下不得 force kill**。
+- 可将 registry 标记 `EXITED` / `SUPERSEDED` / `STALE`。
+- 历史记录**保留一段时间用于诊断**（保留时长由实现定，如 N 天）。
+- 本任务**不决定自动清理实现**（仅定义规则）。
+
+### 6B.16 Launcher Instance Identity
+
+- 允许增加 `launcher_instance_id`（每次 Bridge 启动生成，用于诊断哪个 Bridge instance 创建了某 launch）。
+- **明确：Launcher restart 后不能要求 instance_id 相同**，否则无法恢复管理。
+- ownership 恢复基于：**persistent registry + task control + live process identity**（§6B.13），**而不是旧进程的内存身份**（旧进程已死，内存身份不可用也不可信）。
+
+### 6B.17 Force Cancel 完整闭环
+
+```text
+User force cancel
+→ ownership verification（§6A.8 全部通过；restart 场景为 §6B.13 三方验证）
+→ verified process tree termination（taskkill /T /F）
+→ record termination evidence（control.json.force_terminate_requested + registry 记录）
+→ invoke Core recovery finalizer（finalize_cancelled_task，§6A.12/§6B.21）
+→ acquire state.lock
+→ re-read task.json（锁内）
+→ existing terminal?
+     yes → preserve existing terminal（不改写，返回 canonical）
+     no  → commit CANCELLED（+ terminal_generation）
+→ reconcile run.json / REPORT.md（§6B.6–§6B.8）
+→ return canonical result
+→ Launcher writes last_run.json from canonical result
+```
+
+### 6B.18 Normal Completion vs Force Cancel Race（terminal winner 规则）
+
+**Winner 由"谁在同一把 Core lock 下先 commit"决定，不由 Launcher 时间猜测。**
+
+```text
+Case A（Runner 先拿到锁）：
+Runner obtains state.lock first
+→ SUCCESS committed（generation N）
+→ Launcher/Core recovery later gets lock
+→ sees terminal SUCCESS
+→ CANCEL rejected / ignored（§6B.2-D）
+→ SUCCESS wins
+
+Case B（recovery cancel finalizer 先拿到锁）：
+recovery cancel finalizer obtains state.lock first
+→ CANCELLED committed（generation M）
+→ Runner later gets lock
+→ sees terminal CANCELLED
+→ cannot write SUCCESS
+→ CANCELLED wins
+```
+
+- 锁内 re-read（§6B.2-B/C/D）保证：任何后来的写者看到的是**已提交的** terminal truth，不存在"读到旧 RUNNING 后覆盖"的窗口。
+- 与 §6A.2 终态优先规则一致；§6B 把它的执行从"尽力而为的原子读"升级为"锁内强制"。
+
+### 6B.19 锁失败行为（Lock Failure）
+
+如果 Core 无法取得 state.lock（超时 / 已被持有 / OS 错误）：
+
+- **不写 terminal state**
+- **不 force 推断**
+- 返回 `FINALIZATION_BUSY`（或等价设计错误）
+- UI 显示"正在收尾"或"恢复失败"
+- **可以安全重试**
+- **不得绕过锁**（不写 = 安全失败；绕过 = 重新引入竞态）
+
+### 6B.20 Abandoned Lock / Crash Semantics
+
+- **OS-level file lock 随进程退出自动释放**——Core 崩溃后锁不会永久占用，**避免永久逻辑死锁**。
+- `state.lock` 文件本身可以留在磁盘；**"文件存在"不代表"锁被占用"**。
+- **不得用 `if state.lock exists` 判断锁状态**——锁状态只能通过实际 acquire（或 OS 查询）得知。
+- 崩溃后恢复路径（§6B.9）：直接 acquire 即可，残留文件不构成障碍。
+
+### 6B.21 Recovery Finalizer 更新（finalize_cancelled_task）
+
+`finalize_cancelled_task(...)` 必须：
+
+```text
+- acquire state.lock
+- canonical reload（锁内重读 task.json）
+- terminal arbitration（§6B.2-D：已有终态 → 返回 canonical，不改写）
+- terminal commit if allowed（§6B.2-E/F/G）
+- reconcile derived artifacts（run.json / REPORT.md，§6B.6–§6B.8）
+- idempotent return（重复调用返回相同 canonical result）
+```
+
+**不再允许**：发现已有 terminal → 简单 return → 不检查 run/report。已有终态也必须走 reconciliation（§6B.6），保证派生产物跟随 canonical。
+
+### 6B.22 Wait Thread 规则更新
+
+```text
+runner exits
+→ wait thread calls/reads Core terminal result（task.json）
+→ 如果 canonical terminal 存在但派生产物不完整：
+     触发 Core reconciliation（§6B.6–§6B.8）
+→ last_run follows canonical result
+→ 仅当：无 terminal + Core recovery/reconciliation 无法得到合法 outcome
+     才归类 Framework-level abnormal exit（FRAMEWORK_ERROR / FAILED 类）
+```
+
+（在 §6A.5 的两分支上增加中间分支："有 terminal 但派生产物不完整 → reconciliation"。）
+
+### 6B.23 Process Ownership 与 Terminal Section 旧表述修正
+
+- **§6A.9 修正**：重启后控制权恢复**不再以 control.json 单记录为准**；control.json 只是三方验证之一（§6B.13）。"可以重新读取 control.json"仅当与 registry + live process 全部一致才恢复管理权。
+- **§6A.2/§6A.4 修正**：`os.replace` 不再被表述为跨进程互斥手段；它只保证单文件完整替换。跨进程 read/check/write 串行化由 `state.lock` 提供（§6B.1–§6B.2）。
+- **§6A.6-5 修正**：Launcher 的持久 ownership record = Bridge launch registry（§6B.11），不再是"内存句柄 + control.json 内 launcher_pid"。
+
+### 6B.24 复杂度评估调整（FIX-002）
+
+**Cancel Lifecycle：保持 HIGH**（§16 同步），追加理由：
+
+- cross-process lock（state.lock 临界区、锁失败与崩溃语义）
+- persistent launch registry（第二记录 + 三方验证）
+- reconciliation（派生产物幂等修复）
+
+**Core Intrusion Risk：保持 MEDIUM**（§6A.16 不变），追加理由：
+
+- cross-process terminal lock 进入 Core（锁 utility + 所有终态路径改造）
+- persistent launch registry 与三方验证（Launcher 侧持久化）
+- reconciliation protocol（Core 新增入口）
+
+**不得把整个 Desktop Shell 评成 HIGH**：HIGH 仍仅限 Cancel lifecycle（Phase E）；Shell 其余部分（Tray / UI / 切换）评级不变。
+
+### 6B.25 实施边界（FIX-002）
+
+- 本任务**只修订设计文档**；不实现锁、不实现 reconciliation、不实现 registry、不修改 runtime / launcher / lifecycle / tests / .gitignore / Desktop UI。
+- 实现归口：全部归入 Phase E（§15）——state.lock utility（§6B.3）、reconcile_terminal_artifacts（§6B.6）、Bridge launch registry（§6B.11）作为 E 的独立子项。
+- backlog RW 状态不变（不标 SOLVED）；v0.3 CLOSED；v0.4 NOT STARTED；PROJECT_STATE 不变。
+- `task_lifecycle.VALID_STATUSES` 不含 CANCELLED —— 保持不变（同 §6A.18）。
+- 测试基线：**206 tests 保持通过**（本任务零代码改动，仅文档）。
+
+### 6B.26 验收对照表（FIX-002 acceptance → 小节）
+
+| Acceptance | 位置 |
+|---|---|
+| 1. per-task OS-level terminal lock 明确 | §6B.1 |
+| 2. read/check/write 同锁完成 | §6B.2 |
+| 3. os.replace 不再被当作 CAS | §6B.2/§6B.23 |
+| 4. terminal winner rule 明确 | §6B.18 |
+| 5. terminal_generation 定义 | §6B.4 |
+| 6. task.json 是 canonical terminal truth | §6B.5 |
+| 7. reconciliation protocol 存在 | §6B.6 |
+| 8. partial commit 可恢复 | §6B.9 |
+| 9. run.json 可按 terminal generation 修复 | §6B.8 |
+| 10. REPORT 可幂等补齐 | §6B.8 |
+| 11. last_run 不参与 terminal arbitration | §6B.10 |
+| 12. Bridge persistent launch registry 存在 | §6B.11 |
+| 13. registry 与 control.json 独立 | §6B.14 |
+| 14. restart 需要双记录 + live process 三方验证 | §6B.13 |
+| 15. PID creation time 继续校验 | §6B.13-5 |
+| 16. command line 继续校验 | §6B.13-6 |
+| 17. stale / superseded 规则存在 | §6B.15 |
+| 18. ownership uncertain 时拒绝 force kill | §6B.13/§6B.15 |
+| 19. force cancel end-to-end 闭合 | §6B.17 |
+| 20. normal completion vs cancel race 由同一 Core lock 决定 | §6B.18 |
+| 21. recovery finalizer 会 reconciliation | §6B.21 |
+| 22. wait thread 可触发 Core reconciliation | §6B.22 |
+| 23. OS lock crash-release semantics 定义 | §6B.20 |
+| 24. Cancel HIGH / Core Intrusion MEDIUM 保持 | §6B.24 |
+| 25. 无 runtime 实现 | §6B.25 |
+| 26. backlog 未误标 SOLVED | §6B.25 |
+| 27. v0.3 CLOSED | §6B.25 |
+| 28. v0.4 NOT STARTED | §6B.25 |
+| 29-33. tests PASS / WorkBuddy / Codex / commit+push / 不自动实现 | 由执行报告与 §19 FIX-002 清单验证 |
 
 ---
 
@@ -1089,7 +1576,7 @@ task.json / route.json / boundary.json / `<agent>_prompt.md` / `<agent>_result.m
 - `started_at`：首次 `RUNNING` 时写入后不再变更。
 - `stage` / `stage_started_at` / `agent`：runner 每个阶段边界原子更新（与现有 update_status 同一原子写路径）。
 - `last_activity_at`：阶段边界更新 + Agent 执行期间由 runner 周期性 touch（如每 60s，轻量；仅当 last_activity_at 更新时重写 task.json——注意写入频率，建议 ≥30s 间隔，避免磁盘抖动）。
-- `pid`：runner 启动时自写（`os.getpid()`），Launcher 强终止前读取校验；与 §6A.6 的 `launch_id` 协议配合——**ownership 判定以 control.json 为准**（§6A.7），task.json.pid 是冗余字段。
+- `pid`：runner 启动时自写（`os.getpid()`），Launcher 强终止前读取校验；与 §6A.6 的 `launch_id` 协议配合——**运行期 ownership 判定以 control.json 为准**（§6A.7），task.json.pid 是冗余字段；**restart 恢复场景为 registry + control + live process 三方验证**（§6B.13）。
 - `cancel_requested`：与 cancel.request 文件一致；UI 优先读文件（单一事实源），task.json 字段作冗余。
 - Validation 失败仍无 artifact（现状 exit 2）：设计为 Bridge/Launcher 在 FAILED_TO_START 路径旁记录"validation failed"事件到 last_run.json（增量，不动 runner）。
 
@@ -1186,10 +1673,10 @@ task.json / route.json / boundary.json / `<agent>_prompt.md` / `<agent>_result.m
 
 ### Phase E — Safe Cancel Lifecycle
 
-- **Goal**：§6 + §6A 完整落地：cancel.request 契约、runner 检查点、CANCELLED 终态、Launcher 强终止（launch_id / control.json / §6A.8 ownership verification）+ Core recovery finalizer（§6A.12）、UI 按钮状态机、race 规则。
-- **Files likely affected**：`ai_agent_framework/task_lifecycle.py`（CANCELLED）、`ai_agent_framework/runner.py`（`--watch-cancel <path>` 参数 + 检查点 + control.json 写回）、`ai_agent_framework/finalize_cancelled.py`（新：Core recovery finalizer CLI，§6A.12）、`bridge/launcher.py`（launch_id、control.json、§6A.8 ownership verification、taskkill）、`bridge/status_window.py` + `bridge/tray.py`（按钮/状态机）、`tests/test_runner.py`、`tests/test_bridge_launcher.py`、`tests/test_finalize_cancelled.py`（新）。
+- **Goal**：§6 + §6A + §6B 完整落地：cancel.request 契约、runner 检查点、CANCELLED 终态、Launcher 强终止（launch_id / control.json / Bridge launch registry / §6A.8 + §6B.13 ownership verification）+ Core recovery finalizer（§6A.12/§6B.21）+ state.lock（§6B.1–§6B.3）+ reconciliation（§6B.6–§6B.8）、UI 按钮状态机、race 规则。
+- **Files likely affected**：`ai_agent_framework/task_lifecycle.py`（CANCELLED）、`ai_agent_framework/runner.py`（`--watch-cancel <path>` 参数 + 检查点 + control.json 写回）、`ai_agent_framework/finalize_cancelled.py`（新：Core recovery finalizer CLI，§6A.12/§6B.21）、`bridge/launcher.py`（launch_id、control.json、§6A.8 ownership verification、taskkill）、`bridge/status_window.py` + `bridge/tray.py`（按钮/状态机）、`tests/test_runner.py`、`tests/test_bridge_launcher.py`、`tests/test_finalize_cancelled.py`（新）、`ai_agent_framework/lock_utils.py`（新：state.lock 封装，§6B.3）、`ai_agent_framework/reconcile.py`（新：reconcile_terminal_artifacts，§6B.6）、`bridge/launch_registry.py`（新：persistent launch registry，§6B.11）。
 - **Dependencies**：A（字段）、B（宿主）；与 C/D 解耦（Core 部分可独立先行）。
-- **Risk**：**高**（进程终止安全、race condition、误杀防护）——本 Phase 必须经过 Codex 专项 audit 与真实任务演练。
+- **Risk**：**高**（进程终止安全、race condition、误杀防护；FIX-002 追加：cross-process lock、reconciliation、persistent launch registry（§6B.24））——本 Phase 必须经过 Codex 专项 audit 与真实任务演练。
 - **Acceptance**：单测覆盖检查点/终态/重复点击/race（§6.9 场景 1-3）；真实任务 Cancel 后 task.json= CANCELLED、REPORT 生成、产物保留、独立会话存活；强终止 §6A.8 ownership verification 拒绝错误目标；finalizer 幂等。
 - **可单独发布 / 测试**：是（Core 侧先于 UI 发布，可用 CLI 演练）。
 
@@ -1218,7 +1705,7 @@ task.json / route.json / boundary.json / `<agent>_prompt.md` / `<agent>_result.m
 | status window | LOW | 纯 tkinter 只读展示 |
 | progress bar | LOW | 静态权重 + 状态映射；逻辑简单，约束在文案 |
 | last activity | MEDIUM | 多源 mtime 聚合 + 阈值调参；依赖 Phase A 字段才可靠 |
-| Cancel lifecycle | **HIGH** | 进程树终止、race、误杀防护、Core recovery finalizer；唯一高风险项 |
+| Cancel lifecycle | **HIGH** | 进程树终止、race、误杀防护、Core recovery finalizer；FIX-002 追加：cross-process lock（state.lock）、reconciliation、persistent launch registry（§6B.24）；唯一高风险项 |
 | project switching | LOW | 确认窗 + config 更新 |
 | packaging | MEDIUM | PyInstaller 单目录；**第一版可不做**（pythonw + 快捷方式先行） |
 | autostart | LOW | 启动文件夹快捷方式；注册表 Run 为备选 |
@@ -1229,7 +1716,7 @@ task.json / route.json / boundary.json / `<agent>_prompt.md` / `<agent>_result.m
 |---|---|---|
 | Feasibility | **HIGH** | 全部能力基于现有 tkinter/ctypes/subprocess 与产物契约；无新框架 |
 | Engineering Complexity | **MEDIUM** | 总体轻量；唯一 HIGH 项是 Cancel（集中在 Phase E） |
-| Core Intrusion Risk | **MEDIUM** | 从 LOW 上调（FIX-001，§6A.16）：新增终态 CANCELLED、跨进程取消、process ownership（launch_id / creation time / command line 校验）、recovery finalization（finalize_cancelled_task）、multi-artifact 一致性提交（§6A.4）。Core 改动面仍限于 Phase A/E，但状态机与终态语义侵入深度高于原评估 |
+| Core Intrusion Risk | **MEDIUM** | 从 LOW 上调（FIX-001，§6A.16）：新增终态 CANCELLED、跨进程取消、process ownership（launch_id / creation time / command line 校验）、recovery finalization（finalize_cancelled_task）、multi-artifact 一致性提交（§6A.4）。FIX-002 追加：cross-process terminal lock（state.lock）、persistent launch registry 与三方验证、reconciliation protocol（§6B.24）。**评级保持 MEDIUM，不随 Cancel 升 HIGH**。Core 改动面仍限于 Phase A/E，但状态机与终态语义侵入深度高于原评估 |
 | Maintenance Cost | **LOW** | 单进程、文件契约、无前端/无服务/无 IPC 框架 |
 
 ---
@@ -1315,6 +1802,33 @@ task.json / route.json / boundary.json / `<agent>_prompt.md` / `<agent>_result.m
 
 重点只审：terminal state consistency（§6A.2/§6A.4）、ownership verification（§6A.6–§6A.8）、force kill safety（§6A.8/§6A.10）、race conditions（§6A.2/§6A.13）、stale / restart recovery（§6A.9–§6A.12）、Core vs Launcher authority（§6A.1）。
 目标：若两个 blocking findings（终态双写竞态、PID/token 协议未闭合）均已关闭 → **APPROVE**。
+
+#### FIX-002 追加检查清单（WorkBuddy）
+
+重点：原子性、恢复完整性、独立性。
+
+1. read/check/write 是否真正位于同一跨进程锁（§6B.2）？
+2. os.replace 是否仅承担完整文件替换，不再冒充 CAS（§6B.2/§6B.23）？
+3. terminal winner 是否确定（§6B.18：同一 Core lock 下先 commit 者胜）？
+4. reconciliation 是否可补 partial commit（§6B.9）？
+5. canonical truth 是否唯一（§6B.5：仅 task.json terminal record）？
+6. Bridge registry 是否真的独立于 control.json（§6B.14：Bridge root vs task workspace）？
+7. restart 是否三方验证（§6B.13：registry + control + live process）？
+8. PID recycle 是否仍被防护（§6B.13-5 / §6B.15）？
+9. 不确定 ownership 是否拒绝 kill（§6B.13 / §6B.15）？
+10. 无代码实现（§6B.25）？
+
+#### FIX-002 专项审查清单（Codex）
+
+重点只看三个原 blocking：
+
+```text
+A. cross-process terminal arbitration（§6B.1–§6B.5 / §6B.18）
+B. partial artifact recovery（§6B.6–§6B.9 / §6B.21）
+C. restart ownership trust chain（§6B.11–§6B.16 / §6B.13）
+```
+
+目标：若三个问题均闭合 → **APPROVE**。
 
 ---
 

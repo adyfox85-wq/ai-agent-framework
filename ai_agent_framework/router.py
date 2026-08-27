@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 import re
 
 from .task_validation import parse_task_fields
@@ -10,40 +11,76 @@ class Route:
     reason: str
 
 
+class RouteStatus(Enum):
+    """显式 Route 字段三态（FIX-004 Req 9）。
+
+    不得用 None 同时表示“没写 Route”和“写了但非法”：
+    - ABSENT：TASK 完全没有 Route 字段 → legacy keyword heuristic 唯一允许路径
+    - VALID：可解析且全部 agent 合法、无重复 → authoritative（覆盖 heuristic）
+    - INVALID：非法 agent / malformed syntax / empty route / duplicate structure
+      → 必须 Task Validation FAIL（fail-closed），不得回退 heuristic
+    """
+
+    ABSENT = "ABSENT"
+    VALID = "VALID"
+    INVALID = "INVALID"
+
+
+@dataclass(frozen=True)
+class RouteParseResult:
+    status: RouteStatus
+    agents: list[str] = field(default_factory=list)
+    error: str | None = None
+
+
 # 合法 route agent（Explicit Route Authority，FIX-003 Req 1/2）
 ALLOWED_ROUTE_AGENTS = ("hermes", "workbuddy", "codex")
 
 # canonical machine Route 字段的分隔符：-> / → / > / , / 空白（容错 parse）
 _ROUTE_SPLIT_RE = re.compile(r"\s*(?:->|→|>|,)\s*|\s+")
 
+# Route 字段存在性（区分“字段缺失”与“字段存在但为空”；FIX-004 Req 7/8）：
+# 同行式 `Route: xxx` 或标题式 `# Route` + 下一行值。
+_ROUTE_FIELD_RE = re.compile(r"(?im)^[ \t]*(?:#+[ \t]*)?Route[ \t]*(?:[:：]|$)")
+
 ROUTE_REASON_EXPLICIT = "explicit route (machine field)"
 
 
-def parse_explicit_route(task_text: str) -> list[str] | None:
-    """解析 TASK 的 canonical machine Route 字段（FIX-003 Req 1/2）。
+def parse_explicit_route(task_text: str) -> RouteParseResult:
+    """三态解析 TASK 的 canonical machine Route 字段（FIX-003 Req 1/2 + FIX-004 Req 7–9）。
 
-    ``Route: hermes -> workbuddy -> codex`` 是结构化机器字段（非人类说明文字）；
-    返回有序 agent 列表。语义：
-    - 未声明 / 字段为空 → None（legacy keyword heuristic）
-    - 可解析且全部 agent 合法 → 有序去重列表（authoritative，覆盖 heuristic）
-    - 含未知 agent → None（不采信该声明，回退 heuristic，不虚构 agent）
+    ``Route: hermes -> workbuddy -> codex`` 是结构化机器字段（非人类说明文字）。
+    返回 ``RouteParseResult(status, agents, error)``：
+    - ABSENT：无 Route 字段 → 调用方（Runner/decide_route）走 legacy heuristic
+    - VALID：有序 agent 列表（authoritative，覆盖 heuristic）
+    - INVALID：fail-closed——非法 agent / malformed syntax（空段/悬挂分隔符）/
+      empty route / duplicate agent 结构一律 INVALID，必须 Task Validation FAIL，
+      绝不静默回退 heuristic。
 
     Route Hint 仍是纯人类补充，不参与机器路由（parse 只认 ``Route:`` 字段）。
     """
-    field = parse_task_fields(task_text).get("Route") or ""
-    raw = field.strip().lower()
-    if not raw:
-        return None
-    parts = [p for p in _ROUTE_SPLIT_RE.split(raw) if p]
-    if not parts or any(p not in ALLOWED_ROUTE_AGENTS for p in parts):
-        return None
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for p in parts:
-        if p not in seen:
-            seen.add(p)
-            ordered.append(p)
-    return ordered
+    if not _ROUTE_FIELD_RE.search(task_text or ""):
+        return RouteParseResult(RouteStatus.ABSENT)
+    field = (parse_task_fields(task_text).get("Route") or "").strip().lower()
+    if not field:
+        return RouteParseResult(RouteStatus.INVALID, error="Route 字段存在但为空")
+    segments = _ROUTE_SPLIT_RE.split(field)
+    if any(not s for s in segments):
+        return RouteParseResult(
+            RouteStatus.INVALID,
+            error="Route 语法 malformed（空段 / 悬挂分隔符，如 'hermes ->'）",
+        )
+    unknown = [p for p in segments if p not in ALLOWED_ROUTE_AGENTS]
+    if unknown:
+        return RouteParseResult(
+            RouteStatus.INVALID, error=f"未知 route agent: {unknown}"
+        )
+    if len(set(segments)) != len(segments):
+        return RouteParseResult(
+            RouteStatus.INVALID,
+            error="Route 含重复 agent（unsupported route structure）",
+        )
+    return RouteParseResult(RouteStatus.VALID, list(segments))
 
 
 EXECUTION_WORDS = (
@@ -112,12 +149,20 @@ def _contains_visual_word(t: str) -> bool:
 
 
 def decide_route(task_text: str) -> Route:
-    # Explicit Route Authority（FIX-003 Req 1/2）：TASK 声明 canonical Route 字段 →
-    # 以此为准，不靠全文关键词猜测；keyword heuristic 只作为 legacy fallback /
-    # 未声明 route 时的推断。TASK 不得被迫重复"代码/安全/架构"等无关词触发路由。
+    # Explicit Route Authority（FIX-003 Req 1/2 + FIX-004 Req 7–9）：
+    # TASK 声明 canonical Route 字段 → 以此为准，不靠全文关键词猜测。
+    # - VALID → authoritative（覆盖 heuristic）
+    # - INVALID → fail-closed：不得静默回退 heuristic（formal validation 已先行
+    #   拒绝；此处是纯函数层的不变量防御，直接抛错）
+    # - ABSENT → 唯一允许 legacy keyword inference 的场景
     explicit = parse_explicit_route(task_text)
-    if explicit is not None:
-        return Route(explicit, ROUTE_REASON_EXPLICIT)
+    if explicit.status is RouteStatus.VALID:
+        return Route(list(explicit.agents), ROUTE_REASON_EXPLICIT)
+    if explicit.status is RouteStatus.INVALID:
+        raise ValueError(
+            f"INVALID_ROUTE: 非法显式 Route（fail-closed，不回退 heuristic）——"
+            f"{explicit.error or 'invalid route structure'}"
+        )
 
     t = task_text.lower()
 

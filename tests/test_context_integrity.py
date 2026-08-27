@@ -149,10 +149,14 @@ def test_runner_creates_snapshot_and_hash_single_source(tmp_path, monkeypatch):
     manifest = read_manifest(out)
     assert manifest is not None
     assert Path(manifest["task"]["path"]) == snapshot
-    # Hash Single Source：三处 hash 完全一致
-    assert manifest["task"]["hash"] == sha256_text(COMPACT_TASK)
+    # Hash Single Source（FIX-004 Req 1/2）：manifest hash == snapshot 文件原始 bytes
+    # 的 SHA-256（外部工具可复算），bytes == 文件实际大小（stat().st_size）。
+    import hashlib
+
+    raw = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    assert manifest["task"]["hash"] == raw
     assert manifest["task"]["hash"] == sha256_file(snapshot)
-    assert manifest["task"]["bytes"] == len(COMPACT_TASK.encode("utf-8"))
+    assert manifest["task"]["bytes"] == snapshot.stat().st_size
     assert check_references(manifest) == []
 
     # REPORT Task Reference 也引用 snapshot
@@ -256,6 +260,58 @@ def test_tampered_snapshot_detected_by_check_references(tmp_path, monkeypatch):
     snapshot.write_text(snapshot.read_text(encoding="utf-8") + "\ntampered", encoding="utf-8")
     problems = check_references(read_manifest(out))
     assert any("hash" in p and "TASK.snapshot" in p for p in problems)
+
+
+# ---------- FIX-004：Raw-Byte SHA256 / manifest bytes truth（Req 1/2/6） ----------
+
+def test_sha256_file_hashes_raw_bytes_not_normalized_text(tmp_path):
+    """FIX-004 Req 1：sha256_file 按文件原始 bytes 计算标准 SHA-256——
+    CRLF/LF 文件均可由 hashlib.read_bytes / 外部标准工具直接复算；
+    不再经过 read_text / 换行归一化 / encoding replacement。"""
+    import hashlib
+
+    lf = tmp_path / "lf.md"
+    lf.write_text("line1\nline2\n", encoding="utf-8")
+    crlf = tmp_path / "crlf.md"
+    crlf.write_bytes(b"line1\r\nline2\r\n")
+
+    assert sha256_file(lf) == hashlib.sha256(lf.read_bytes()).hexdigest()
+    assert sha256_file(crlf) == hashlib.sha256(crlf.read_bytes()).hexdigest()
+    # CRLF 文件 hash 必须与"原始字节"一致，而不是与换行归一化文本一致
+    assert sha256_file(crlf) != sha256_text("line1\nline2\n")
+    # 不可读 → None（调用方显式处理）
+    assert sha256_file(tmp_path / "missing.md") is None
+
+
+def test_runner_crlf_snapshot_hash_externally_reproducible(tmp_path, monkeypatch):
+    """FIX-004 Req 1/2：预置 CRLF snapshot（active 文件 raw copy，模拟 launcher）→
+    framework hash == hashlib.sha256(snapshot.read_bytes())，manifest bytes ==
+    snapshot.stat().st_size；check_references 全部通过。"""
+    import hashlib
+
+    def fake_run_agent(agent, prompt, workspace):
+        return {"hermes": "implemented", "workbuddy": "**Result: PASS**\nverified", "codex": "APPROVE"}[agent]
+
+    monkeypatch.setattr(runner_mod, "run_agent", fake_run_agent)
+    body = COMPACT_TASK.replace("\n", "\r\n")
+    task_file = tmp_path / "TASK.md"
+    task_file.write_bytes(body.encode("utf-8"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "TASK.snapshot.md").write_bytes(body.encode("utf-8"))
+
+    runner_mod.run(task_file, ws, out)
+
+    snapshot = out / "TASK.snapshot.md"
+    manifest = read_manifest(out)
+    raw = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    assert manifest["task"]["hash"] == raw
+    assert manifest["execution_task"]["hash"] == raw
+    assert manifest["task"]["bytes"] == snapshot.stat().st_size
+    assert manifest["execution_task"]["bytes"] == snapshot.stat().st_size
+    assert check_references(manifest) == []
 
 
 def test_downstream_prompts_reference_snapshot(tmp_path, monkeypatch):

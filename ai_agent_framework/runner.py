@@ -19,7 +19,6 @@ from .context_packet import (
     measure_prompt,
     remote_sync_state,
     sha256_file,
-    sha256_text,
     write_manifest,
     write_stage_result,
 )
@@ -28,7 +27,7 @@ from . import project_boundary
 from . import task_lifecycle
 from .report import build_report, verdict_blocked
 from .reconcile import reconcile_terminal_artifacts
-from .router import Route, decide_route, parse_explicit_route
+from .router import Route, RouteStatus, decide_route, parse_explicit_route
 from .task_lifecycle import (
     TERMINAL_REASON_CANCEL_REQUESTED,
     TERMINAL_REASON_FRAMEWORK_ERROR,
@@ -199,20 +198,53 @@ def _check_cancel(output_dir: Path, task_id: str, task_file: Path, workspace: Pa
 
 def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = False, resume_from: Path | None = None,
         launch_id: str | None = None) -> Path:
-    task = task_file.read_text(encoding='utf-8')
+    # --- Execution Identity / Snapshot Authority（FIX-004 Req 3/4） ---
+    # 已有 execution directory（含 resume）：TASK.snapshot.md 存在 → snapshot 从入口
+    # 起就是 execution authority——task validation / Task ID / route / boundary /
+    # ownership handshake identity / 下游 prompt 一律基于 snapshot；active TASK 只作
+    # provenance / resume request locator，绝不重新成为 execution authority。
+    # 新 execution：intake active TASK → validate intake → freeze TASK.snapshot.md →
+    # 从那一刻起所有 execution semantics 使用 snapshot（不得再使用 mutable intake）。
+    exec_dir = resume_from if resume_from is not None else output_dir
+    snapshot_path = exec_dir / 'TASK.snapshot.md'
 
-    # 正式 Task Validation（权威执行边界）：失败即中止，不进 Router / 不启动 Agent / 不进 Lifecycle
-    result = validate_task_text(task)
-    if not result.valid:
-        raise TaskValidationError(result)
+    if snapshot_path.exists():
+        task = snapshot_path.read_text(encoding='utf-8')
+        result = validate_task_text(task)
+        if not result.valid:
+            raise TaskValidationError(result)
+        # intake locator 与 snapshot identity 严重冲突（Task ID 不一致）→ 显式拒绝
+        # resume，不得静默采用新 active 内容（FIX-004 Req 5）
+        if task_file.exists():
+            try:
+                intake_id = parse_task_fields(task_file.read_text(encoding='utf-8')).get('Task ID')
+            except (OSError, UnicodeError):
+                intake_id = None
+            snapshot_id = parse_task_fields(task).get('Task ID')
+            if intake_id and snapshot_id and intake_id != snapshot_id:
+                raise TaskValidationError(ValidationResult(
+                    valid=False,
+                    errors=[(
+                        f"Execution identity conflict: active TASK Task ID {intake_id!r} "
+                        f"!= snapshot Task ID {snapshot_id!r}——intake locator 与 "
+                        f"execution snapshot 严重冲突，拒绝 resume（不得静默采用新 "
+                        f"active 内容；确需新任务请使用新的 execution directory）"
+                    )],
+                ))
+    else:
+        task = task_file.read_text(encoding='utf-8')
+        result = validate_task_text(task)
+        if not result.valid:
+            raise TaskValidationError(result)
 
-    task_id = parse_task_fields(task)["Task ID"]
+    task_id = parse_task_fields(task)["Task ID"]  # 从 snapshot（或即将冻结的 intake）派生
     head_at_start = git_head(workspace)  # manifest HEAD（非 git 仓库 → None，不虚构）
 
     # --- Runner ownership handshake（TASK-005-B req 5/8；§6A.6-4） ---
     # control.json 缺失 → 跳过（direct/legacy 无 ownership 契约）；存在但不匹配 →
     # HandshakeError（fail safely：不接管 / 不执行 / 零 canonical 写）。
-    # 位置：Validation 之后、任何 lifecycle 写入之前。
+    # 位置：Validation 之后、任何 lifecycle 写入之前；handshake identity 使用
+    # snapshot 派生的 task_id（FIX-004 Req 3）。
     runner_handshake(output_dir, task_id, workspace, expected_launch_id=launch_id)
 
     try:
@@ -263,9 +295,19 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
         if resume_from is not None:
             route, results = _load_resume_state(resume_from)
             output_dir = resume_from
+            # legacy resume 目录（FIX-002 之前的旧目录）可能没有 snapshot →
+            # 从已验证任务内容补写（保证 manifest / prompt 引用可解析）
+            if not (output_dir / 'TASK.snapshot.md').exists():
+                (output_dir / 'TASK.snapshot.md').write_text(task, encoding='utf-8')
             _ls('RUNNING', reason='RESUMED')  # WAITING/... → RUNNING
         else:
-            # --- Boundary Check（Validation 通过后、Router 前；warning-first，fail-open）---
+            # --- Immutable Task Snapshot：freeze（FIX-002 Req 1/2 + FIX-004 Req 4） ---
+            # 新 execution：intake 已校验 → 先冻结 TASK.snapshot.md，从此刻起
+            # route / boundary / lifecycle / packet 一律使用 snapshot 内容，
+            # 不再使用 mutable intake text。
+            output_dir.mkdir(parents=True, exist_ok=True)
+            snapshot_path.write_text(task, encoding='utf-8')
+            # --- Boundary Check（snapshot 内容；warning-first，fail-open）---
             # 不阻断执行；边界模块自身错误也 fail-open（外围功能不使核心链路不可用）
             try:
                 boundary = project_boundary.load_boundary(workspace)
@@ -281,47 +323,32 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 )
                 project_boundary.write_boundary_json(output_dir, task_id, bcheck, None)
             route = decide_route(task)
-            # Route Completeness / Acceptance Bypass Guard（FIX-003 Req 3/4）：
+            # Route Completeness / Acceptance Bypass Guard（FIX-003 Req 3/4 + FIX-004 Req 7）：
             # TASK 显式声明的 Route 是 authoritative；Router 必须与其一致。
             # 若声明了 required route（如含 codex）而实际计算路由不含该 agent，
             # 必须在 Validation 阶段直接失败——不得跑完后误报 SUCCESS。
-            # （decide_route 已优先采纳显式 Route；此处是防御性不变量断言。）
+            # （decide_route 已优先采纳显式 Route；此处是防御性不变量断言。
+            #   INVALID 显式 Route 已由 formal validation fail-closed，不会到达此处。）
             declared_route = parse_explicit_route(task)
-            if declared_route is not None and route.agents != declared_route:
+            if declared_route.status is RouteStatus.VALID and route.agents != declared_route.agents:
                 raise TaskValidationError(ValidationResult(
                     valid=False,
                     errors=[(
                         f"Route inconsistency: TASK 显式声明 Route: "
-                        f"{' -> '.join(declared_route)}，但 Router 计算结果为 "
+                        f"{' -> '.join(declared_route.agents)}，但 Router 计算结果为 "
                         f"{' -> '.join(route.agents)}——拒绝以错误路由继续执行"
                     )],
                 ))
             results = {}
             _ls('CREATED')  # 通过 Validation，尚未执行 Agent 链
 
-        # --- Immutable Task Snapshot（FIX-002 Req 1/2） ---
-        # 每次新任务执行开始时把 Runner 实际执行的 TASK 内容写入
-        # <output_dir>/TASK.snapshot.md；后续 Task Reference / task hash /
-        # context_manifest / WorkBuddy/Codex packet / REPORT 统一引用 snapshot。
-        # active/archive TASK 文件后续变化不得破坏本次 execution integrity。
-        # （位置：resume_from 的 output_dir 切换之后，保证写入真正执行目录）
-        snapshot_path = output_dir / 'TASK.snapshot.md'
-        output_dir.mkdir(parents=True, exist_ok=True)
-        if snapshot_path.exists():
-            snapshot_text = snapshot_path.read_text(encoding='utf-8')
-            if snapshot_text != task:
-                # resume / 复用目录：active 文件已变化 → 以 immutable snapshot 为执行依据
-                task = snapshot_text
-                v2 = validate_task_text(task)
-                if not v2.valid:
-                    raise TaskValidationError(v2)
-        else:
-            snapshot_path.write_text(task, encoding='utf-8')
-        # Hash Single Source（FIX-002 Req 2）：Task Hash 只从 immutable snapshot
-        # 计算一次，并在整个 execution lifecycle 中复用；snapshot 实际 SHA256
-        # 即唯一权威 hash。
-        task_hash = sha256_text(task)
-        task_bytes = len(task.encode('utf-8'))
+        # --- Hash Single Source（FIX-002 Req 2 + FIX-004 Req 1/2/6） ---
+        # Task Hash = snapshot 文件原始 bytes 的标准 SHA-256（sha256_file），
+        # bytes = 文件实际大小（stat().st_size）——外部工具（certutil / sha256sum /
+        # hashlib.read_bytes）可直接复算，与换行风格（CRLF/LF）无关。
+        # 整个 execution lifecycle 只计算一次，并在 manifest / prompt / REPORT 复用。
+        task_hash = sha256_file(snapshot_path)
+        task_bytes = file_bytes(snapshot_path)
 
         (output_dir / 'route.json').write_text(
             json.dumps({'agents': route.agents, 'reason': route.reason}, ensure_ascii=False, indent=2),

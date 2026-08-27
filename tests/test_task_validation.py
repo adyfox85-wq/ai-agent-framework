@@ -166,6 +166,35 @@ def test_workspace_relative_ok():
     assert r.valid is True
 
 
+# ---------- FIX-004：显式 Route fail-closed（Req 7/8/9） ----------
+
+def test_invalid_explicit_route_fails_validation():
+    """非法显式 Route（未知 agent / empty / malformed / duplicate）→ Task Validation FAIL。"""
+    cases = {
+        "Route: hermes -> alien\n": "unknown agent",
+        "Route: bogus -> hermes\n": "unknown agent",
+        "Route:\n": "empty route",
+        "Route: hermes ->\n": "malformed",
+        "Route: hermes -> hermes\n": "duplicate",
+    }
+    for route_line, why in cases.items():
+        text = VALID_TASK.replace("AAF_TASK_END", route_line + "AAF_TASK_END")
+        r = validate_task_text(text)
+        assert r.valid is False, f"{why}: {route_line!r}"
+        assert any("Route" in e for e in r.errors), f"{why}: {r.errors}"
+
+
+def test_valid_explicit_route_passes_validation():
+    """合法显式 Route → validation 通过。"""
+    text = VALID_TASK.replace("AAF_TASK_END", "Route: hermes -> workbuddy -> codex\nAAF_TASK_END")
+    assert validate_task_text(text).valid is True
+
+
+def test_absent_route_passes_validation_legacy():
+    """完全没有 Route 字段 → 不触发 route 校验（legacy heuristic 路径不受影响）。"""
+    assert validate_task_text(VALID_TASK).valid is True
+
+
 # ---------- Integration：Router 边界 ----------
 
 def test_valid_task_reaches_router(monkeypatch, tmp_path):

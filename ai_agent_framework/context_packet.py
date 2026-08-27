@@ -117,9 +117,15 @@ def sha256_text(text: str) -> str:
 
 
 def sha256_file(path: Path | str) -> str | None:
-    """文件内容 SHA-256；不可读 → None（调用方必须显式处理缺失引用）。"""
+    """文件原始 bytes 的标准 SHA-256（FIX-004 Req 1/2/6）。
+
+    按文件原始字节计算：``hashlib.sha256(path.read_bytes()).hexdigest()``——
+    不经过 read_text / 换行归一化 / encoding replacement，保证与 certutil /
+    sha256sum 等外部标准工具结果完全一致（CRLF/LF 文件均可直接复算）。
+    不可读 → None（调用方必须显式处理缺失引用）。
+    """
     try:
-        return sha256_text(Path(path).read_text(encoding="utf-8", errors="replace"))
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
     except OSError:
         return None
 

@@ -440,3 +440,169 @@ def test_active_task_mutation_keeps_execution_reference_stable(tmp_path, monkeyp
     assert snapshot_hash in ref_section               # Task Hash = snapshot hash
     assert 'Original Intake Path' in ref_section      # intake 仅 provenance
     assert str(task_file) in ref_section
+
+
+# --- FIX-004：Byte-Stable Task Identity + Snapshot Authority + Route Fail-Closed ---
+
+def _fake_agents_ok(agent, prompt, workspace):
+    return {'hermes': 'implemented', 'workbuddy': '**Result: PASS**\nverified', 'codex': 'APPROVE'}[agent]
+
+
+def test_runner_hash_is_raw_file_bytes_externally_reproducible(tmp_path, monkeypatch):
+    """Req 1/2/6：CRLF snapshot（raw copy，模拟 launcher 行为）→ framework task hash
+    == hashlib.sha256(snapshot.read_bytes())（外部标准工具可复算），manifest bytes
+    == snapshot.stat().st_size；不再对换行归一化后的文本计算 hash。"""
+    import hashlib
+    from ai_agent_framework.context_packet import check_references, read_manifest, sha256_text
+
+    monkeypatch.setattr(runner_mod, 'run_agent', _fake_agents_ok)
+
+    body = MINIMAL_EXPLICIT_ROUTE_TASK.replace('\n', '\r\n')  # CRLF active TASK
+    task_file = tmp_path / 'TASK.md'
+    task_file.write_bytes(body.encode('utf-8'))
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    out = tmp_path / 'out'
+    out.mkdir()
+    # launcher 行为：snapshot = active 文件 raw copy（CRLF 保留在磁盘上）
+    (out / 'TASK.snapshot.md').write_bytes(body.encode('utf-8'))
+
+    runner_mod.run(task_file, ws, out)
+
+    snapshot = out / 'TASK.snapshot.md'
+    raw = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    manifest = read_manifest(out)
+    assert manifest['task']['hash'] == raw
+    assert manifest['execution_task']['hash'] == raw
+    assert manifest['task']['bytes'] == snapshot.stat().st_size
+    assert manifest['execution_task']['bytes'] == snapshot.stat().st_size
+    # CRLF 文件：raw bytes hash != 归一化文本 hash（证明不再走 read_text 归一化路径）
+    assert raw != sha256_text(MINIMAL_EXPLICIT_ROUTE_TASK)
+    assert check_references(manifest) == []
+    # REPORT Task Reference hash 同样为 raw bytes hash
+    report = (out / 'REPORT.md').read_text(encoding='utf-8')
+    assert raw in report
+
+
+def test_runner_hash_raw_bytes_for_fresh_snapshot(tmp_path, monkeypatch):
+    """Req 1/2：新 execution（runner 自写 LF snapshot）→ framework hash ==
+    hashlib.sha256(snapshot.read_bytes())，bytes == stat().st_size。"""
+    import hashlib
+    from ai_agent_framework.context_packet import read_manifest
+
+    monkeypatch.setattr(runner_mod, 'run_agent', _fake_agents_ok)
+    task_file = tmp_path / 'TASK.md'
+    task_file.write_text(MINIMAL_EXPLICIT_ROUTE_TASK, encoding='utf-8')
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    out = tmp_path / 'out'
+    runner_mod.run(task_file, ws, out)
+
+    snapshot = out / 'TASK.snapshot.md'
+    manifest = read_manifest(out)
+    assert manifest['task']['hash'] == hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    assert manifest['task']['bytes'] == snapshot.stat().st_size
+
+
+def test_resume_uses_snapshot_before_route_and_hash(tmp_path, monkeypatch):
+    """Req 3/5：首次执行生成 snapshot → 修改 active TASK（Route + Objective）→
+    resume 仍使用原 snapshot semantics：route / task hash / references 不变。"""
+    monkeypatch.setattr(runner_mod, 'run_agent', _fake_agents_ok)
+    task_file = tmp_path / 'TASK.md'
+    task_file.write_text(MINIMAL_EXPLICIT_ROUTE_TASK, encoding='utf-8')
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    out = tmp_path / 'out'
+    runner_mod.run(task_file, ws, out)
+
+    import json
+    from ai_agent_framework.context_packet import read_manifest
+    route_before = json.loads((out / 'route.json').read_text(encoding='utf-8'))
+    manifest_before = read_manifest(out)
+    snapshot_hash = manifest_before['task']['hash']
+
+    # 修改 active TASK：Route 换成别的链、Objective 追加要求（Task ID 不变）
+    mutated = MINIMAL_EXPLICIT_ROUTE_TASK.replace(
+        'hermes -> workbuddy -> codex', 'workbuddy'
+    ).replace('实现功能并验收', '实现功能并验收（active 侧新增要求，不得生效）')
+    task_file.write_text(mutated, encoding='utf-8')
+
+    report_path = runner_mod.run(task_file, ws, out, resume_from=out)
+
+    route_after = json.loads((out / 'route.json').read_text(encoding='utf-8'))
+    manifest_after = read_manifest(out)
+    assert route_after == route_before                       # active Route 突变被忽略
+    assert manifest_after['task']['hash'] == snapshot_hash   # execution hash 不变
+    assert manifest_after['execution_task']['hash'] == snapshot_hash
+    assert manifest_after['intake_task']['path'] == str(task_file)  # intake 仅 provenance
+    report = report_path.read_text(encoding='utf-8')
+    assert snapshot_hash in report                           # REPORT 引用原 snapshot hash
+    # snapshot 文件未被 active 突变改写（原 Route 链仍在 snapshot 中）
+    snapshot_text = (out / 'TASK.snapshot.md').read_text(encoding='utf-8')
+    assert 'hermes -> workbuddy -> codex' in snapshot_text
+
+
+def test_resume_active_content_mutation_keeps_execution_identity(tmp_path, monkeypatch):
+    """Req 5：active TASK 内容变为非法（删除 Objective 等）→ resume 不校验 active
+    内容，仍以 snapshot 为 authority 正常完成。"""
+    monkeypatch.setattr(runner_mod, 'run_agent', _fake_agents_ok)
+    task_file = tmp_path / 'TASK.md'
+    task_file.write_text(MINIMAL_EXPLICIT_ROUTE_TASK, encoding='utf-8')
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    out = tmp_path / 'out'
+    runner_mod.run(task_file, ws, out)
+
+    # active 内容被破坏（Objective 清空 + 乱码）——Task ID 保持不变
+    task_file.write_text(
+        MINIMAL_EXPLICIT_ROUTE_TASK.replace('实现功能并验收', '').replace('# Objective', '## 乱改'),
+        encoding='utf-8',
+    )
+    report_path = runner_mod.run(task_file, ws, out, resume_from=out)  # 不抛错
+    assert '## Current Status\nSUCCESS' in report_path.read_text(encoding='utf-8')
+
+
+def test_resume_task_id_conflict_refused(tmp_path, monkeypatch):
+    """Req 5：active TASK Task ID 与 snapshot 严重冲突 → 显式拒绝 resume
+    （不得静默采用新 active 内容，也不得静默执行旧 snapshot）。"""
+    monkeypatch.setattr(runner_mod, 'run_agent', _fake_agents_ok)
+    task_file = tmp_path / 'TASK.md'
+    task_file.write_text(MINIMAL_EXPLICIT_ROUTE_TASK, encoding='utf-8')
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    out = tmp_path / 'out'
+    runner_mod.run(task_file, ws, out)
+
+    task_file.write_text(
+        MINIMAL_EXPLICIT_ROUTE_TASK.replace('T-EXPLICIT', 'T-OTHER-TASK'), encoding='utf-8'
+    )
+    with pytest.raises(runner_mod.TaskValidationError) as exc:
+        runner_mod.run(task_file, ws, out, resume_from=out)
+    assert 'Execution identity conflict' in str(exc.value)
+    # snapshot 未被改写（原身份保留）
+    assert 'T-EXPLICIT' in (out / 'TASK.snapshot.md').read_text(encoding='utf-8')
+
+
+def test_invalid_explicit_route_runner_fails_validation(tmp_path, monkeypatch):
+    """Req 7：非法显式 Route（未知 agent / malformed / empty）→ runner 在 Validation
+    阶段失败，不执行任何 Agent、不写 route.json。"""
+    calls = []
+
+    def fake_run_agent(agent, prompt, workspace):
+        calls.append(agent)
+        return 'ok'
+
+    monkeypatch.setattr(runner_mod, 'run_agent', fake_run_agent)
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    for route_line in ('Route: hermes -> alien\n', 'Route: hermes ->\n', 'Route:\n'):
+        task_file = tmp_path / 'TASK.md'
+        task_file.write_text(
+            MINIMAL_VALID_TASK.replace('T-EXEC', 'T-BADROUTE') + route_line, encoding='utf-8'
+        )
+        out = tmp_path / 'out-bad'
+        with pytest.raises(runner_mod.TaskValidationError) as exc:
+            runner_mod.run(task_file, ws, out)
+        assert 'Route' in str(exc.value)
+        assert calls == []            # 未启动任何 Agent
+        assert not (out / 'route.json').exists()  # 未产生路由产物

@@ -83,14 +83,21 @@ Formal validator（`task_validation.py`）保持最小必填集
 新 TASK 按本 Schema 全字段编写。解析器支持 Compact 全部字段的
 既有格式（`Field: value` 同行式 / `# Field` 标题式），旧格式不破坏。
 
-## 2.1 Explicit Route Authority（FIX-003）
+## 2.1 Explicit Route Authority（FIX-003 + FIX-004）
 
 - **`Route:` 是 canonical machine 字段**（非人类说明文字），由
   `router.parse_explicit_route` 正式 parse：`Route: hermes -> workbuddy -> codex`
   （分隔符容忍 `->` / `→` / `,` / 空白；agent 仅限 hermes / workbuddy / codex）。
+- **三态解析（FIX-004）**：parser 返回 `RouteStatus` 三态，不得用 None 同时表示
+  “没写 Route”和“写了但非法”：
+  - `ABSENT`：TASK **完全没有** Route 字段 → legacy keyword heuristic 唯一允许路径
+  - `VALID`：可解析且全部 agent 合法、无重复 → authoritative（覆盖 heuristic）
+  - `INVALID`：非法 agent / malformed syntax（空段、悬挂分隔符）/ empty route /
+    duplicate agent 结构 → **Task Validation FAIL（fail-closed）**，
+    绝不静默回退 heuristic。
 - **显式 Route 优先于全文关键词 heuristic**：TASK 声明合法 Route 时，
   `decide_route` 直接采用声明，不再用关键词猜测；keyword Router 仅作为
-  legacy fallback / 未声明 route 时的推断。**TASK 不得被迫重复
+  legacy fallback / **Route 字段完全缺失**时的推断。**TASK 不得被迫重复
   "代码/安全/架构" 等无关词来触发 Codex**（Anti-Bloat 回归测试保障）。
 - **Route Hint 保持人类补充**：只读说明，不参与机器路由（parse 只认
   `Route:` 字段）。
@@ -144,10 +151,21 @@ Codex:     TASK.snapshot.md path + hash；Hermes 结构化执行事实；WorkBud
 
 规则：
 
-- **Immutable Task Snapshot（FIX-002）**：Runner 每次新任务执行开始时把实际执行的
+- **Immutable Task Snapshot（FIX-002 + FIX-004）**：Runner 每次新任务执行开始时把实际执行的
   TASK 内容写入 `<output_dir>/TASK.snapshot.md`；Task Reference / task hash /
   context_manifest / 下游 prompt / REPORT 统一引用 snapshot。active/archive
   TASK 文件后续变化不得破坏本次 execution integrity。
+- **Snapshot = Execution Authority From Entry（FIX-004）**：已有 execution
+  directory（含 resume）且 `TASK.snapshot.md` 存在 → Runner 从入口起优先读取
+  snapshot，并基于 snapshot 完成：task validation、Task ID parsing、route
+  parsing、boundary-relevant semantics、ownership handshake identity、下游
+  prompt/reference 生成。active TASK 只作 provenance / resume request locator，
+  绝不重新成为 execution authority；若 intake Task ID 与 snapshot 严重冲突 →
+  **显式拒绝 resume**（不得静默采用新 active 内容）。
+- **Raw-Byte Task Hash（FIX-004）**：Task Hash = snapshot 文件**原始 bytes** 的
+  标准 SHA-256（`hashlib.sha256(path.read_bytes())`），bytes = `stat().st_size`；
+  不经过 read_text / 换行归一化 / encoding replacement——外部工具
+  （certutil / sha256sum / hashlib.read_bytes）可直接复算，CRLF/LF 文件均可。
 - **Agent 必须保持独立验证，不得只相信 summary。**
   WorkBuddy / Codex prompt 内保留独立验证指令：读取 snapshot 全文、检查仓库实际状态、
   核对 changed files / commit / evidence。
@@ -205,7 +223,8 @@ Task Remote Sync 为准。
 每个运行目录生成 `context_manifest.json`（`context_packet.write_manifest`），至少记录：
 
 - `execution_task`：immutable snapshot（`TASK.snapshot.md`）的 path + hash + bytes
-  ——**所有 downstream integrity check 的默认验证对象**（FIX-003）
+  ——**所有 downstream integrity check 的默认验证对象**（FIX-003）；hash 为 snapshot
+  文件原始 bytes 的标准 SHA-256、bytes 为 `stat().st_size`（FIX-004，外部工具可复算）
 - `task`：legacy key，恒等于 execution_task（向后兼容，两者 hash 必须一致）
 - `intake_task`：仅 provenance（active TASK 原始 path，**无 hash**——不出现
   第二个 hash authority；active 文件后续变化不影响 execution integrity）

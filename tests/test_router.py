@@ -1,6 +1,9 @@
 from pathlib import Path
 
+import pytest
+
 from ai_agent_framework.router import (
+    RouteStatus,
     decide_route,
     parse_explicit_route,
 )
@@ -190,31 +193,65 @@ def test_english_global_readonly_still_skips_hermes_case8():
     assert route.agents[0] == 'workbuddy'
 
 
-# --- FIX-003：Explicit Route Authority（Req 1/2/4/11/12） ---
+# --- FIX-003：Explicit Route Authority（Req 1/2/4/11/12）+ FIX-004：Fail-Closed 三态（Req 7–9） ---
 
 def test_explicit_route_field_parsed_3_agents():
-    """canonical machine Route 字段被正式 parse（非人类说明文字）。"""
+    """canonical machine Route 字段被正式 parse（非人类说明文字）→ VALID + authoritative。"""
     task = '完成资料汇总。\nRoute: hermes -> workbuddy -> codex\n'
-    assert parse_explicit_route(task) == ['hermes', 'workbuddy', 'codex']
+    result = parse_explicit_route(task)
+    assert result.status is RouteStatus.VALID
+    assert result.agents == ['hermes', 'workbuddy', 'codex']
     route = decide_route(task)
     assert route.agents == ['hermes', 'workbuddy', 'codex']
     assert route.reason == 'explicit route (machine field)'
 
 
 def test_explicit_route_parsing_variants():
-    """分隔符容错：-> / → / , / 空白 / 大小写；去重保序。"""
-    assert parse_explicit_route('Route: hermes -> workbuddy -> codex') == ['hermes', 'workbuddy', 'codex']
-    assert parse_explicit_route('Route: hermes→workbuddy→codex') == ['hermes', 'workbuddy', 'codex']
-    assert parse_explicit_route('Route: hermes, workbuddy, codex') == ['hermes', 'workbuddy', 'codex']
-    assert parse_explicit_route('Route: HERMES -> WORKBUDDY') == ['hermes', 'workbuddy']
-    assert parse_explicit_route('Route: hermes -> hermes') == ['hermes']  # 去重
-    # 未声明 / 空 → None（legacy inference）
-    assert parse_explicit_route('没有 Route 字段的任务') is None
-    assert parse_explicit_route('Route:') is None
+    """分隔符容错：-> / → / , / 空白 / 大小写；未声明 / Route Hint → ABSENT。"""
+    def _valid(text):
+        r = parse_explicit_route(text)
+        assert r.status is RouteStatus.VALID, r
+        return r.agents
+
+    assert _valid('Route: hermes -> workbuddy -> codex') == ['hermes', 'workbuddy', 'codex']
+    assert _valid('Route: hermes→workbuddy→codex') == ['hermes', 'workbuddy', 'codex']
+    assert _valid('Route: hermes, workbuddy, codex') == ['hermes', 'workbuddy', 'codex']
+    assert _valid('Route: HERMES -> WORKBUDDY') == ['hermes', 'workbuddy']
+    assert _valid('Route: hermes workbuddy') == ['hermes', 'workbuddy']
+    # 标题式 `# Route` + 下一行值
+    assert _valid('# Route\nhermes -> workbuddy\n') == ['hermes', 'workbuddy']
+    # 未声明 → ABSENT（legacy inference 唯一允许路径）
+    assert parse_explicit_route('没有 Route 字段的任务').status is RouteStatus.ABSENT
     # Route Hint 不参与机器路由（parse 只认 Route: 字段）
-    assert parse_explicit_route('Route Hint: Hermes → WorkBuddy → Codex') is None
-    # 未知 agent → None（不采信，不虚构）
-    assert parse_explicit_route('Route: hermes -> alien') is None
+    assert parse_explicit_route('Route Hint: Hermes → WorkBuddy → Codex').status is RouteStatus.ABSENT
+
+
+def test_invalid_explicit_route_fail_closed_states():
+    """FIX-004 Req 7/9：非法 agent / malformed / empty / duplicate → INVALID（fail-closed）。"""
+    cases = {
+        'Route: hermes -> alien\n': 'unknown agent',
+        'Route: bogus\n': 'unknown agent',
+        'Route:\n': 'empty route',
+        'Route:   \n': 'empty route',
+        'Route: hermes ->\n': 'malformed (dangling separator)',
+        'Route: -> hermes\n': 'malformed (leading separator)',
+        'Route: hermes,,workbuddy\n': 'malformed (empty segment)',
+        'Route: hermes -> hermes\n': 'duplicate agent',
+        'Route: hermes -> workbuddy -> codex -> hermes\n': 'duplicate agent',
+    }
+    for body, why in cases.items():
+        r = parse_explicit_route(body)
+        assert r.status is RouteStatus.INVALID, f'{why}: {body!r} -> {r}'
+        assert r.error, f'INVALID 必须带 error 说明: {body!r}'
+
+
+def test_invalid_route_does_not_fall_back_to_heuristic():
+    """FIX-004 Req 7/8：非法显式 Route → fail-closed，decide_route 不得静默回退 heuristic。"""
+    task = '实现核心功能代码。\nRoute: hermes -> alien\n'
+    with pytest.raises(ValueError, match='INVALID_ROUTE'):
+        decide_route(task)
+    # 对照：完全没有 Route 字段 → legacy heuristic 正常工作
+    assert decide_route('实现核心功能代码。').agents == ['hermes', 'workbuddy', 'codex']
 
 
 def test_explicit_route_overrides_heuristic():
@@ -231,13 +268,6 @@ def test_explicit_route_can_narrow_to_workbuddy_only():
     assert route.agents == ['workbuddy']
 
 
-def test_explicit_route_unknown_agent_falls_back_to_heuristic():
-    """声明含未知 agent → 不采信，回退 heuristic（不崩溃、不虚构 agent）。"""
-    task = '实现核心功能代码。\nRoute: hermes -> alien\n'
-    route = decide_route(task)
-    assert route.agents == ['hermes', 'workbuddy', 'codex']
-
-
 def test_compact_text_without_code_risk_words_still_runs_codex():
     """Anti-Bloat 回归（Req 11）：正文完全不含 代码/安全/架构/code/architecture，
     仅凭显式 Route 字段仍路由 hermes -> workbuddy -> codex。"""
@@ -252,7 +282,7 @@ def test_compact_text_without_code_risk_words_still_runs_codex():
 
 
 def test_legacy_route_inference_unchanged_without_route_field():
-    """旧 TASK 无 Route 字段 → keyword heuristic 行为不变（Req 12）。"""
+    """旧 TASK 无 Route 字段 → keyword heuristic 行为不变（Req 12 / FIX-004 Req 8）。"""
     route = decide_route('修改前端代码并运行测试')
     assert route.agents == ['hermes', 'workbuddy', 'codex']
     route2 = decide_route('请检查这张页面设计图的视觉效果和一致性')

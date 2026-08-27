@@ -176,7 +176,8 @@ def _workspace_errors(workspace: str) -> list[str]:
 
 
 def validate_task_text(task_text: str) -> ValidationResult:
-    """校验 TASK 文本：必填字段非空 + Task ID 安全 + Workspace（若存在）合法。"""
+    """校验 TASK 文本：必填字段非空 + Task ID 安全 + Workspace（若存在）合法 +
+    显式 Route fail-closed（FIX-004 Req 7/8/9）。"""
     fields = parse_task_fields(task_text)
     errors: list[str] = []
 
@@ -188,6 +189,17 @@ def validate_task_text(task_text: str) -> ValidationResult:
     # Workspace：CLI --workspace 已强制；TASK 文件内存在时才校验
     if fields["Workspace"]:
         errors.extend(_workspace_errors(fields["Workspace"]))
+
+    # FIX-004 Req 7–9：显式 Route fail-closed——非法 agent / malformed syntax /
+    # empty route / duplicate structure → Validation FAIL（不得回退 heuristic）；
+    # 只有 TASK 完全没有 Route 字段（ABSENT）才允许 legacy inference。
+    # 延迟 import 规避 router ↔ task_validation 的模块级循环依赖
+    # （router 顶层 import parse_task_fields；调用时两模块均已加载完成）。
+    from .router import RouteStatus, parse_explicit_route
+
+    route_result = parse_explicit_route(task_text)
+    if route_result.status is RouteStatus.INVALID:
+        errors.append(f"非法显式 Route: {route_result.error or 'invalid route structure'}")
 
     return ValidationResult(valid=not errors, errors=errors)
 

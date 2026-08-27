@@ -227,8 +227,8 @@ def test_manifest_references_resolvable(tmp_path):
             "result_json": {"path": str(js), "hash": sha256_file(js), "bytes": file_bytes(js)},
         }
     write_manifest(
-        out, task_path=tf, task_hash=sha256_text(COMPACT_TASK),
-        task_bytes=len(COMPACT_TASK.encode("utf-8")), workspace=str(tmp_path),
+        out, task_path=tf, task_hash=sha256_file(tf),
+        task_bytes=file_bytes(tf), workspace=str(tmp_path),
         head="h" * 40, stages=stages, prompts={},
     )
     manifest = __import__("ai_agent_framework.context_packet", fromlist=["read_manifest"]).read_manifest(out)
@@ -247,8 +247,8 @@ def test_manifest_integrity_detects_tamper(tmp_path):
         "result_json": {"path": str(js), "hash": sha256_file(js), "bytes": file_bytes(js)},
     }}
     write_manifest(
-        out, task_path=tf, task_hash=sha256_text(COMPACT_TASK),
-        task_bytes=len(COMPACT_TASK.encode("utf-8")), workspace=str(tmp_path),
+        out, task_path=tf, task_hash=sha256_file(tf),
+        task_bytes=file_bytes(tf), workspace=str(tmp_path),
         head=None, stages=stages, prompts={},
     )
     # 文件被修改 → hash 不匹配被检出（引用不因文件变化而失去可追溯性）
@@ -408,7 +408,11 @@ def test_runner_full_chain_with_packet(tmp_path, monkeypatch):
     assert (out / "workbuddy_result.json").exists()
     manifest = __import__("ai_agent_framework.context_packet", fromlist=["read_manifest"]).read_manifest(out)
     assert manifest is not None
-    assert manifest["task"]["hash"] == sha256_text(LEGACY_TASK)
+    # FIX-004 Req 1/2：manifest hash == snapshot 文件原始 bytes SHA-256（外部可复算）
+    import hashlib
+    snapshot = out / "TASK.snapshot.md"
+    assert manifest["task"]["hash"] == hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    assert manifest["task"]["bytes"] == snapshot.stat().st_size
     assert check_references(manifest) == []
     # prompt 指标已记录（Requirement 10）
     assert "workbuddy" in manifest["prompts"]

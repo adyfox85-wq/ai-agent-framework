@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import cancel as cancel_mod
-from .context_packet import sha256_text
+from .context_packet import sha256_file, sha256_text
 from .lock_utils import LockError, LockTimeout, task_state_lock
 from .report import build_report
 from .task_lifecycle import (
@@ -195,10 +195,16 @@ def _build_report_from_artifacts(output_dir: Path, canonical, task_id: str) -> s
         if req is not None:
             terminal["cancel_requested_at"] = req.requested_at
         terminal["task_id"] = task_id
+    # FIX-004 Req 6：Task Reference hash 必须是 snapshot 文件原始 bytes 的
+    # SHA-256（sha256_file）；sha256_text 只作为无文件可引用时的 legacy 兜底。
+    if task_ref_path and Path(task_ref_path).exists():
+        task_hash = sha256_file(task_ref_path)
+    else:
+        task_hash = sha256_text(task_text) if task_text else None
     return build_report(
         task_text, route, results, canonical.status, integrity_notes=None, terminal=terminal,
         task_path=task_ref_path,
-        task_hash=sha256_text(task_text) if task_text else None,
+        task_hash=task_hash,
         output_dir=output_dir,
         intake_task_path=intake_task_path,
     )

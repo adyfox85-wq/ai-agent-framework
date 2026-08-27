@@ -3,7 +3,7 @@
 > Project: AI Agent Framework
 > Document Type: **Living Long-Term Backlog / 长期问题与恢复登记**
 > Established: 2026-08-27（AAF-MAINT-001-FIX-002）
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-003-FIX-001 — Phase C closure sync + RW-022 登记）
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-004-FIX-001 — Phase D closure audit sync：RW-020 / RW-021 证据追加 + RW-023 / RW-024 登记）
 > Location: `docs/internal/AAF_MASTER_BACKLOG.md`
 
 ## Purpose
@@ -415,7 +415,7 @@ P3
 | Category | Runtime Reliability / Runtime Observability |
 | Status | OPEN |
 | Priority | P1 |
-| Evidence / Origin | AAF-v0.4-TASK-001-FIX-003 real incident, 2026-08-27。任务进入 WORKBUDDY 阶段后（Hermes 已完成）：task.status=RUNNING、stage=WORKBUDDY、agent=workbuddy、last_activity_at 停止更新、workbuddy_result.md 从未生成、WorkBuddy 进程已不存在、Framework runner 进程已不存在、Bridge 进程已不存在、REPORT.md 未生成；task.json 长时间保持 RUNNING / WORKBUDDY，用户无任何提示只能继续等待。<br><br>后续通过 Framework resume 恢复：复用 Hermes result → WorkBuddy PASS → Codex APPROVE → REPORT → SUCCESS / COMPLETED。恢复机制有效，但 **Dead Runner Detection 缺失**。 |
+| Evidence / Origin | AAF-v0.4-TASK-001-FIX-003 real incident, 2026-08-27。任务进入 WORKBUDDY 阶段后（Hermes 已完成）：task.status=RUNNING、stage=WORKBUDDY、agent=workbuddy、last_activity_at 停止更新、workbuddy_result.md 从未生成、WorkBuddy 进程已不存在、Framework runner 进程已不存在、Bridge 进程已不存在、REPORT.md 未生成；task.json 长时间保持 RUNNING / WORKBUDDY，用户无任何提示只能继续等待。<br><br>后续通过 Framework resume 恢复：复用 Hermes result → WorkBuddy PASS → Codex APPROVE → REPORT → SUCCESS / COMPLETED。恢复机制有效，但 **Dead Runner Detection 缺失**。<br><br>2026-08-27 再次真实复现（AAF-v0.4-TASK-004 Phase D）：实现与 E2E 全部完成后（.aaf/AAF-v0.4-TASK-004/REPORT.md 已生成，mtime 2026-08-27 20:03:04），canonical task.json 仍残留 RUNNING / HERMES（started_at = last_activity_at = updated_at = 2026-08-27T19:07:15，不再推进）；2026-08-27 20:18:33 process check（AAF_TASK004_PROCESS_CHECK.txt）：无任何相关 TASK-004 runner 进程、Bridge 进程亦不存在；canonical RUNNING 未被自动对账 / 回收（该 run 的 runner 进程在 E2E 前由 cleanup.py 清理，task.json 只读保留未改）。<br><br>Phase D UI suspected-stuck（bridge/stuck.py，仅观察提示）**不解决 RW-020**：它只提示「任务可能已停滞」，不做 ownership / process liveness 检测、不做 canonical 对账；RW-020 完整协议（liveness 跟踪、staleness + artifact expectation、Resume / Diagnostics / Resolve UX）仍未实现。 |
 | Problem | RUNNING 目前只表达 lifecycle state，不能证明 execution owner / runner / 当前 agent 仍存活。 |
 | Desired Behavior | 未来 AAF Runtime Health / Desktop Shell 应区分 **Lifecycle State** 与 **Runtime Health**。至少检测可疑组合：task.status=RUNNING + runner ownership/process missing + 当前 agent process missing + last_activity_at stale + expected result artifact missing，并提示「任务可能已异常中断」。潜在用户动作：Resume Task / View Diagnostics / Resolve or Mark Failed（通过权威 lifecycle 路径）。 |
 | Important Boundary | Runtime Health detection **不得**允许 Desktop Shell / UI 独立写入权威 terminal task state。例：canonical lifecycle=RUNNING、runtime health=PROCESS_MISSING / STALE、UI=warning only；Terminal authority 保持 Core / Lifecycle（遵循既有 Safe Cancel / recovery 架构）。 |
@@ -437,7 +437,7 @@ P3
 | Category | Bridge lifecycle / Runtime UX / Completion notification |
 | Status | OPEN |
 | Priority | P2 |
-| Evidence / Origin | AAF-v0.4-TASK-002-FIX-001 real Windows validation, 2026-08-27。真实验收中主动执行了 Bridge Restart / Exit / restart：Framework runner / validation task 可以继续运行并最终生成 SUCCESS REPORT，但启动该 task 的原 Bridge instance 被 Restart / Exit 后，新 Bridge instance 不会自动恢复原 launcher wait-thread / completion callback，用户没有收到原有「任务完成」提示 / Planner Handoff copy action，只能手工发现 REPORT.md。<br><br>2026-08-27 再次复现（AAF-v0.4-TASK-003）：Phase C E2E 过程中 Bridge 被正常切换/重启后，runner / task 最终完成并产生 REPORT，但用户未收到 completion notification / Planner Handoff copy action（与既有登记一致，仅补充事实，未重复新建 issue）。 |
+| Evidence / Origin | AAF-v0.4-TASK-002-FIX-001 real Windows validation, 2026-08-27。真实验收中主动执行了 Bridge Restart / Exit / restart：Framework runner / validation task 可以继续运行并最终生成 SUCCESS REPORT，但启动该 task 的原 Bridge instance 被 Restart / Exit 后，新 Bridge instance 不会自动恢复原 launcher wait-thread / completion callback，用户没有收到原有「任务完成」提示 / Planner Handoff copy action，只能手工发现 REPORT.md。<br><br>2026-08-27 再次复现（AAF-v0.4-TASK-003）：Phase C E2E 过程中 Bridge 被正常切换/重启后，runner / task 最终完成并产生 REPORT，但用户未收到 completion notification / Planner Handoff copy action（与既有登记一致，仅补充事实，未重复新建 issue）。<br><br>2026-08-27 第三次真实复现（AAF-v0.4-TASK-004 Phase D）：Phase D 真实 Windows E2E 全链路完成后，最终 REPORT 已成功生成（.aaf/AAF-v0.4-TASK-004/REPORT.md，SUCCESS，mtime 20:03:04），但 E2E 流程中 Bridge 经历 Exit / Restart，用户未收到最终 completion window / Planner Handoff copy action，只能从文件系统手工取回 REPORT.md（与既有登记一致，仅补充事实，未重复新建 issue）。 |
 | Scenario | Bridge instance A 启动 Framework task → Framework runner 独立继续运行 → Bridge A 被 Restart / Exit → Bridge instance B 启动 → runner 最终正常完成并生成 REPORT → Bridge B 不持有原 launcher completion callback → 用户没有收到完成通知 / Planner Handoff copy action |
 | Current Implementation | Launcher completion callback / wait-thread 属原 Bridge process 内存；Bridge restart 后新 instance 不会重新关联旧 in-flight runner。 |
 | Problem | Framework execution success 和用户 completion notification 是两个不同事实：REPORT 已成功生成 ≠ 用户一定收到完成提示。任务产物完整（canonical task / REPORT 最终 SUCCESS），但用户侧 notification continuity 丢失。 |
@@ -471,6 +471,48 @@ P3
 | Target | 最终 REPORT 顶部状态：SUCCESS（含 PASS_WITH_WARNING 且无 blocking）≠ WAITING（确实需要后续处理）。WAITING 应表达「需要后续处理 / 尚未闭环」，而不是「存在任意 warning 文本」。 |
 | Related | RW-019（Agent review evidence consistency）、RW-021（completion notification continuity，同为 REPORT 生成 ≠ 用户闭环的语义区分）；AAF-v0.4-TASK-002（Phase B）为同现象早期实例 |
 | Do Not Forget | 本次顶部 WAITING 不是 Phase C implementation failure；不得据此重开 Phase C、不得改写历史 REPORT、不得手动改写 task terminal state。 |
+
+---
+
+## RW-023 — E2E Validation Fixed Task ID Reuse Causes Duplicate Trigger / GUI Loop
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-023 |
+| Title | E2E Validation Fixed Task ID Reuse Causes Duplicate Trigger / GUI Loop |
+| Category | Validation orchestration / GUI automation / test harness |
+| Status | OPEN |
+| Priority | P2 |
+| Evidence / Origin | AAF-v0.4-TASK-004（Phase D）真实 Windows E2E，2026-08-27（.aaf/AAF-v0.4-TASK-004/e2e_phase_d.py）。GUI E2E 使用**固定** validation Task ID：`AAF-v0.4-TASK-004-E2E`（脚本常量 TASK_ID，第 46 行）。重复 validation 时驱动自身预删 active task 文件与证据目录（`TASK_FILE.unlink()` + `shutil.rmtree(OUT_DIR)`，注释明确为「清理陈旧产物…避免 TASK_ALREADY_EXISTS / 误报」）；热键触发走 attempt 1..3 重试循环，并对「任务已在执行」（duplicate guard 弹窗）等 blocker 弹窗反复关闭后重试。本次运行 attempt=1 即成功（未出现真实 destructive loop），但代码路径完整具备：固定 ID 复用 → duplicate guard 正确拒绝 → automation 仍可能继续重开 Bridge 菜单 / 状态窗口 / 重试热键 → 用户看到鼠标 / 焦点被抢占；同时 `rmtree(OUT_DIR)` 使同一 E2E task 的旧证据被覆盖（.aaf/AAF-v0.4-TASK-004-E2E/ 仅保留最后一次运行产物），artifact / report provenance 混淆。 |
+| Problem | GUI E2E 使用固定 validation Task ID，重复验证时：duplicate guard 正确拒绝重复（预期行为），但 automation 可能继续 GUI loop（重开 Bridge menu / status window / re-trigger hotkey）；用户看到 mouse/focus hijacking；artifact/report provenance 变得模糊；同一 E2E task 证据可能被覆盖 / 重写。 |
+| Desired Behavior | 每次 GUI E2E 应：使用**唯一** validation Task ID（如时间戳 / 运行号后缀），或检测到已完成 validation 后**安全跳过**；automation 必须有明确终止条件；duplicate rejection 后不得继续 GUI loop。 |
+| Current Implementation | Phase D E2E 脚本 e2e_phase_d.py 当前用固定 ID + 预删陈旧产物 + 有限重试（attempt ≤ 3）规避；无唯一 ID 机制、无「已完成则跳过」机制。 |
+| Remaining Gap | - 唯一 validation Task ID 生成<br>- 已完成 validation 检测与安全跳过<br>- automation 明确终止条件<br>- duplicate rejection 后停止 GUI loop |
+| Decision | 本任务只登记，不实现修复（E2E orchestration 属 test harness 改进，须由 Planner 立项）。 |
+| Target | 重复 GUI E2E 验证不会产生 duplicate trigger / GUI loop / 证据覆盖。 |
+| Related | RW-016（Duplicate Task Status UX——面向最终用户的 duplicate 提示状态缺口，属产品 UX，非测试 harness 编排，不合并）；RW-019（Agent review execution evidence consistency——重复验证证据 provenance 的相邻观察）。 |
+| Do Not Forget | duplicate guard 本身正确拒绝是**预期行为**；问题在 harness 复用固定 ID + 无终止条件导致的 loop 与证据覆盖，不在 Framework lifecycle。 |
+
+---
+
+## RW-024 — Completion Dialog Copy Report UX（复制报告二次弹窗 + Z 序问题）
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-024 |
+| Title | Completion Dialog Copy Report UX（复制报告后二次弹窗 + Z 序问题） |
+| Category | Runtime UX / Bridge / Completion dialog |
+| Status | OPEN |
+| Priority | P2 |
+| Evidence / Origin | 用户明确反馈（2026-08-27，Phase D 期间）。当前行为（bridge/main.py `_copy_last_report()`，line 405–420）：任务完成 → 弹出第一个完成窗口 → 点击「复制报告」→ `ui.show_info("报告已复制", …)` 再弹出第二个提示窗口 → 第二窗口可能落在第一个窗口后面 → 点确定后两个窗口一起关闭。 |
+| Problem | 完成通知被拆成两个 modal：复制动作触发第二个弹窗，与主完成窗口存在 Z 序竞争；用户看到两个窗口叠在一起，点确定后两个一起关闭。 |
+| Desired Behavior | 任务完成 → 只保留一个完成窗口。按钮：[复制报告] [关闭]。点击「复制报告」：复制到剪贴板、不弹第二个 modal、不关闭主完成窗口、可在原窗口显示轻量反馈「已复制 ✓」、可重复复制；只有主动点击「关闭」才关闭完成窗口。 |
+| Current Implementation | 完成时弹主完成窗口；点「复制报告」另弹提示窗（show_info），两窗叠置；点确定后两窗一起关闭。 |
+| Remaining Gap | 单窗 UX 改造：合并按钮、就地反馈、关闭语义唯一。 |
+| Decision | 本任务只登记，不实现。 |
+| Target | 完成通知单窗口：复制不弹新 modal、不关主窗、原地轻量反馈；仅「关闭」按钮关闭。 |
+| Related | 与 RW-021（completion notification continuity——Bridge 换代后「通知是否送达」的连续性缺口）**明确区分**：RW-024 是「通知窗口自身交互」的 UX 缺陷；与 RW-023（E2E orchestration）无关；与 RW-016（duplicate 状态 UX）无关。 |
+| Do Not Forget | 不合并到 RW-021 / RW-016 / RW-023；属独立 completion dialog UX 条目。 |
 
 ---
 
@@ -718,6 +760,8 @@ Framework 仍能恢复到可继续升级的状态（见 RW-009）。
 | RW-020 | Dead Runner / Orphaned RUNNING State Detection | OPEN | P1 |
 | RW-021 | Bridge Restart / Exit Completion Notification Continuity | OPEN | P2 |
 | RW-022 | Framework Final Status Aggregation: PASS_WITH_WARNING + APPROVE + Blocking NONE → WAITING | OPEN | P1 |
+| RW-023 | E2E Validation Fixed Task ID Reuse Causes Duplicate Trigger / GUI Loop | OPEN | P2 |
+| RW-024 | Completion Dialog Copy Report UX（复制报告二次弹窗 + Z 序问题） | OPEN | P2 |
 | BND-001 | Planner-layer Anti-Drift Validation | PARTIAL | P2 |
 | CTX-001 | Context Length / Conversation Rollover UX | PARTIAL | P1 |
 | HIST-001 | Historical Framework Optimization Set Recovery | RECOVERY_PENDING | P2 |

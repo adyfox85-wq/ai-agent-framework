@@ -1,8 +1,8 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.4（IN PROGRESS — Phase A/B/C COMPLETE；Phase D IMPLEMENTATION COMPLETE（待验证）；Phase E/F NOT STARTED）**\
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-004 Phase D implementation sync）\
+> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E/F NOT STARTED）**\
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-004-FIX-001 Phase D closure audit sync）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -20,6 +20,7 @@ Status: IN PROGRESS
 Phase: A — Runtime State Foundation: COMPLETE
        B — Bridge Background / Tray Skeleton: COMPLETE
        C — Status Window + Chinese-first UI: COMPLETE
+       D — Progress Visualization: COMPLETE
 Direction: Desktop Shell MVP / Runtime Observability & Control
 
 v0.4 主线（Phase 顺序）：
@@ -27,8 +28,8 @@ A. Runtime State Foundation（COMPLETE）
 B. Bridge Background / Tray Skeleton（COMPLETE）
 C. Status Window + Chinese-first UI（COMPLETE — 2026-08-27 closure：AAF-v0.4-TASK-003-FIX-001 正式同步；
    实现 + WorkBuddy 独立验证 + Codex 审查全部通过，见下方 Phase C 段落）
-D. Progress Visualization（IMPLEMENTATION COMPLETE — 2026-08-27 AAF-v0.4-TASK-004 实现完成；
-   待 WorkBuddy 独立验证 + Codex 审查通过后由 Planner 正式标 COMPLETE，见下方 Phase D 段落）
+D. Progress Visualization（COMPLETE — 2026-08-27 closure：AAF-v0.4-TASK-004-FIX-001 正式收口；
+   实现 + 测试 + 真实 Windows E2E + 独立 post-completion closure audit 通过，见下方 Phase D 段落）
 E. Safe Cancel Lifecycle（NOT STARTED）
 F. Project Switching / Duplicate Task UX（NOT STARTED）
 
@@ -190,36 +191,72 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
   stuck detection / Safe Cancel / launch registry / completion reattachment / project switching /
   Duplicate UX）/ RW-020 / RW-021 / final-status aggregation fix
 
-### 0.2 Phase D — Progress Visualization（IMPLEMENTATION COMPLETE — 待 WorkBuddy + Codex 验证）
+### 0.2 Phase D — Progress Visualization（COMPLETE）
 
-- TASK: AAF-v0.4-TASK-004（2026-08-27）
-- 状态：IMPLEMENTATION COMPLETE（实现 + 测试 + 真实 Windows E2E 全部通过；
-  **不标 COMPLETE**——按 TASK req 25，须在 WorkBuddy 独立验证 + Codex 审查通过后由 Planner 正式确认）
-- 范围：bridge/progress.py（集中权重表 §4.2 + 确定性估算纯函数 §4.1 + 中文文案 §12.1）/
-  bridge/stuck.py（suspected-stuck 最小观察 §5.2：RUNNING + last_activity ≥ 10 分钟，
-  只提示不改 canonical state，RW-020 边界）/ bridge/status_window.py（整体进度条 Canvas +
-  「整体进度：约 N%（估算）」+ 当前阶段占比 + stuck 黄色横幅 + 进行中阶段高亮 +
-  查看任务目录按钮；约 1s after 只读刷新；Tk 主线程更新）
-- 进度规则（确定性）：已完成阶段全权重；进行中阶段内部 0%–50% 线性（60 分钟封顶）；
-  SUCCESS→100%；WAITING/FAILED 冻结在已完成阶段权重和（不自动推进、不显示 100%）；
-  无任务/无 task.json → 0（暂无进度信息）；legacy 缺失 phases 不崩溃
+- TASK: AAF-v0.4-TASK-004（2026-08-27）；closure: AAF-v0.4-TASK-004-FIX-001（Phase D Post-Completion
+  Closure Audit，2026-08-27）
+- 状态：COMPLETE（实现 + 334 passed + 真实 Windows E2E + 独立 post-completion closure audit 全部通过；
+  WorkBuddy 独立验证 + Codex closure review 由 AAF-v0.4-TASK-004-FIX-001 route 阶段（hermes→workbuddy→codex）
+  在 Executor 返回后依次执行，判定记录于该任务 REPORT.md；Remote Sync SYNCED）
+- Implementation commit: 6c27a27（feat(v0.4-phase-d): progress visualization + suspected-stuck）
+- 范围：bridge/progress.py（集中权重表 §4.2 Validation 5 / Boundary 5 / Hermes 45 / WorkBuddy 20 / Codex 20 /
+  Report 5 合计 100 断言保护 + 确定性估算纯函数 §4.1：已完成阶段全权重；进行中阶段内部 0%–50% 线性、60 分钟
+  封顶；SUCCESS→100%；WAITING/FAILED 冻结在已完成阶段权重和；无任务/无 task.json → 0；legacy 缺失 phases
+  不崩溃 + 中文文案 §12.1）/ bridge/stuck.py（suspected-stuck 最小观察 §5.2：RUNNING + last_activity_at
+  距今 ≥ 10 分钟 →「⚠ 任务可能已停滞（最近 N 分钟没有活动）」；阈值集中常量化；只提示、零 canonical 写入；
+  RW-020 边界）/ bridge/status_window.py（整体进度条 Canvas 只读渲染 +「整体进度：约 N%（估算）」+
+  当前阶段占比 + stuck 黄色横幅 + 进行中阶段高亮 +「查看任务目录」按钮；约 1s tkinter.after 只读刷新、
+  Tk 主线程更新、关闭后刷新安全）/ docs（QUICKSTART / TROUBLESHOOTING：进度是估算、100% 只在 SUCCESS
+  保证、stuck 仅可疑）
+- 进度规则（确定性，单调性）：正常推进序列单调不倒退（0→5→14→21→55→85→96→100）；SUCCESS→100%；
+  FAILED/WAITING 终态按设计 §4.1.5 冻结在已完成阶段权重和（估算→事实收敛，明确理由 + 测试覆盖）
 - 只读边界：进度/停滞全部由 runtime_state reader + task.json phases + timestamps 计算；
-  零写 task.json / run.json / route.json / boundary.json / REPORT.md / cancel.request
-- 回归：284 基线不降，全量 334 passed（+50 tests/test_progress.py，覆盖 TASK req 22 A–T 全项：
-  0% / 各阶段 running / SUCCESS 100 / FAILED <100 / WAITING 冻结 / legacy / no-task /
-  monotonic / stuck 阈值上下 / SUCCESS·FAILED 不显示 stuck / last_activity·stage_started_at 缺失 /
-  中文文案 / 权重表集中 / GUI 进度条·横幅·高亮·任务目录按钮）
+  UI 零写 task.json / run.json / route.json / boundary.json / REPORT.md / cancel.request
+- 测试：334 passed（284 基线 + 50 新增 tests/test_progress.py，零下降；覆盖 TASK req 22 A–T 全项：
+  0% / 各阶段 running / SUCCESS 100 / FAILED <100 / WAITING 冻结 / legacy / no-task / monotonic /
+  stuck 阈值上下 / SUCCESS·FAILED·WAITING 不显示 stuck / last_activity·stage_started_at 缺失 /
+  中文文案 / 权重表集中 / GUI 进度条·横幅·高亮·任务目录按钮 / 无 CANCELLED scope leak）
 - 真实 Windows E2E（.aaf/AAF-v0.4-TASK-004/：EVIDENCE.md、evidence.jsonl、9 张截图、e2e_phase_d.py）：
-  Tray 打开状态窗口（空状态）→ stuck fixture 独立验证（真实 Tk 断言 + live 窗口截图）→
-  真实 Ctrl+Alt+A 全路由任务（Hermes→WorkBuddy→Codex→REPORT）→ 进度采样 [10, 55, 75, 100]
-  单调推进 → SUCCESS = 100%（全绿进度条 + 「整体进度：100%（已完成）」）→ 关闭窗口 Bridge 存活 →
-  重开进度仍正确 → 三 Agent 进程树 console_windows 全空（无 console 黑窗）→ 无 Tk callback 异常 →
-  Tray Exit 正常退出；像素级验证进度条绿色随百分比单调递增、stuck 横幅仅 stuck 态出现
-- 环境观察（非 blocking，登记不实现）：E2E 期间复现 RW-012 场景（Bridge 进程存活但 hotkey
-  listener 失活，探测无 1409 冲突）——按既有登记处理（重启 Bridge 恢复），未新建 issue
-- 禁止（Phase D 不实现）：Phase E/F 全部内容（Safe Cancel / CANCELLED / cancel.request /
-  control.json / state.lock / launch registry / force kill / project switching / Duplicate UX）/
-  RW-020 完整 dead-runner protocol / RW-021 / RW-022 aggregation fix
+  Tray 打开状态窗口（空状态）→ stuck fixture 独立验证（真实 Tk 断言 + live 窗口截图）→ 真实 Ctrl+Alt+A
+  全路由任务（Hermes→WorkBuddy→Codex→REPORT）→ 进度采样 [10, 55, 75, 100] 单调推进 →
+  SUCCESS = 100%（全绿进度条 +「整体进度：100%（已完成）」）→ 关闭窗口 Bridge 存活 → 重开进度仍正确 →
+  三 Agent 进程树 console_windows 全空（无 console 黑窗）→ 无 Tk callback 异常 → Tray Exit 正常退出；
+  像素级验证进度条绿色随百分比单调递增、stuck 横幅仅 stuck 态出现
+- 独立 post-completion closure audit（AAF-v0.4-TASK-004-FIX-001，2026-08-27）：
+  - Source of Truth 核对：PROJECT_STATE / AAF_MASTER_BACKLOG / 冻结设计 §4/§5/§12.1 / Phase C closure
+    handoff / .aaf/AAF-v0.4-TASK-004 全部证据 / 当前代码（progress.py / stuck.py / status_window.py /
+    tests/test_progress.py）逐一核对一致
+  - 实现侧独立核对通过：progress bar / percentage text / 固定确定性权重模型 / 权重集中 / SUCCESS=100 /
+    FAILED·WAITING 收敛 / 单调正常序列 / Chinese-first / suspected-stuck warning / stuck 只读 /
+    零 canonical 写入 / 无 Phase E/F 泄漏（bridge/ 无 cancel.request / control.json / state.lock /
+    launch registry / force kill / CANCELLED 实现，仅注释声明不实现）
+  - 权重模型核对：实现 == 冻结设计（Validation 5 / Boundary 5 / Hermes 45 / WorkBuddy 20 / Codex 20 /
+    Report 5 = 100，assert 保护）
+  - 进度语义核对：no task → 0；RUNNING 阶段估算；completed 阶段全权重；SUCCESS=100；FAILED<100；
+    WAITING 不自动推进；legacy/缺失字段安全；正常生命周期进度不倒退
+  - stuck 语义核对：suspected-stuck ≠ dead runner 判定；阈值集中（10 分钟常量）；仅 RUNNING + stale
+    last_activity 提示；零 canonical mutation；无自动 resume / cancel / force kill；RW-020 未标 solved
+  - 测试独立重跑：`pytest -q` = **334 passed in 4.45s**（零下降）
+  - E2E 证据独立复核：evidence.jsonl 全步骤一致；progress samples [10,55,75,100] 单调；SUCCESS=100；
+    独立像素抽样 s4_status_final.png 绿色进度条存在（335 样本点）而 s2_status_empty.png 无（0）；
+    三 Agent console_count=0；bridge_error.log 不存在（无 Tk callback 异常）
+  - RW-020 真实复现（追加证据，不标 solved）：TASK-004 canonical task.json 残留 RUNNING/HERMES
+    （started_at = last_activity_at = 19:07:15）而 runner / Bridge 已不存在、REPORT.md 已生成（20:03:04）；
+    UI suspected-stuck 不解决 RW-020（见 AAF_MASTER_BACKLOG.md RW-020）
+  - RW-021 真实复现（追加证据，不实现 callback recovery）：Phase D E2E Bridge Exit/Restart 后 REPORT 已生成
+    但用户未收到最终 completion window（见 AAF_MASTER_BACKLOG.md RW-021）
+  - 新登记 backlog：RW-023（E2E Validation Fixed Task ID Reuse Causes Duplicate Trigger / GUI Loop，
+    OPEN/P2）、RW-024（Completion Dialog Copy Report UX，OPEN/P2）——均无既有等价 issue，未重复创建
+  - WorkBuddy: 独立验证（本任务 route 阶段执行，verdict 见 AAF-v0.4-TASK-004-FIX-001 REPORT.md）
+  - Codex: closure review（本任务 route 阶段执行，verdict 见 AAF-v0.4-TASK-004-FIX-001 REPORT.md）
+  - Blocking: NONE（实现侧 + 审计侧）
+  - Remote Sync: SYNCED
+  - 正式 closure 报告：docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-D-CLOSURE-2026-08-27.md
+- 历史 task.json 残留说明：TASK-004 canonical task.json 的 RUNNING/HERMES 残留属 RW-020 真实复现证据，
+  本 audit 只读保留、不修改其终态、不手工标 SUCCESS；该 run 的 runner 已不存在（E2E 前 cleanup.py 清理）
+- 禁止（Phase D 不实现）：Phase E/F 全部内容（Safe Cancel / CANCELLED / cancel.request / control.json /
+  state.lock / launch registry / force kill / project switching / Duplicate UX）/ RW-020 完整 dead-runner
+  protocol / RW-021 / RW-022 aggregation fix
 - Next Phase Candidate: Phase E — Safe Cancel Lifecycle（仅标记候选，不自动启动，
   必须由 Planner 在 Phase D 正式 COMPLETE 后生成 TASK 才算启动）
 
@@ -321,7 +358,7 @@ docs/internal/AAF_MASTER_BACKLOG.md
 以后任何被正式确认"稍后处理"的问题，**必须进入 Master Backlog 才算
 长期登记完成**。
 
-v0.4 IN PROGRESS — Phase A/B/C COMPLETE；Phase D IMPLEMENTATION COMPLETE（待 WorkBuddy + Codex 验证后由 Planner 正式标 COMPLETE）；Phase E/F 保持 NOT STARTED，不得自动启动；Next Phase Candidate = Phase E — Safe Cancel Lifecycle（仅标记候选，不启动，须由 Planner 在 Phase D 正式 COMPLETE 后生成 TASK 才算启动）。
+v0.4 IN PROGRESS — Phase A/B/C/D COMPLETE（Phase D 已于 2026-08-27 由 AAF-v0.4-TASK-004-FIX-001 正式收口）；Phase E/F 保持 NOT STARTED，不得自动启动；Next Phase Candidate = Phase E — Safe Cancel Lifecycle（仅标记候选，不启动，须由 Planner 在 Phase D 正式 COMPLETE 后生成 TASK 才算启动）。
 
 ------------------------------------------------------------------------
 

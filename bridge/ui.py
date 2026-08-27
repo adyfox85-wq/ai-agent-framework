@@ -67,6 +67,55 @@ def show_error(title: str, message: str) -> None:
     messagebox.showerror(title, message)
 
 
+def ask_exit_aaf(root: tk.Tk) -> bool:
+    """退出 AAF 确认（Phase B）。与 Stop Current Task 语义分离：只退出宿主。"""
+    return messagebox.askyesno(
+        "退出 AAF",
+        "确定退出 AAF Bridge / Tray？\n\n"
+        "退出不会取消正在执行的任务（Framework 将继续在后台运行）。\n"
+        "重新使用请运行 scripts/start_bridge.pyw。",
+    )
+
+
+def show_bridge_status(root: tk.Tk, rows: list[tuple[str, str]]) -> tk.Toplevel:
+    """最小 Bridge 信息窗口（Phase B 占位；Phase C 预留接入点）。
+
+    - 关闭窗口（X / Close 按钮）只销毁本窗口，不退出 Bridge
+    - 返回窗口对象，调用方用于去重/聚焦
+    """
+    win = tk.Toplevel(root)
+    win.title("AAF Bridge — 状态")
+    win.attributes("-topmost", True)
+    win.resizable(False, False)
+
+    for i, (label, value) in enumerate(rows):
+        tk.Label(win, text=f"{label}:", font=("Segoe UI", 9, "bold")).grid(
+            row=i, column=0, sticky="ne", padx=10, pady=3
+        )
+        tk.Label(win, text=value, font=("Segoe UI", 9), wraplength=420, justify="left").grid(
+            row=i, column=1, sticky="w", padx=10, pady=3
+        )
+
+    note = tk.Label(
+        win,
+        text="关闭本窗口不会退出 Bridge。完整状态窗口将在后续版本提供。",
+        font=("Segoe UI", 8),
+        fg="#666666",
+    )
+    note.grid(row=len(rows), column=0, columnspan=2, padx=10, pady=(6, 0))
+
+    btns = tk.Frame(win)
+    btns.grid(row=len(rows) + 1, column=0, columnspan=2, pady=10)
+    tk.Button(btns, text="关闭", width=12, command=win.destroy).pack()
+
+    win.protocol("WM_DELETE_WINDOW", win.destroy)
+    win.update_idletasks()
+    x = root.winfo_screenwidth() // 2 - win.winfo_width() // 2
+    y = root.winfo_screenheight() // 2 - win.winfo_height() // 2
+    win.geometry(f"+{max(0, x)}+{max(0, y)}")
+    return win
+
+
 def clipboard_set_text(root: tk.Tk, text: str) -> bool:
     """写入系统剪贴板（tkinter 路径，需在主线程）。成功返回 True。"""
     try:

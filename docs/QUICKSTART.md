@@ -26,6 +26,18 @@ codex --version       # 可选；路由需要 Codex 时才用
 
 ## Step 3 — 启动 Bridge（必须先做）
 
+有两种方式，**普通使用推荐后台方式**（不再需要持续打开 PowerShell / Terminal）：
+
+### 方式 A：后台方式（推荐）
+
+双击仓库下的 `scripts\start_bridge.pyw`（或命令行执行 `pythonw scripts\start_bridge.pyw`）。
+
+- 无控制台窗口，Bridge 常驻系统托盘（任务栏右下角 AAF 图标）
+- 图标 Tooltip 显示状态；右键菜单提供：**打开状态 / Bridge 信息**、**重启 Bridge**、**退出 AAF**
+- 单实例保护：重复启动不会产生第二个 Bridge（提示后自动退出）
+
+### 方式 B：调试方式
+
 ```bash
 python -m bridge.main
 ```
@@ -35,6 +47,8 @@ python -m bridge.main
 ```
 AAF Bridge 运行中 | 热键: Ctrl+Alt+A | 项目: '...'
 ```
+
+需要查看日志 / 排查热键问题时使用；后台模式无控制台输出。
 
 **Bridge 没启动时，Ctrl+Alt+A 不会有任何反应。**
 
@@ -100,6 +114,18 @@ Bridge 校验通过后点击 Execute，Framework 开始后台运行。
 执行链按路由进行（通常是 Hermes → WorkBuddy → Codex）。期间你可以正常使用电脑（看视频、聊天等）。
 
 **谨慎**：不要在同一个 workspace 上同时启动另一个写任务。
+
+## Step 10.5 — 用 Tray 管理 Bridge（后台方式）
+
+右键任务栏右下角的 AAF 图标：
+
+| 菜单项 | 作用 |
+|---|---|
+| 打开状态 / Bridge 信息 | 打开最小信息窗口（Bridge 状态 / 热键 / 当前项目 / 最近 Task）；关闭窗口不影响 Bridge |
+| 重启 Bridge | 退出当前实例并自动启动新实例（热键在新实例中重新注册；不会出现两个 Bridge 并存） |
+| 退出 AAF | 退出 Bridge / Tray 宿主（不会取消正在执行的任务，Framework 继续在后台跑完） |
+
+> 注意：重启 / 退出 Bridge 不会修改正在执行 Task 的状态文件（task.json / run.json 由 Framework 自己写）。
 
 ## Step 11 — 完成后点击 Copy Report
 

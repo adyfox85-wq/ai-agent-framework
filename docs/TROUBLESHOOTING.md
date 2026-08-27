@@ -6,9 +6,9 @@
 
 按顺序检查：
 
-1. **Bridge 是否启动** —— `python -m bridge.main` 是否在运行（启动输出应包含 `AAF Bridge 运行中 | 热键: Ctrl+Alt+A`）
-2. **热键是否被占用** —— 是否有其他程序（截图/翻译/剪贴板工具）占用了 Ctrl+Alt+A
-3. **重启 Bridge** —— 关闭后重新启动
+1. **Bridge 是否启动** —— 后台模式下看任务栏右下角是否有 AAF 托盘图标；调试模式下启动输出应包含 `AAF Bridge 运行中 | 热键: Ctrl+Alt+A`
+2. **热键是否被占用** —— 是否有其他程序（截图/翻译/剪贴板工具）占用了 Ctrl+Alt+A。占用时 Bridge 会提示"热键冲突"并把状态显示为异常。处理：关闭占用程序，或修改 `%USERPROFILE%\.aaf-bridge\config.json` 的 `hotkey`（如 `ctrl+alt+b`），保存后 Bridge 自动热加载
+3. **重启 Bridge** —— Tray 菜单 [重启 Bridge]；或调试模式关闭后重新启动
 
 ## B. 提示缺少 AAF_TASK_BEGIN / AAF_TASK_END
 
@@ -68,15 +68,29 @@ Codex 阶段找不到命令。
 
 真实使用曾发现：**Bridge 进程存活但 hotkey listener 失效**。
 
-**处理**：安全重启 Bridge（关闭后重新 `python -m bridge.main`）。
+**处理**：后台模式用 Tray 菜单 [重启 Bridge]（当前实例自动替换，热键在新实例中重新注册）；调试模式关闭后重新 `python -m bridge.main`。
 
 > 这是**已知非阻断 runtime issue**，不是正常预期行为。重启可恢复。
 
 ## I. 看到两个 python.exe（Bridge 相关）
 
-uv venv 环境下，`venv\Scripts\python.exe`（shim）+ uv 缓存真实 python.exe（real）是**同一个逻辑实例的两层进程**。
+- **uv venv 环境**：`venv\Scripts\python.exe`（shim）+ uv 缓存真实 python.exe（real）是**同一个逻辑实例的两层进程**，属正常现象。
+- **后台模式多实例**：Bridge 启动时有单实例保护（命名 mutex），重复启动会被拒绝并提示。Tray [重启 Bridge] 的交接瞬间可能出现两个 pythonw（旧实例正在退出 + 新实例正在接管），持续约 1~2 秒，之后只剩一个——这是正常的重启交接窗口，不是双开。
 
-**判断**：不要仅凭 `-m bridge.main` 的进程条数判断 Bridge 多开。检查父子进程链：若一个是另一个的子进程（且创建时间几乎相同），它们是同一实例。
+## J. 后台模式看不到任何输出 / 启动失败
+
+pythonw 无控制台，启动异常（如导入错误）会：
+
+1. 弹窗提示"AAF Bridge — 启动失败"
+2. 详情写入 `%USERPROFILE%\.aaf-bridge\bridge_error.log`
+
+排查时先看该日志；仍无法解决再用调试方式 `python -m bridge.main` 复现（保留完整控制台输出）。
+
+## K. Tray 图标不出现
+
+- 先确认 Bridge 进程是否在运行（任务管理器 → 详情 → pythonw.exe）
+- Explorer 重启（任务管理器 → Windows 资源管理器 → 重新启动）后 Tray 会自动重新注册
+- 图标仍不出现 → 用调试方式启动查看是否有"Tray 启动失败"提示；Tray 失败不影响热键功能
 
 ---
 

@@ -2,7 +2,7 @@
 
 > Project: AI Agent Framework\
 > Current Version: **v0.4（IN PROGRESS — Phase A/B COMPLETE）**\
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-002-FIX-002）\
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-002-FIX-003）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -144,6 +144,7 @@ v0.3 已 CLOSED，当前为维护 / 观察期。此期间只做：
 
 | 事项 | 状态 | 记录 |
 |---|---|---|
+| Agent 子进程黑色 console 窗口抑制 hotfix | COMPLETE | commit **44ecfa8**（AAF-v0.4-TASK-002-FIX-003：Windows 下 Hermes / WorkBuddy / Codex 子进程统一 CREATE_NO_WINDOW 无控制台；共享 helper `ai_agent_framework/subprocess_utils.py`，Bridge launcher 同类修正；239 passed；真实 Windows 探针 Hermes/WorkBuddy/Codex 均无 console 窗口） |
 | Codex command discovery hotfix | COMPLETE | commit **7cbf594**（Codex 升级 hash 目录变化导致 discovery 失败 → registry PATH 优先 + hash 目录 fallback；198 passed） |
 | Router local readonly constraint hotfix | COMPLETE | commit **457df93**（execution intent 与局部限制区分；206 passed；WorkBuddy APPROVE + Codex APPROVE） |
 | AAF-MAINT-001 routing incident | 已登记 | 局部范围限制被误判为任务级 review 模式 → Hermes 被跳过；Root cause 与修复见 `AAF-HOTFIX-ROUTER-READONLY.md`；事故登记 RW-011 |

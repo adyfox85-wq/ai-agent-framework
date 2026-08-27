@@ -384,6 +384,104 @@ def update_status(
     )
 
 
+def _finalize_terminal_locked(
+    output_dir: Path,
+    prev: dict | None,
+    *,
+    task_id: str,
+    status: str,
+    task_path: Path | str,
+    workspace: Path | str,
+    report_path: Path | str | None = None,
+    reason: str | None = None,
+    stage: str | None = None,
+    agent: str | None = None,
+    phase_state: str | None = None,
+    terminal_reason: str | None = None,
+    cancel_mode: str | None = None,
+) -> TerminalResult:
+    """锁内 terminal commit helper（FIX-002 §6B.2：唯一 Core terminal commit 实现）。
+
+    调用方**必须已持有** per-task ``state.lock``，且 ``prev`` 是锁内 reload 的
+    canonical snapshot（FIX-002：禁止在已持锁时再次 acquire 同一 OS 锁——nested
+    reentry 可能死锁 / timeout / 平台行为不一致）。
+
+    职责（public ``finalize_terminal`` 与 recovery finalizer 共用；单一 terminal
+    writer 实现，**不增加第三写者**，§6A.1 / FIX-002 req 3）：
+    - terminal arbitration：已有终态 → 幂等返回现有 canonical（preserved=True，
+      零写入，§6B.2-D）
+    - 否则：构建 terminal metadata（generation = prev or 0 + 1，恰一次 bump，
+      §6B.2-E/G）并原子提交（§6B.2-F）
+    - 不 acquire / release 锁；不调用任何会再次取锁的公共 API
+
+    前置校验（identity / evidence 等）由调用方在**同一个锁临界区内**完成
+    （FIX-002：验证与 commit 之间不得 release lock）；本 helper 不做这些校验，
+    避免在锁外重复读取。
+    """
+    _validate_args(status, stage, phase_state)
+    if not is_terminal_status(status):
+        raise LifecycleError(f"finalize_terminal 只接受终态，收到 {status!r}（允许: {', '.join(TERMINAL_STATUSES)}）")
+
+    # C/D. terminal arbitration：已有终态 → 幂等返回，不写任何东西
+    prev = prev or {}
+    existing_status = prev.get("status")
+    if is_terminal_status(existing_status):
+        return TerminalResult(
+            status=existing_status,
+            task_id=prev.get("task_id", task_id),
+            output_dir=str(output_dir),
+            terminal_generation=prev.get("terminal_generation"),
+            terminal_at=prev.get("terminal_at"),
+            terminal_reason=prev.get("terminal_reason"),
+            report_path=prev.get("report_path"),
+            cancel_mode=prev.get("cancel_mode"),
+            preserved=True,
+        )
+
+    # E. 确定 allowed terminal outcome + G. generation
+    now = datetime.now()
+    now_iso = now.isoformat(timespec="seconds")
+    generation = int(prev.get("terminal_generation") or 0) + 1
+    if cancel_mode is not None and status != "CANCELLED":
+        raise LifecycleError(f"cancel_mode 只能用于 CANCELLED 终态（status={status!r}）")
+
+    terminal_fields = {
+        "terminal_generation": generation,
+        "terminal_at": now_iso,
+        "terminal_reason": terminal_reason or _DEFAULT_TERMINAL_REASON.get(status, status),
+    }
+    if status == "CANCELLED":
+        terminal_fields["cancel_mode"] = cancel_mode or CANCEL_MODE_SOFT
+
+    data = _build_data(
+        prev,
+        task_id=task_id,
+        status=status,
+        task_path=task_path,
+        workspace=workspace,
+        report_path=report_path,
+        reason=reason,
+        stage=stage,
+        agent=agent,
+        phase_state=phase_state,
+        terminal_fields=terminal_fields,
+    )
+    # F. 原子提交（同一次原子写内包含 generation —— §6B.2-F/G）
+    _atomic_write(task_json_path(output_dir), data)
+
+    return TerminalResult(
+        status=status,
+        task_id=task_id,
+        output_dir=str(output_dir),
+        terminal_generation=generation,
+        terminal_at=now_iso,
+        terminal_reason=terminal_fields["terminal_reason"],
+        report_path=str(report_path) if report_path is not None else prev.get("report_path"),
+        cancel_mode=terminal_fields.get("cancel_mode"),
+        preserved=False,
+    )
+
+
 def finalize_terminal(
     output_dir: Path | str,
     *,
@@ -413,6 +511,10 @@ def finalize_terminal(
         G. 持久化 terminal generation（与 F 同一次原子提交，§6B.4：prev or 0 + 1）
         H. release state.lock（仅当 canonical commit 已 durable）
 
+    FIX-002：本函数 = acquire lock → 锁内 reload → 委托 ``_finalize_terminal_locked``
+    → release。恢复 finalizer（finalize_cancelled_task）使用**同一**锁内 helper，
+    不重复 acquire 锁（无 nested reentry），terminal commit 逻辑仍只有一套。
+
     - 终态一旦 committed，任何后续 finalize_terminal（含 late cancel）都返回现有
       canonical，不覆盖（§6A.2 / §6B.18 terminal winner = 同一把锁下先 commit 者）
     - 返回 TerminalResult（canonical result；派生产物必须跟随）
@@ -432,38 +534,10 @@ def finalize_terminal(
         except LifecycleError:
             prev = None  # 已损坏：从新值重建（与 update_status 一致的可恢复语义）
 
-        # C/D. terminal arbitration：已有终态 → 幂等返回，不写任何东西
-        prev = prev or {}
-        existing_status = prev.get("status")
-        if is_terminal_status(existing_status):
-            return TerminalResult(
-                status=existing_status,
-                task_id=prev.get("task_id", task_id),
-                output_dir=str(output_dir),
-                terminal_generation=prev.get("terminal_generation"),
-                terminal_at=prev.get("terminal_at"),
-                terminal_reason=prev.get("terminal_reason"),
-                report_path=prev.get("report_path"),
-                cancel_mode=prev.get("cancel_mode"),
-                preserved=True,
-            )
-
-        # E. 确定 allowed terminal outcome + G. generation
-        now = datetime.now()
-        now_iso = now.isoformat(timespec="seconds")
-        generation = int(prev.get("terminal_generation") or 0) + 1
-        if cancel_mode is not None and status != "CANCELLED":
-            raise LifecycleError(f"cancel_mode 只能用于 CANCELLED 终态（status={status!r}）")
-
-        terminal_fields = {
-            "terminal_generation": generation,
-            "terminal_at": now_iso,
-            "terminal_reason": terminal_reason or _DEFAULT_TERMINAL_REASON.get(status, status),
-        }
-        if status == "CANCELLED":
-            terminal_fields["cancel_mode"] = cancel_mode or CANCEL_MODE_SOFT
-
-        data = _build_data(
+        # C–G. 委托共享锁内 helper（terminal arbitration / build / atomic commit；
+        #      不再次 acquire 锁 —— FIX-002 no nested reentry）
+        return _finalize_terminal_locked(
+            output_dir,
             prev,
             task_id=task_id,
             status=status,
@@ -474,19 +548,6 @@ def finalize_terminal(
             stage=stage,
             agent=agent,
             phase_state=phase_state,
-            terminal_fields=terminal_fields,
+            terminal_reason=terminal_reason,
+            cancel_mode=cancel_mode,
         )
-        # F. 原子提交（同一次原子写内包含 generation —— §6B.2-F/G）
-        _atomic_write(task_json_path(output_dir), data)
-
-    return TerminalResult(
-        status=status,
-        task_id=task_id,
-        output_dir=str(output_dir),
-        terminal_generation=generation,
-        terminal_at=now_iso,
-        terminal_reason=terminal_fields["terminal_reason"],
-        report_path=str(report_path) if report_path is not None else prev.get("report_path"),
-        cancel_mode=terminal_fields.get("cancel_mode"),
-        preserved=False,
-    )

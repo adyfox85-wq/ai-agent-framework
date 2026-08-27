@@ -158,6 +158,15 @@ pythonw 无控制台，启动异常（如导入错误）会：
   cancel.request 会被吸收 / 忽略，终态不变。
 - **尚未交付**：状态窗口的「停止当前任务」按钮（TASK-005-C）与 Force Cancel
   （进程树强终止，TASK-005-B）未实现——不要期望 UI 有停止按钮。
+- **恢复 finalizer（崩溃/强杀后收敛）**：`python -m ai_agent_framework.finalize_cancelled
+  --task-id <ID> --workspace <WS> --output <OUT>` 把无终态的 RUNNING 任务收敛为 CANCELLED。
+  - soft 收敛是**单一锁原子协议**：canonical identity 验证、terminal arbitration、
+    `cancel.request` 验证与新 CANCELLED 提交在同一个 `state.lock` 临界区内完成
+    （验证与提交之间不释放锁）；要求合法 matching `cancel.request`（`request=soft_cancel`、
+    `task_id` 一致、`requested_at` 合法），缺失 / 损坏 / 不匹配 → exit code 6 安全失败，
+    不修改 canonical。
+  - 已有终态（SUCCESS / WAITING / FAILED / CANCELLED）无 evidence 也会被保留，
+    派生产物（run.json / REPORT.md）仍会补齐。
 - 已取消任务无法直接重跑：`TASK.md` 仍在 `tasks/active/`（证据保留），重复提交会触发
   TASK_ALREADY_EXISTS；需要重跑时按常规流程处理（移除/重命名旧 active TASK 或走 resume 语义）。
 

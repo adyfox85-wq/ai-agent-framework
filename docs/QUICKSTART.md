@@ -169,10 +169,15 @@ v0.4 Phase E 已交付 **CANCELLED 终态 + cooperative soft cancel Core**（`AA
 - **幂等**：重复 cancel 不会重复收尾 / 重复 bump generation（`terminal_generation` 单调递增）。
 - **恢复 finalizer（Core-owned）**：`python -m ai_agent_framework.finalize_cancelled
   --task-id <ID> --workspace <WS> --output <OUT>`（幂等；已有终态不改写，只做 reconciliation）。
-  - **安全契约（FIX-001）**：soft cancel 收敛**必须**先存在合法 matching `cancel.request`
+  - **安全契约（FIX-001 + FIX-002）**：soft cancel 收敛**必须**先存在合法 matching `cancel.request`
     （`request=soft_cancel`、`task_id` 与 canonical `task.json.task_id` 一致、`requested_at`
     为合法 ISO 时间戳）且 canonical `task.json` 已存在；缺失 / 损坏 / 不匹配 →
     明确失败（exit code 6），**不得**修改 canonical、不得提交 CANCELLED。
+  - **单一锁原子协议（FIX-002）**：canonical identity 验证、terminal arbitration、
+    `cancel.request` evidence 验证与新 CANCELLED 提交发生在**同一个 `state.lock`
+    临界区**内（验证与提交之间不释放锁）；CLI 与 library 使用完全相同的原子验证路径，
+    无 bypass。已有终态（SUCCESS / WAITING / FAILED / CANCELLED）在锁内被保留，
+    不要求 evidence，reconciliation 仍执行。
   - **Force recovery 未开放**：`--cancel-mode force` / `--reason FORCE_CANCELLED` 在
     TASK-005-B 交付前一律返回 `FORCE_RECOVERY_NOT_AVAILABLE`（不伪造 force evidence）。
   - `--evidence` 只是 **diagnostic note**，不是 authority evidence。

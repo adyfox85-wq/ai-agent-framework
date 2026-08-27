@@ -1,8 +1,8 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE — 005-A-FIX-001 已关闭两个安全阻断，待 WorkBuddy/Codex 复核）；Phase F NOT STARTED）**\
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-005-A-FIX-001 — Phase E 安全阻断修复 sync）\
+> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE — 005-A-FIX-001 已关闭两个安全阻断，005-A-FIX-002 已实现 recovery 单一锁原子协议，待 WorkBuddy/Codex 复核）；Phase F NOT STARTED）**\
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-005-A-FIX-002 — Phase E recovery TOCTOU 修复 sync）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -22,9 +22,11 @@ Phase: A — Runtime State Foundation: COMPLETE
        C — Status Window + Chinese-first UI: COMPLETE
        D — Progress Visualization: COMPLETE
        E — Safe Cancel Lifecycle: IN PROGRESS（E-Core / Soft Cancel COMPLETE — AAF-v0.4-TASK-005-A，
-           005-A-FIX-001 关闭 Codex 两个 blocking safety defects 并同步；
-           剩余 TASK-005-B Process Ownership / Force Cancel / Recovery Integration
-           与 TASK-005-C Cancel UI + Windows E2E Closure 未交付 → Phase E 不得标 COMPLETE）
+            005-A-FIX-001 关闭 Codex 两个 blocking safety defects 并同步；
+            005-A-FIX-002 已实现 recovery 单一 state.lock 原子协议（identity+evidence+
+            arbitration+commit 同一临界区，关闭遗留 recovery TOCTOU），待独立复核；
+            剩余 TASK-005-B Process Ownership / Force Cancel / Recovery Integration
+            与 TASK-005-C Cancel UI + Windows E2E Closure 未交付 → Phase E 不得标 COMPLETE）
 Direction: Desktop Shell MVP / Runtime Observability & Control
 
 v0.4 主线（Phase 顺序）：
@@ -331,6 +333,37 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
   - 行为契约变更：resume 只对非终态任务生效（终态不可被降级回 RUNNING）；recovery CLI
     要求 validated cancel.request。QUICKSTART / TROUBLESHOOTING 已同步。
   - WorkBuddy / Codex 独立复核由本任务 route 阶段执行（verdict 见任务 REPORT.md）
+- **FIX-002（AAF-v0.4-TASK-005-A-FIX-002，2026-08-27）**：Codex 复审 REQUEST_CHANGE（遗留唯一
+  blocking：recovery identity / evidence 验证与 CANCELLED commit 不在同一 state.lock 临界区，
+  TOCTOU）→ 实现侧关闭：
+  1. **单一不可分割临界区（frozen safety rule）**：`finalize_cancelled_task` 现在
+     acquire state.lock → 锁内 reload canonical → 锁内 identity 校验（canonical exists +
+     task_id 匹配）→ 锁内 terminal arbitration（已有终态 → 保留，不要求 evidence）→
+     无终态 → 锁内验证当前 cancel.request（request=soft_cancel / task_id 匹配 /
+     requested_at 合法）→ 同一临界区内经共享 helper 提交 CANCELLED + terminal_generation
+     → release lock → reconciliation。验证与 commit 之间**不 release lock**。
+  2. **无 nested lock reentry**：`task_lifecycle.py` 提取共享锁内 helper
+     `_finalize_terminal_locked`（调用方已持锁、传入锁内 canonical snapshot、不再次
+     acquire 锁）；public `finalize_terminal` 与 recovery finalizer 共用同一实现——
+     terminal commit 逻辑仍只有一套，无第三 terminal writer。
+  3. **lock-stable identity / evidence**：canonical identity 与 cancel.request 均在
+     锁内读取验证，commit 使用同一锁内 snapshot；错误 task_id 不能被取消；
+     验证失败/evidence 不匹配/identity 不匹配 → 零写、零 generation bump、
+     零 reconciliation 变更。
+  4. **强制时序测试（req 8）**：真实 OS 锁 + 子进程 + 握手文件——runtime writer
+     已启动并阻塞等待 state.lock → terminal writer 持锁 commit（CANCELLED/SUCCESS）→
+     release → runtime 后获锁、锁内 reload 看到 terminal → 零写入（preserved）。
+  5. 测试：**447 passed**（421 基线 + 26 净新增，零下降；tests/test_phase_e_fix_002.py：
+     A 单一临界区静态契约 + 持锁对抗者、B 取锁前 evidence 失效拒绝、C 临界区内替换
+     无 stale window、D/E identity 改写拒绝/覆盖、F/G generation 不变量、H/I 已有终态
+     preserve + reconciliation、J force 仍拒绝、K CLI 同一路径、L 强制时序、
+     M/N 无 force kill / 无第三写者、双 recovery 并发恰一次 commit、锁失败不写、
+     真实 E2E 两场景（合法 request → CANCELLED 全套产物 / 不匹配 request → 安全失败））
+  - 行为契约不变：soft recovery 仍要求 validated cancel.request；force recovery 仍
+    明确拒绝（FORCE_RECOVERY_NOT_AVAILABLE）；已有终态无 evidence 仍 preserve +
+    reconciliation；CLI 与 library 同一原子验证路径。
+  - WorkBuddy / Codex 独立复核由本任务 route 阶段执行（verdict 见任务 REPORT.md；
+    **未经两者通过不记录 FIX-002 CLOSED**）
 - 真实软取消 E2E：Scenario 1（Hermes 前 cancel → Hermes 不启动 → CANCELLED 全套产物）PASS；
   Scenario 2（Hermes 完成 → WorkBuddy 前 cancel → Hermes result 保留 → CANCELLED）PASS；
   真实 run.py CLI 子进程 + finalize_cancelled CLI 幂等 PASS
@@ -439,7 +472,7 @@ docs/internal/AAF_MASTER_BACKLOG.md
 以后任何被正式确认"稍后处理"的问题，**必须进入 Master Backlog 才算
 长期登记完成**。
 
-v0.4 IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE，由 AAF-v0.4-TASK-005-A 交付；005-A-FIX-001 已关闭 Codex 两个 blocking safety defects（late non-terminal update 覆盖 terminal / recovery finalizer 无 evidence+identity 验证），验证结果见任务 REPORT；剩余 TASK-005-B + TASK-005-C 未交付，Phase E 不得标 COMPLETE）；Phase F NOT STARTED，不得自动启动；Next Phase Step = AAF-v0.4-TASK-005-B（Phase E Process Ownership + Force Cancel + Recovery Integration）。
+v0.4 IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE，由 AAF-v0.4-TASK-005-A 交付；005-A-FIX-001 已关闭 Codex 两个 blocking safety defects（late non-terminal update 覆盖 terminal / recovery finalizer 无 evidence+identity 验证）；005-A-FIX-002 已实现 recovery 单一 state.lock 原子协议（identity+evidence+arbitration+commit 同一临界区，关闭遗留 recovery TOCTOU），验证结果见任务 REPORT，未经 WorkBuddy/Codex 通过不记 CLOSED；剩余 TASK-005-B + TASK-005-C 未交付，Phase E 不得标 COMPLETE）；Phase F NOT STARTED，不得自动启动；Next Phase Step = AAF-v0.4-TASK-005-B（Phase E Process Ownership + Force Cancel + Recovery Integration）。
 
 ------------------------------------------------------------------------
 

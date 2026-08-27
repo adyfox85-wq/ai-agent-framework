@@ -4,15 +4,23 @@
 本模块属于 **Lifecycle Core**（不是 UI / Launcher 逻辑）；Launcher 通过子进程 CLI
 调用，避免 import Core 内部执行逻辑（§14.4 防侵入规则）。
 
-流程（§6B.21 + FIX-001 evidence/identity validation）::
+流程（§6B.21 + FIX-001 evidence/identity validation + FIX-002 single-lock atomic）::
 
-    锁内 canonical identity 校验（canonical task.json exists + task_id 匹配）
-    → terminal arbitration（已有终态 → 返回 canonical，不改写）
-    → 无终态：先验证 recovery evidence（soft: 合法 matching cancel.request；
-      force: 005-A 明确拒绝）→ 才允许新提交 CANCELLED
-    → terminal commit via finalize_terminal（统一 Core terminal finalizer，§6B.2）
-    → reconcile run.json / REPORT.md（§6B.6–§6B.8）
-    → idempotent return（重复调用返回相同 canonical result）
+    一个不可分割的 state.lock 临界区（FIX-002：identity + evidence 验证与 commit
+    之间**不 release lock**，关闭 TOCTOU）：
+
+    acquire task state.lock
+    → 锁内 reload canonical task.json
+    → validate canonical exists + canonical task_id == 请求 task_id
+    → terminal arbitration（已有终态 → 保留 canonical，不要求 evidence，不改写）
+    → 无终态：锁内验证 recovery evidence（soft: 当前锁内仍有效的 matching
+      cancel.request；force: 005-A 明确拒绝）→ 才允许新提交 CANCELLED
+    → 经 _finalize_terminal_locked（同一锁临界区内共享 helper，不重复 acquire 锁）
+      提交 CANCELLED + 持久化 terminal_generation
+    → release lock
+    → reconcile run.json / REPORT.md（§6B.6–§6B.8；锁外，不改 canonical terminal）
+
+    idempotent return（重复调用返回相同 canonical result）
 
 FIX-001 安全契约（Codex blocking finding 2 闭合）：
 - 任何新 terminal commit 前必须验证 canonical identity：task.json 存在且
@@ -26,6 +34,14 @@ FIX-001 安全契约（Codex blocking finding 2 闭合）：
 - force recovery（cancel_mode=force 或 reason=FORCE_CANCELLED）：005-A 不伪造证据验证，
   返回 ``ForceRecoveryNotAvailable``（FORCE_RECOVERY_NOT_AVAILABLE），直至 TASK-005-B
   提供正式 ownership evidence validator
+
+FIX-002 单一临界区契约（Codex 遗留 recovery TOCTOU blocker 闭合）：
+- canonical identity 验证、terminal arbitration、recovery evidence 验证与
+  CANCELLED commit 属于**同一个不可分割的 per-task state.lock 临界区**——
+  验证与 commit 之间不 release lock（req 1/4/5）
+- commit 经 ``task_lifecycle._finalize_terminal_locked``（共享锁内 helper）：
+  调用方已持锁、传入锁内 canonical snapshot、不再次 acquire 锁（no nested
+  reentry，req 2）；terminal commit 逻辑仍只有一套（req 3，无第三写者）
 
 边界（TASK-005-A）：
 - 本 TASK 只提供 Core finalizer 基础能力（soft cancel 收敛 + reconciliation）
@@ -48,7 +64,7 @@ from .task_lifecycle import (
     CANCEL_MODE_SOFT,
     TERMINAL_REASON_CANCEL_REQUESTED,
     TERMINAL_REASON_FORCE_CANCELLED,
-    finalize_terminal,
+    _finalize_terminal_locked,
     is_terminal_status,
     read_status,
     task_json_path,
@@ -74,11 +90,12 @@ class ForceRecoveryNotAvailable(RecoveryError):
 
 
 def _validate_recovery_identity(output_dir: Path, task_id: str) -> dict:
-    """锁内验证 canonical identity（FIX-001 req 7）。
+    """**锁内**验证 canonical identity（FIX-001 req 7 / FIX-002 req 4 lock-stable）。
 
     - canonical task.json exists + task_id == requested task_id
     - 失败 → RecoveryError（显式）；调用方不得继续提交 CANCELLED
-    - 返回锁内读取的 canonical dict（供 terminal arbitration 使用）
+    - 返回锁内读取的 canonical dict（供 terminal arbitration / commit 使用；
+      FIX-002：同一临界区内 reload，identity 不可能在验证与 commit 之间变化）
     """
     path = task_json_path(output_dir)
     if not path.exists():
@@ -111,7 +128,12 @@ def _validate_recovery_evidence(
 ) -> None:
     """在“准备新提交 CANCELLED”前验证 recovery evidence（FIX-001 req 8/10/12）。
 
-    - force → ForceRecoveryNotAvailable（005-A 无 force evidence validator）
+    FIX-002：**必须由调用方在 state.lock 临界区内调用**——evidence 验证与
+    CANCELLED commit 同属一个临界区（req 5：evidence 必须 lock-stable；验证后、
+    commit 前不 release lock；不得在锁外验证后再提交）。
+
+    - force → ForceRecoveryNotAvailable（005-A 无 force evidence validator；
+      调用方在进入临界区前已拦截，此处为纵深防御）
     - soft → 必须存在合法 matching cancel.request（parseable / soft_cancel /
       task_id 匹配 / requested_at 合法）；任何缺失/损坏/mismatch → RecoveryEvidenceError，
       不写 canonical
@@ -161,20 +183,29 @@ def finalize_cancelled_task(
     evidence: str | None = None,
     lock_timeout: float = 10.0,
 ):
-    """Core recovery finalizer（§6B.21 + FIX-001）。返回 canonical result dict。
+    """Core recovery finalizer（§6B.21 + FIX-001 + FIX-002）。返回 canonical result dict。
 
-    顺序：
-    1. 锁内 canonical identity 校验（task.json exists + task_id 匹配；req 7）
-    2. terminal arbitration：已有终态 → 不改写（req 9：late/missing evidence 不得改变
-       existing terminal；reconciliation 仍执行），幂等返回现有 canonical
-    3. 无终态 → 先验证 recovery evidence（soft: 合法 matching cancel.request；
-       force: 拒绝）→ 经 ``finalize_terminal`` 提交 CANCELLED（唯一 Core terminal
-       finalizer，req 14：本模块不自行写 task.json terminal）
-    4. reconciliation（补齐 run.json / REPORT.md 跟随 canonical）
-    5. 幂等：重复调用返回相同 canonical result
+    FIX-002 单一不可分割临界区（关闭 Codex 遗留 recovery TOCTOU blocker）::
+
+        0. force boundary（纯参数校验，不依赖文件状态；005-A 明确拒绝 force recovery）
+        1. acquire state.lock
+        2. 锁内 reload canonical task.json
+        3. 锁内 identity 校验（canonical exists + task_id == 请求 task_id；req 4：
+           canonical identity 必须 lock-stable，mismatch → RecoveryError，零写零 bump）
+        4. 锁内 terminal arbitration：已有终态 → 保留 canonical（req 9：无 evidence
+           也 preserve；reconciliation 仍执行），不改写
+        5. 无终态 → 锁内验证 recovery evidence（req 5/8：soft 必须存在当前锁内仍
+           有效的 matching cancel.request；force 已在 0 拒绝）——验证与 commit 之间
+           **不 release lock**（req 1/4）
+        6. 经 ``_finalize_terminal_locked`` 提交 CANCELLED（req 2/3：共享锁内 helper，
+           调用方已持锁，不重复 acquire；generation 恰一次 bump；无第三 terminal writer）
+        7. release state.lock
+        8. reconciliation（run.json / REPORT.md 跟随 canonical；req 10：锁外执行，
+           canonical terminal 不被 reconciliation 修改；crash 后可重跑）
+        9. 幂等：重复调用返回相同 canonical result
 
     - ``evidence``：仅 diagnostic note（req 12），不是 authority evidence；
-      authority evidence = validated cancel.request（soft）/ TASK-005-B ownership
+      authority evidence = 锁内验证的 cancel.request（soft）/ TASK-005-B ownership
       + termination evidence（force，未开放）
     """
     output_dir = Path(output_dir)
@@ -182,32 +213,31 @@ def finalize_cancelled_task(
     if evidence:
         final_reason = f"{reason}: {evidence}"  # diagnostic note only（req 12）
 
-    # 1. canonical identity（锁内 reload；§6B.21 锁内 canonical reload + req 7）
-    with task_state_lock(output_dir, task_id, timeout=lock_timeout):
-        prev = _validate_recovery_identity(output_dir, task_id)
-        existing_terminal = is_terminal_status(prev.get("status", ""))
-
-    if existing_terminal:
-        # 2. terminal arbitration（req 9）：canonical terminal wins；
-        #    evidence validation 只适用于“准备新提交 CANCELLED”，不适用于“已有终态”。
-        #    统一经 finalize_terminal（锁内仲裁，幂等返回 preserved=True canonical）。
-        canonical = finalize_terminal(
-            Path(output_dir),
-            task_id=task_id,
-            status="CANCELLED",
-            task_path=Path(output_dir) / "TASK.md",
-            workspace=workspace,
-            report_path=str(Path(output_dir) / "REPORT.md"),
-            reason="CANCEL_REQUESTED",
-            terminal_reason=final_reason,
-            cancel_mode=cancel_mode,
-            lock_timeout=lock_timeout,
+    # 0. force boundary（req 13：005-A force recovery = NOT AVAILABLE；纯参数校验，
+    #    不 acquire 锁、不依赖文件状态、不产生任何写）
+    if cancel_mode == CANCEL_MODE_FORCE or reason == TERMINAL_REASON_FORCE_CANCELLED:
+        raise ForceRecoveryNotAvailable(
+            "FORCE_RECOVERY_NOT_AVAILABLE: force recovery 需要 TASK-005-B 的 "
+            "ownership/termination evidence validator；005-A-FIX-002 不得凭任意 "
+            "字符串 evidence 提交 CANCELLED（不伪造 force validation）"
         )
-    else:
-        # 3. evidence validation BEFORE 新 terminal commit（req 8/10）
-        _validate_recovery_evidence(output_dir, task_id, cancel_mode, reason)
-        canonical = finalize_terminal(
-            Path(output_dir),
+
+    # 1–7. 单一 state.lock 临界区：identity + arbitration + evidence + commit
+    with task_state_lock(output_dir, task_id, timeout=lock_timeout):
+        # 2/3. 锁内 reload + identity 校验（req 4：canonical identity lock-stable）
+        prev = _validate_recovery_identity(output_dir, task_id)
+
+        # 4. terminal arbitration（req 9）：已有终态 → 保留 canonical、不要求
+        #    evidence、不改写（统一经共享 helper 幂等返回 preserved canonical）
+        if not is_terminal_status(prev.get("status", "")):
+            # 5. 锁内 evidence 验证（req 5/8：当前锁内仍有效的 matching cancel.request）
+            _validate_recovery_evidence(output_dir, task_id, cancel_mode, reason)
+
+        # 6. 同一临界区内提交（req 1/2/3：共享锁内 helper；调用方已持锁，不再次
+        #    acquire；canonical identity / evidence 与 commit 之间零 gap）
+        canonical = _finalize_terminal_locked(
+            output_dir,
+            prev,
             task_id=task_id,
             status="CANCELLED",
             task_path=Path(output_dir) / "TASK.md",  # TASK.md 不一定存在；仅作 task.json 记录
@@ -216,10 +246,10 @@ def finalize_cancelled_task(
             reason="CANCEL_REQUESTED",
             terminal_reason=final_reason,
             cancel_mode=cancel_mode,
-            lock_timeout=lock_timeout,
         )
 
-    # 4. reconciliation（已有终态也必须走；§6B.21 不再“发现终态直接 return”）
+    # 8. reconciliation（已有终态也必须走；§6B.21 不再“发现终态直接 return”；
+    #    锁外执行：reconciliation 不得修改 canonical terminal，crash 后可重跑）
     reconcile_terminal_artifacts(task_id, workspace, output_dir, lock_timeout=lock_timeout)
     return canonical
 

@@ -165,6 +165,13 @@ pythonw 无控制台，启动异常（如导入错误）会：
     （验证与提交之间不释放锁）；要求合法 matching `cancel.request`（`request=soft_cancel`、
     `task_id` 一致、`requested_at` 合法），缺失 / 损坏 / 不匹配 → exit code 6 安全失败，
     不修改 canonical。
+  - **request 写入也要锁（FIX-003）**：`cancel.request` 不是 terminal truth，
+    **但** Framework-owned 的写入 / 替换 / consume（`write_cancel_request` /
+    `consume_cancel_request`）与 recovery 共享同一 per-task `state.lock`——否则
+    recovery 锁内验证的 evidence 仍可在 commit 前被替换 / 删除 / consume（authority
+    evidence 必须 lock-stable）。锁获取失败 → 明确错误（`LockTimeout` / `LockError`），
+    不写、不 consume、不 fallback 无锁写。手动写文件（如测试 / 临时验证）不受锁约束，
+    但 recovery 锁内重新验证会拒绝损坏 / mismatch 的 evidence。
   - 已有终态（SUCCESS / WAITING / FAILED / CANCELLED）无 evidence 也会被保留，
     派生产物（run.json / REPORT.md）仍会补齐。
 - 已取消任务无法直接重跑：`TASK.md` 仍在 `tasks/active/`（证据保留），重复提交会触发

@@ -30,8 +30,10 @@ FIX-002 单一临界区协议（frozen safety rule）::
   I  existing terminal reconciliation 仍可用（修复缺失派生产物）
   J  force recovery 仍拒绝（含已有终态 + force）
   K  CLI 与 library 同一原子路径（无 bypass）
-  L  强制时序：runtime writer 已启动并等待锁 → terminal 先 commit → late runtime
-     no-op（真实 OS 锁 + 子进程 + 握手文件；CANCELLED + SUCCESS）
+  L  强制时序（FIX-003 修正握手）：T_LOCKED 在 terminal writer 成功 acquire
+     state.lock 后发出；R_STARTED 在 runtime 取锁前发出 + R_DONE 缺失 / 进程存活 /
+     显式超时断言证明其真正等待锁 → terminal 先 commit → late runtime no-op
+     （真实 OS 锁 + 子进程 + 握手文件；CANCELLED + SUCCESS）
   M  无 force kill（静态断言）
   N  无第三 terminal writer（静态断言）
   并发  recovery vs recovery → 恰一次 commit
@@ -253,7 +255,12 @@ def test_b_evidence_invalid_before_lock_rejected(tmp_path, corruption):
         elif corruption == "malformed":
             (out / "cancel.request").write_text("{broken json", encoding="utf-8")
         elif corruption == "wrong-task":
-            cancel_mod.write_cancel_request(out, "OTHER-TASK")
+            # FIX-003：官方 write_cancel_request 拒绝 canonical task_id 不匹配写入
+            # （CancelRequestIdentityError）——mismatch evidence 用 raw write 构造
+            # （模拟取锁前已存在的 legacy / 外部错任务请求）
+            (out / "cancel.request").write_text(
+                json.dumps({"task_id": "OTHER-TASK", "requested_at": "2026-08-27T10:00:00",
+                            "request": "soft_cancel"}), encoding="utf-8")
         proc = _spawn_cli("--task-id", _task_id(), "--workspace", str(tmp_path),
                           "--output", str(out), "--lock-timeout", "5.0")
     finally:
@@ -276,15 +283,19 @@ MID_SECTION_REPLACE_WORKER = """\
 import json, sys
 from pathlib import Path
 import ai_agent_framework.finalize_cancelled as fc_mod
-from ai_agent_framework import cancel as cancel_mod
 
 out, tid, ws = sys.argv[1], sys.argv[2], sys.argv[3]
 orig = fc_mod._validate_recovery_evidence
 
 def adversarial(output_dir, task_id, cancel_mode, reason):
-    # 锁内验证当前证据（有效）→ 验证后、commit 前：另一 writer（B）替换 cancel.request
+    # 锁内验证当前证据（有效）→ 验证后、commit 前：rogue 外部 writer 替换 cancel.request。
+    # FIX-003：官方 write_cancel_request 现在遵守同一 state.lock（锁内调用 = nested
+    # reentry）且拒绝 mismatched task_id —— 对抗写入只能来自不守协议的 rogue 写者，
+    # 故用 raw write 模拟（协议不拦截手工文件操作）。
     orig(output_dir, task_id, cancel_mode, reason)
-    cancel_mod.write_cancel_request(Path(output_dir), "OTHER-TASK")
+    Path(output_dir, "cancel.request").write_text(
+        json.dumps({"task_id": "OTHER-TASK", "requested_at": "2026-08-27T10:00:00",
+                    "request": "soft_cancel"}), encoding="utf-8")
 
 fc_mod._validate_recovery_evidence = adversarial
 c = fc_mod.finalize_cancelled_task(tid, ws, Path(out))
@@ -321,7 +332,11 @@ def test_c_evidence_replaced_after_commit_terminal_immutable(tmp_path):
     c2 = fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out)
     assert c2.status == "CANCELLED" and c2.terminal_generation == 1 and c2.preserved is True
 
-    cancel_mod.write_cancel_request(out, "OTHER-TASK")  # 换成别的任务的请求
+    # FIX-003：官方 write_cancel_request 拒绝 mismatched task_id 写入 → 用 raw write
+    # 模拟 rogue 外部替换（协议只约束 Framework-owned 正式路径）
+    (out / "cancel.request").write_text(
+        json.dumps({"task_id": "OTHER-TASK", "requested_at": "2026-08-27T10:00:00",
+                    "request": "soft_cancel"}), encoding="utf-8")  # 换成别的任务的请求
     c3 = fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out)
     assert c3.status == "CANCELLED" and c3.terminal_generation == 1 and c3.preserved is True
     data = read_status(out)
@@ -413,7 +428,11 @@ def test_f_failed_validation_generation_unchanged(tmp_path):
 
     # 失败路径 2：identity mismatch
     (out / "task.json").write_text(json.dumps({"task_id": "X", "status": "RUNNING"}), encoding="utf-8")
-    cancel_mod.write_cancel_request(out, _task_id())
+    # FIX-003：canonical 已被改写为 X，官方 write_cancel_request 会拒绝（mismatch）
+    # ——mismatch 场景的 request 用 raw write 构造
+    (out / "cancel.request").write_text(
+        json.dumps({"task_id": _task_id(), "requested_at": "2026-08-27T10:00:00",
+                    "request": "soft_cancel"}), encoding="utf-8")
     with pytest.raises(fc_mod.RecoveryError, match="RECOVERY_IDENTITY_ERROR"):
         fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out)
     assert "terminal_generation" not in read_status(out)
@@ -565,9 +584,11 @@ from pathlib import Path
 from ai_agent_framework.lock_utils import TaskStateLock
 from ai_agent_framework.task_lifecycle import _finalize_terminal_locked, read_status
 
-out, tid, ws, t1, go, done, status, cancel_mode = sys.argv[1:9]
-Path(t1).write_text("1", encoding="utf-8")
-with TaskStateLock(out, tid, timeout=20.0):
+out, tid, ws, t_locked, go, done, status, cancel_mode = sys.argv[1:9]
+with TaskStateLock(out, tid, timeout=30.0):
+    # FIX-003：T_LOCKED 只在**成功 acquire state.lock 之后**发出——
+    # pre-lock 信号不能冒充 lock-held（Codex Blocker 2：t1 必须证明“已持锁”）
+    Path(t_locked).write_text("1", encoding="utf-8")
     # 等待测试进程确认 runtime writer 已就绪并阻塞在锁上
     deadline = time.monotonic() + 30.0
     while not Path(go).exists() and time.monotonic() < deadline:
@@ -590,50 +611,66 @@ import json, sys
 from pathlib import Path
 from ai_agent_framework.task_lifecycle import update_status
 
-out, tid, ws, r1 = sys.argv[1:5]
-Path(r1).write_text("1", encoding="utf-8")
+out, tid, ws, r_started, r_done = sys.argv[1:6]
+# R_STARTED 在**尝试取锁前**发出；随后立即进入 update_status（其第一步就是
+# acquire state.lock）——main 据此确认 runtime 已发起锁获取
+Path(r_started).write_text("1", encoding="utf-8")
 res = update_status(
     Path(out), task_id=tid, status="RUNNING",
     task_path=str(Path(out) / "TASK.md"), workspace=ws,
-    stage="HERMES", agent="hermes", lock_timeout=30.0,
+    stage="HERMES", agent="hermes", lock_timeout=60.0,
 )
+Path(r_done).write_text(json.dumps(res.to_dict()), encoding="utf-8")
 print("RUNTIME", json.dumps(res.to_dict()))
 """
 
 
 @pytest.mark.parametrize("terminal", ["CANCELLED", "SUCCESS"])
 def test_l_forced_order_runtime_waits_lock_terminal_commits_first(tmp_path, terminal):
-    """req 8 / req 19-L 强制时序（真实 OS state.lock + 真实子进程 + 握手文件）：
+    """req 8 / req 19-L 强制时序（FIX-003 修正握手，真实 OS state.lock + 真实子进程）：
 
-    1. terminal writer 先持锁（T1 已确认）
-    2. runtime writer 启动并写 R1 → 随即阻塞在锁上（此时 terminal 仍持锁，
-       故 runtime 必已进入“准备并等待锁”阶段——不是“terminal 先完成再启动 runtime”）
-    3. 测试写 GO → terminal writer **持锁 commit** terminal → release
-    4. runtime writer 随后获得锁 → **锁内 reload** 看到 terminal → 零写入（preserved）
-    5. 最终 canonical = terminal、generation 稳定 = 1
+    1. terminal writer 成功 acquire state.lock 后发出 **T_LOCKED**（在锁内写，
+       证明“已持锁”，不是“取锁前”——Codex Blocker 2 闭合）
+    2. main 确认 T_LOCKED → 启动 runtime writer → 其发出 **R_STARTED**（取锁前）→
+       随即调用 update_status（第一步 acquire 同一把锁）
+    3. 证明 runtime **确实正在等待锁**（terminal 仍持锁）：R_DONE 缺失 + 进程存活
+       + 显式超时断言（等待后仍未完成）——不靠调度运气
+    4. main 写 GO → terminal writer **持锁 commit** terminal → release
+    5. runtime writer 随后获得锁 → **锁内 reload** 看到 terminal → 零写入
+       （preserved）→ 写 R_DONE
+    6. 最终 canonical = terminal、generation 稳定 = 1
     """
     out = _recovery_ready(tmp_path)
-    t1 = tmp_path / f"t1_{terminal}.txt"
+    t_locked = tmp_path / f"t_locked_{terminal}.txt"
     go = tmp_path / f"go_{terminal}.txt"
     done = tmp_path / f"done_{terminal}.txt"
-    r1 = tmp_path / f"r1_{terminal}.txt"
+    r_started = tmp_path / f"r_started_{terminal}.txt"
+    r_done = tmp_path / f"r_done_{terminal}.txt"
     cancel_mode = "soft" if terminal == "CANCELLED" else ""
 
     p_term = _spawn_worker(tmp_path, TERMINAL_HOLDER_WORKER, str(out), _task_id(),
-                           str(tmp_path), str(t1), str(go), str(done), terminal, cancel_mode)
+                           str(tmp_path), str(t_locked), str(go), str(done), terminal, cancel_mode)
+    p_run = None
     try:
-        _wait_file(t1)  # terminal writer 已持锁
+        # T_LOCKED 由 terminal writer 在成功 acquire 之后发出（真实锁持有证明）
+        _wait_file(t_locked)
         p_run = _spawn_worker(tmp_path, RUNTIME_WAIT_WORKER, str(out), _task_id(),
-                              str(tmp_path), str(r1))
-        _wait_file(r1)  # runtime writer 已启动（terminal 仍持锁 → runtime 必在等待锁）
+                              str(tmp_path), str(r_started), str(r_done))
+        _wait_file(r_started)  # runtime 已发出 R_STARTED（尝试取锁前）
+        # 证明 runtime 尚未完成且正在等待锁（terminal 仍持锁）：
+        # R_DONE 缺失 + 进程存活 + 显式超时断言
+        assert not r_done.exists(), "runtime writer 不应在 terminal 持锁期间完成"
+        assert p_run.poll() is None, "runtime writer 不应在 terminal 持锁期间退出"
+        time.sleep(0.5)  # 显式等待断言：锁仍被 terminal 持有 → runtime 继续阻塞
+        assert not r_done.exists(), "runtime writer 必须持续阻塞在 state.lock 上（terminal 未 release）"
         data = read_status(out)
         assert data["status"] == "RUNNING"  # terminal 尚未提交（等 GO）
 
         go.write_text("go", encoding="utf-8")  # 放行 terminal：持锁 commit → release
         o_term = _run_worker(p_term)
-        assert f"TERMINAL {terminal} 1 False" in o_term
+        assert f"TERMINAL {terminal} 1 False" in o_term  # terminal 先 commit（在 runtime 完成前）
 
-        o_run = _run_worker(p_run)
+        o_run = _run_worker(p_run)  # runtime 随后才完成
         res = json.loads(o_run.split("RUNTIME ", 1)[1])
         assert res["preserved"] is True  # late runtime writer 零写入
         assert res["status"] == terminal
@@ -643,8 +680,8 @@ def test_l_forced_order_runtime_waits_lock_terminal_commits_first(tmp_path, term
         assert data["status"] == terminal
         assert data["terminal_generation"] == 1  # 恰一次 commit，未被 runtime 覆盖
     finally:
-        for p in (p_run,):
-            if p.poll() is None:
+        for p in (p_term, p_run):
+            if p is not None and p.poll() is None:
                 p.communicate(timeout=90)
 
 

@@ -178,6 +178,15 @@ v0.4 Phase E 已交付 **CANCELLED 终态 + cooperative soft cancel Core**（`AA
     临界区**内（验证与提交之间不释放锁）；CLI 与 library 使用完全相同的原子验证路径，
     无 bypass。已有终态（SUCCESS / WAITING / FAILED / CANCELLED）在锁内被保留，
     不要求 evidence，reconciliation 仍执行。
+  - **request mutation 锁序列化（FIX-003）**：`cancel.request` **不是 terminal
+    truth**（§6A.15），但它属于 recovery protocol 的 **authority evidence**——
+    因此 Framework-owned 的 request 写入 / 替换 / consume（`write_cancel_request`
+    / `consume_cancel_request`）与 terminal writers 共享同一 per-task `state.lock`：
+    recovery 在锁内验证 evidence 与 commit CANCELLED 之间，另一个 Framework writer
+    无法替换 / 删除 / consume 该 request（evidence 真正 lock-stable）。锁获取失败
+    （超时 / OS 错误）→ 明确错误（`LockTimeout` / `LockError`），不写、不 consume、
+    不 fallback 成无锁写。读取（runner 检查点 / inspect）保持无锁（非权威读）；
+    recovery 的权威验证始终在其锁内完成。
   - **Force recovery 未开放**：`--cancel-mode force` / `--reason FORCE_CANCELLED` 在
     TASK-005-B 交付前一律返回 `FORCE_RECOVERY_NOT_AVAILABLE`（不伪造 force evidence）。
   - `--evidence` 只是 **diagnostic note**，不是 authority evidence。

@@ -389,7 +389,12 @@ def test_i_recovery_malformed_cancel_request_rejected(tmp_path):
 
 def test_j_recovery_task_id_mismatch_rejected(tmp_path):
     out = _recovery_ready(tmp_path)
-    cancel_mod.write_cancel_request(out, "OTHER-TASK")  # request 属于别的任务
+    # FIX-003：官方 write_cancel_request 现在拒绝 canonical task_id 不匹配的写入
+    # （CancelRequestIdentityError）——mismatch evidence 只能来自 legacy / 外部
+    # 手工文件，此处用 raw write 构造（模拟取锁前已存在的错任务请求）
+    (out / "cancel.request").write_text(
+        json.dumps({"task_id": "OTHER-TASK", "requested_at": "2026-08-27T10:00:00",
+                    "request": "soft_cancel"}), encoding="utf-8")
     with pytest.raises(fc_mod.RecoveryEvidenceError, match="task_id"):
         fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out)
     assert read_status(out)["status"] == "RUNNING"
@@ -421,7 +426,11 @@ def test_l_canonical_task_id_mismatch_rejected(tmp_path):
     out = tmp_path / "out"
     task_lifecycle.update_status(out, task_id="CANONICAL-X", status="RUNNING",
                                  task_path="T.md", workspace=str(tmp_path))
-    cancel_mod.write_cancel_request(out, _task_id())  # request 匹配“请求的”task_id
+    # FIX-003：canonical 是 CANONICAL-X，官方 write_cancel_request 会拒绝请求
+    # _task_id()（mismatch）——mismatch 场景的 request 用 raw write 构造
+    (out / "cancel.request").write_text(
+        json.dumps({"task_id": _task_id(), "requested_at": "2026-08-27T10:00:00",
+                    "request": "soft_cancel"}), encoding="utf-8")  # request 匹配“请求的”task_id
     with pytest.raises(fc_mod.RecoveryError, match="RECOVERY_IDENTITY_ERROR"):
         fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out)
     data = read_status(out)

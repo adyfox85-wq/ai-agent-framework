@@ -15,6 +15,7 @@
 - SUCCESS → 100%（已完成）
 - WAITING → 停在已完成（SUCCESS）阶段权重和（等待处理，不增长）
 - FAILED  → 停在失败阶段之前（失败阶段标 ✗；进行中阶段的部分估算不计入）
+- CANCELLED → 停在取消时刻的权重和（已取消，不再变化，**不显示 100%**）
 - 无任务 / task.json 缺失 → 0（暂无进度信息）
 """
 from __future__ import annotations
@@ -97,7 +98,7 @@ def estimate_progress(
 
     单调性：
     - 正常推进序列（RUNNING → SUCCESS 过渡）单调不倒退；
-    - 终态 FAILED / WAITING 按收敛规则冻结在事实进度（可能低于失败前
+    - 终态 FAILED / WAITING / CANCELLED 按收敛规则冻结在事实进度（可能低于失败前
       进行中阶段的估算值）——设计 §4.1.5 明确允许（"停在失败阶段之前"），
       属估算→事实的收敛，非持续推进，有测试覆盖。
     """
@@ -108,8 +109,9 @@ def estimate_progress(
             for s, st in strip.items()
         }
         percent = 100
-    elif status in ("WAITING", "FAILED"):
-        # 收敛：冻结在已完成阶段权重和；进行中阶段的部分估算不计入
+    elif status in ("WAITING", "FAILED", "CANCELLED"):
+        # 收敛：冻结在已完成阶段权重和；进行中阶段的部分估算不计入。
+        # CANCELLED（§4.1.5）：停在取消时刻的权重和，不显示 100%
         credits = {
             s: (float(PHASE_WEIGHTS.get(s, 0)) if st == "SUCCESS" else 0.0)
             for s, st in strip.items()

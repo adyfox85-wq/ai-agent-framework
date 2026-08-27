@@ -1,8 +1,8 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E/F NOT STARTED）**\
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-004-FIX-001 Phase D closure audit sync）\
+> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE）；Phase F NOT STARTED）**\
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-005-A — Phase E Core Cancel Foundation and Soft Cancel sync）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -21,6 +21,9 @@ Phase: A — Runtime State Foundation: COMPLETE
        B — Bridge Background / Tray Skeleton: COMPLETE
        C — Status Window + Chinese-first UI: COMPLETE
        D — Progress Visualization: COMPLETE
+       E — Safe Cancel Lifecycle: IN PROGRESS（E-Core / Soft Cancel COMPLETE — AAF-v0.4-TASK-005-A；
+           剩余 TASK-005-B Process Ownership / Force Cancel / Recovery Integration
+           与 TASK-005-C Cancel UI + Windows E2E Closure 未交付 → Phase E 不得标 COMPLETE）
 Direction: Desktop Shell MVP / Runtime Observability & Control
 
 v0.4 主线（Phase 顺序）：
@@ -30,10 +33,14 @@ C. Status Window + Chinese-first UI（COMPLETE — 2026-08-27 closure：AAF-v0.4
    实现 + WorkBuddy 独立验证 + Codex 审查全部通过，见下方 Phase C 段落）
 D. Progress Visualization（COMPLETE — 2026-08-27 closure：AAF-v0.4-TASK-004-FIX-001 正式收口；
    实现 + 测试 + 真实 Windows E2E + 独立 post-completion closure audit 通过，见下方 Phase D 段落）
-E. Safe Cancel Lifecycle（NOT STARTED）
+E. Safe Cancel Lifecycle（IN PROGRESS — AAF-v0.4-TASK-005-A 已交付 E-Core / Soft Cancel：
+   CANCELLED 终态、state.lock、terminal generation、reconciliation、recovery finalizer 基础、
+   runner 检查点、cancel.request 契约；见下方 Phase E 段落。剩余子任务：
+   TASK-005-B（Process Ownership / Force Cancel / Recovery Integration）+
+   TASK-005-C（Cancel UI + Windows E2E Closure）完成后才能正式标记 COMPLETE）
 F. Project Switching / Duplicate Task UX（NOT STARTED）
 
-Phase E/F 不得提前实现 / 不得自动启动；Phase E 仅为下一个候选（见下），不得标记 STARTED。
+Phase F 不得提前实现 / 不得自动启动。
 
 Phase C 目标：正式状态窗口（bridge/status_window.py）—— 只读观察 + 中文优先 +
 六阶段条事实映射；Tray 接入（打开状态窗口复用/聚焦，关闭不退出 Bridge）；
@@ -257,8 +264,60 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
 - 禁止（Phase D 不实现）：Phase E/F 全部内容（Safe Cancel / CANCELLED / cancel.request / control.json /
   state.lock / launch registry / force kill / project switching / Duplicate UX）/ RW-020 完整 dead-runner
   protocol / RW-021 / RW-022 aggregation fix
-- Next Phase Candidate: Phase E — Safe Cancel Lifecycle（仅标记候选，不自动启动，
-  必须由 Planner 在 Phase D 正式 COMPLETE 后生成 TASK 才算启动）
+- Next Phase Candidate: Phase E — Safe Cancel Lifecycle（已由 Planner 正式启动为 AAF-v0.4-TASK-005-A，
+  E-Core / Soft Cancel 交付完成；Phase E 未 COMPLETE，见下方 Phase E 段落）
+
+### 0.2 Phase E — Safe Cancel Lifecycle（IN PROGRESS — E-Core / Soft Cancel COMPLETE）
+
+- TASK: AAF-v0.4-TASK-005-A（2026-08-27）；范围：Phase E Core Cancel Foundation + Soft Cancel
+  （冻结设计 §6 / §6A / §6B 的 E-Core 部分；Force Cancel / ownership / UI 分离到后续 TASK）
+- 状态：**IN PROGRESS — E-Core / Soft Cancel COMPLETE（实现 + 测试 + 真实 E2E 通过；**
+  **WorkBuddy / Codex 独立验证由本任务 route 阶段执行，判定记录于任务 REPORT；**
+  **Phase E 不得标 COMPLETE，剩余 TASK-005-B + TASK-005-C 未交付）**
+- 实现内容：
+  - `ai_agent_framework/lock_utils.py`（新）：Core-owned per-task OS-level exclusive `state.lock`
+    （§6B.1–§6B.3；Windows msvcrt.locking / POSIX flock；timeout；残留文件不占锁；crash 后 OS 自动释放；
+    锁失败明确错误 FINALIZATION_BUSY；不绕过锁）
+  - `ai_agent_framework/task_lifecycle.py`：CANCELLED 加入 VALID_STATUSES；TERMINAL_STATUSES =
+    {SUCCESS, WAITING, FAILED, CANCELLED}（§6A.1）；`finalize_terminal()` 统一锁内 critical section
+    （§6B.2：锁内 reload → terminal arbitration → 原子提交 + terminal_generation/terminal_at/
+    terminal_reason/cancel_mode → release）；`update_status` 拒绝终态（防绕过锁）；
+    `read_canonical_terminal()` 只读 canonical；legacy 无 generation 兼容
+  - `ai_agent_framework/cancel.py`（新）：cancel.request 契约（task_id / requested_at / request=soft_cancel；
+    原子写；无效请求安全处理返回 warning；非 terminal truth §6A.15）
+  - `ai_agent_framework/reconcile.py`（新）：`reconcile_terminal_artifacts()`（§6B.6–§6B.8；
+    无 canonical 不臆造；幂等补齐 run.json / REPORT.md；不改 canonical；generation 对齐；
+    完整一致 no-op）
+  - `ai_agent_framework/finalize_cancelled.py`（新）：Core-owned recovery finalizer 基础
+    （§6A.12/§6B.21；CLI `python -m ai_agent_framework.finalize_cancelled`；幂等；
+    已有终态不改写；**本 TASK 不从 Launcher 调用它去 taskkill**——Force Cancel 链留 005-B）
+  - `ai_agent_framework/runner.py`：安全检查点（Validation 后 / Boundary 前；Boundary 后 / Hermes 前；
+    Agent 之间；Codex 后 / Report 前）；有效 cancel.request → 不启动后续 Agent →
+    task.json(CANCELLED) → run.json(CANCELLED) → REPORT(CANCELLED)（§6A.4 顺序）；
+    统一经 finalize_terminal 提交终态；FRAMEWORK_ERROR 路径同样锁内提交；soft cancel exit code = 0
+  - `ai_agent_framework/report.py`：REPORT 支持 CANCELLED（Current Status: CANCELLED + 「任务已取消」+
+    Task ID / 取消时间 / 已完成阶段与 Agent 结果保留 / 后续阶段未执行；不伪造 Force Cancel /
+    PID kill / ownership verified）+ Terminal Generation provenance
+  - `ai_agent_framework/task_archive.py`：TERMINAL_STATUSES 单一来源（含 CANCELLED，可归档 §6.6）
+  - `bridge/launcher.py`：RESULT_CANCELLED + wait thread 最小 canonical-aware 兼容读取（§6A.5：
+    exit code 只是 evidence；canonical 存在则跟随 Core outcome；完整 wait-thread 归 005-B）
+  - `bridge/status_window.py`：STATUS_LABELS / LAUNCHER_RESULT_LABELS 增加 CANCELLED → 「已取消」
+    （§11.1 最小 compatibility；最终 [停止当前任务] 按钮属 005-C）
+  - `bridge/progress.py`：CANCELLED 收敛（§4.1.5：停在取消时刻权重和，不显示 100%）
+  - `docs/QUICKSTART.md` / `docs/TROUBLESHOOTING.md`：CANCELLED / soft cancel Core 契约 /
+    cancel.request 是 request 不是 truth / Phase E 未 COMPLETE / Force Cancel 未交付
+- 测试：**391 passed**（334 基线 + 57 新增，零下降；tests/test_phase_e_core.py 45 项覆盖 req 28 A–Z
+  全项 + tests/test_phase_e_concurrency.py 真实子进程锁/竞态 5 项（req 29，不 mock 锁）+
+  tests/test_phase_e_e2e.py 真实 E2E 4 项（req 30 两个 scenario + CLI 级 run.py / finalize_cancelled））
+- 真实软取消 E2E：Scenario 1（Hermes 前 cancel → Hermes 不启动 → CANCELLED 全套产物）PASS；
+  Scenario 2（Hermes 完成 → WorkBuddy 前 cancel → Hermes result 保留 → CANCELLED）PASS；
+  真实 run.py CLI 子进程 + finalize_cancelled CLI 幂等 PASS
+- 边界遵守：无 Force Kill（taskkill 零实现）、无 Bridge launch registry、无 Status Window Stop 按钮、
+  RW-020/021/022/023/024 未自动修复、历史 TASK-004 task.json 未修改、用户本地 helper
+  （scripts/start_bridge_hidden.vbs / AAF_TASK004_PROCESS_CHECK.txt / .aaf/）未动
+- WorkBuddy / Codex：由本任务 route 阶段执行（verdict 见任务 REPORT.md）
+- Next Phase Step（唯一）：**AAF-v0.4-TASK-005-B — Phase E Process Ownership + Force Cancel +
+  Recovery Integration**（不得自动执行；005-B + 005-C 全部完成后 Phase E 才可标 COMPLETE）
 
 ### 0.2 v0.3 历史状态（CLOSED，保留）
 
@@ -358,7 +417,7 @@ docs/internal/AAF_MASTER_BACKLOG.md
 以后任何被正式确认"稍后处理"的问题，**必须进入 Master Backlog 才算
 长期登记完成**。
 
-v0.4 IN PROGRESS — Phase A/B/C/D COMPLETE（Phase D 已于 2026-08-27 由 AAF-v0.4-TASK-004-FIX-001 正式收口）；Phase E/F 保持 NOT STARTED，不得自动启动；Next Phase Candidate = Phase E — Safe Cancel Lifecycle（仅标记候选，不启动，须由 Planner 在 Phase D 正式 COMPLETE 后生成 TASK 才算启动）。
+v0.4 IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE，由 AAF-v0.4-TASK-005-A 交付；剩余 TASK-005-B + TASK-005-C 未交付，Phase E 不得标 COMPLETE）；Phase F NOT STARTED，不得自动启动；Next Phase Step = AAF-v0.4-TASK-005-B（Phase E Process Ownership + Force Cancel + Recovery Integration）。
 
 ------------------------------------------------------------------------
 

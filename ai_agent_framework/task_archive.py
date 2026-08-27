@@ -2,7 +2,8 @@
 
 职责：
 - 整个 Task Package（<ws>/.aaf/<Task-ID>/）作为归档单元 → <ws>/.aaf/archive/<Task-ID>/
-- 只有终态（SUCCESS / WAITING / FAILED）可归档；CREATED / RUNNING 拒绝
+- 只有终态（SUCCESS / WAITING / FAILED / CANCELLED）可归档；CREATED / RUNNING 拒绝
+  （CANCELLED 属 Phase E 可归档终态，设计 §6.6）
 - 归档不改 task.json.status（Execution Lifecycle 与 Storage Lifecycle 独立）
 - 纯确定性本地操作：不调用 LLM / Agent；不删除 / 不压缩 / 不建数据库
 
@@ -18,10 +19,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-ARCHIVE_DIR_NAME = "archive"
+from .task_lifecycle import TERMINAL_STATUSES
 
-# 可归档的正式终态（CREATED / RUNNING 不得归档）
-TERMINAL_STATUSES = ("SUCCESS", "WAITING", "FAILED")
+ARCHIVE_DIR_NAME = "archive"
 
 # 错误码
 ERR_TASK_NOT_ARCHIVABLE = "TASK_NOT_ARCHIVABLE"

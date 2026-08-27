@@ -54,15 +54,69 @@ def _extract_unresolved(results: dict[str, str]) -> str:
     return '\n'.join(issues) if issues else 'None identified.'
 
 
-def build_report(task: str, route: list[str], results: dict[str, str], status: str, integrity_notes: list[str] | None = None) -> str:
+def _cancellation_section(terminal: dict) -> str:
+    """CANCELLED REPORT 的取消说明（§6.6 / TASK req 17）。
+
+    记录合理事实：Task ID / 取消时间 / 已完成阶段与 Agent 结果保留 / 后续阶段未执行。
+    不伪造 Force Cancel / PID kill / ownership verified（本 TASK 只有 soft cancel）。
+    """
+    cancel_mode = terminal.get("cancel_mode")
+    mode_text = {
+        "soft": "cooperative（soft cancel）",
+        "force": "force cancel（TASK-005-B 交付，本 TASK 未使用）",
+    }.get(cancel_mode, str(cancel_mode))
+    requested_at = terminal.get("cancel_requested_at")
+    lines = [
+        '## Cancellation',
+        '任务已取消（CANCELLED）',
+        f'- Task ID: {terminal.get("task_id", "")}',
+    ]
+    if requested_at:
+        lines.append(f'- 取消请求时间: {requested_at}')
+    if terminal.get("terminal_at"):
+        lines.append(f'- 取消收敛时间: {terminal["terminal_at"]}')
+    lines.append(f'- 取消方式: {mode_text}')
+    lines.append('- 已完成阶段与 Agent 结果已保留')
+    lines.append('- 后续阶段未执行')
+    return '\n'.join(lines)
+
+
+def build_report(
+    task: str,
+    route: list[str],
+    results: dict[str, str],
+    status: str,
+    integrity_notes: list[str] | None = None,
+    terminal: dict | None = None,
+) -> str:
+    """生成 REPORT.md 文本。
+
+    - ``terminal``：canonical terminal metadata（TerminalResult.to_dict() 或等价 dict），
+      提供时附加 ``## Terminal Generation``（派生产物 provenance，§6B.4）
+    - status == CANCELLED：追加 ``## Cancellation`` 中文说明（§6.6 / req 17）；
+      未执行 agent 的缺失结果不列入 Unresolved Issues（取消是预期中断，不是缺陷）
+    """
     agent_sections = []
     for name in route:
         body = _summarize(results.get(name, '(not run)'))
         agent_sections.append(f'### {name}\n{body}')
     results_text = '\n\n'.join(agent_sections)
-    unresolved = _extract_unresolved(results)
-    if integrity_notes:
-        unresolved = '\n'.join([unresolved, *[f'- {n}' for n in integrity_notes]])
+
+    if status == 'CANCELLED':
+        unresolved = 'None identified.'  # 取消任务不把未执行 agent 当 unresolved
+        if integrity_notes:
+            unresolved = '\n'.join([unresolved, *[f'- {n}' for n in integrity_notes]])
+    else:
+        unresolved = _extract_unresolved(results)
+        if integrity_notes:
+            unresolved = '\n'.join([unresolved, *[f'- {n}' for n in integrity_notes]])
+
+    extra = ''
+    if status == 'CANCELLED' and terminal:
+        extra = '\n\n' + _cancellation_section(terminal)
+    if terminal and terminal.get('terminal_generation') is not None:
+        extra += f'\n\n## Terminal Generation\n{terminal["terminal_generation"]}'
+
     return f'''# REPORT
 
 ## Current Status
@@ -81,5 +135,5 @@ def build_report(task: str, route: list[str], results: dict[str, str], status: s
 {unresolved}
 
 ## Planner Handoff
-Use this report as the authoritative context for the next planning turn. Resolve any FAIL / REQUEST_CHANGE / unresolved warnings before creating the next TASK. If all required checks passed, plan the next smallest task without reopening completed scope.
+Use this report as the authoritative context for the next planning turn. Resolve any FAIL / REQUEST_CHANGE / unresolved warnings before creating the next TASK. If all required checks passed, plan the next smallest task without reopening completed scope.{extra}
 '''

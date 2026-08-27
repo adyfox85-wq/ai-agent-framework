@@ -63,10 +63,13 @@ def test_overall_status_label_unknown_and_missing():
     assert sw.overall_status_label("BOGUS") == "—"
 
 
-def test_no_cancelled_support_in_phase_c():
-    # Phase C 不得提前增加 CANCELLED（TASK req 10）
-    assert "CANCELLED" not in sw.STATUS_LABELS
+def test_cancelled_status_label_in_phase_e():
+    # Phase E（TASK-005-A）：CANCELLED 进入生命周期状态映射（§11.1 CANCELLED → 已取消）；
+    # 阶段状态不增加 CANCELLED（阶段保持事实状态，整体取消由 status 表达）
+    assert sw.STATUS_LABELS.get("CANCELLED") == "已取消"
     assert "CANCELLED" not in sw.PHASE_STATE_DISPLAY
+    assert sw.overall_status_label("CANCELLED") == "已取消"
+    assert sw.LAUNCHER_RESULT_LABELS.get("CANCELLED") == "已取消"
 
 
 # ---------------------------------------------------------------------------

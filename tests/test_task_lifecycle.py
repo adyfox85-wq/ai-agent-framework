@@ -6,7 +6,10 @@ import pytest
 from ai_agent_framework import task_lifecycle
 from ai_agent_framework.task_lifecycle import (
     LifecycleError,
+    TERMINAL_STATUSES,
     VALID_STATUSES,
+    finalize_terminal,
+    read_canonical_terminal,
     read_status,
     task_json_path,
     update_status,
@@ -31,12 +34,17 @@ lifecycle test
 # ---------- 模块单测 ----------
 
 def test_valid_statuses():
-    assert VALID_STATUSES == ("CREATED", "RUNNING", "WAITING", "SUCCESS", "FAILED")
+    assert VALID_STATUSES == ("CREATED", "RUNNING", "WAITING", "SUCCESS", "FAILED", "CANCELLED")
     assert "ARCHIVED" not in VALID_STATUSES  # ARCHIVED 不属于 Task Status
+    # Phase E（§6A.1）：CANCELLED 是合法终态；CANCEL_REQUESTED / CANCELLING 不是 task.json status
+    assert TERMINAL_STATUSES == ("SUCCESS", "WAITING", "FAILED", "CANCELLED")
+    assert "CANCELLED" in VALID_STATUSES
+    assert "CANCEL_REQUESTED" not in VALID_STATUSES
+    assert "CANCELLING" not in VALID_STATUSES
 
 
-@pytest.mark.parametrize("status", VALID_STATUSES)
-def test_write_and_read(tmp_path, status):
+@pytest.mark.parametrize("status", ["CREATED", "RUNNING"])
+def test_write_and_read_non_terminal(tmp_path, status):
     p = update_status(
         tmp_path / "out", task_id="T1", status=status,
         task_path="T.md", workspace=str(tmp_path),
@@ -49,6 +57,37 @@ def test_write_and_read(tmp_path, status):
     assert data["report_path"] is None
 
 
+@pytest.mark.parametrize("status", TERMINAL_STATUSES)
+def test_write_and_read_terminal_via_finalize(tmp_path, status):
+    """终态必须经 finalize_terminal（锁内提交）；update_status 拒绝终态。"""
+    out = tmp_path / "out"
+    update_status(out, task_id="T1", status="RUNNING", task_path="T.md", workspace=str(tmp_path))
+    result = finalize_terminal(
+        out, task_id="T1", status=status, task_path="T.md", workspace=str(tmp_path)
+    )
+    data = read_status(out)
+    assert data["task_id"] == "T1"
+    assert data["status"] == status
+    assert data["updated_at"]
+    assert result.status == status
+    assert result.preserved is False
+    # terminal generation 持久化（§6B.4）
+    assert result.terminal_generation == 1
+    assert data["terminal_generation"] == 1
+    assert data["terminal_at"]
+    assert read_canonical_terminal(out).status == status
+
+
+def test_update_status_rejects_terminal_status(tmp_path):
+    """绕过锁直接 update_status 写终态必须被拒绝（§6B.1/§6B.2 不绕过锁）。"""
+    with pytest.raises(LifecycleError, match="finalize_terminal"):
+        update_status(tmp_path / "out", task_id="T1", status="SUCCESS",
+                      task_path="T.md", workspace=str(tmp_path))
+    with pytest.raises(LifecycleError, match="finalize_terminal"):
+        update_status(tmp_path / "out", task_id="T1", status="CANCELLED",
+                      task_path="T.md", workspace=str(tmp_path))
+
+
 def test_invalid_status_rejected(tmp_path):
     with pytest.raises(LifecycleError):
         update_status(tmp_path / "out", task_id="T1", status="ARCHIVED",
@@ -58,8 +97,8 @@ def test_invalid_status_rejected(tmp_path):
 def test_report_path_updated_after_generation(tmp_path):
     out = tmp_path / "out"
     update_status(out, task_id="T1", status="RUNNING", task_path="T.md", workspace=str(tmp_path))
-    update_status(out, task_id="T1", status="SUCCESS", task_path="T.md", workspace=str(tmp_path),
-                  report_path=str(tmp_path / "REPORT.md"))
+    finalize_terminal(out, task_id="T1", status="SUCCESS", task_path="T.md", workspace=str(tmp_path),
+                      report_path=str(tmp_path / "REPORT.md"))
     data = read_status(out)
     assert data["report_path"] == str(tmp_path / "REPORT.md")
     assert data["status"] == "SUCCESS"
@@ -70,7 +109,7 @@ def test_report_path_preserved_when_none(tmp_path):
     out = tmp_path / "out"
     update_status(out, task_id="T1", status="RUNNING", task_path="T.md", workspace=str(tmp_path),
                   report_path="R.md")
-    update_status(out, task_id="T1", status="SUCCESS", task_path="T.md", workspace=str(tmp_path))
+    finalize_terminal(out, task_id="T1", status="SUCCESS", task_path="T.md", workspace=str(tmp_path))
     assert read_status(out)["report_path"] == "R.md"
 
 
@@ -93,14 +132,27 @@ def test_corrupted_json_rebuilt_on_update(tmp_path):
     out = tmp_path / "out"
     out.mkdir()
     (out / "task.json").write_text("{broken", encoding="utf-8")
-    update_status(out, task_id="T2", status="FAILED", task_path="T.md", workspace=str(tmp_path))
+    update_status(out, task_id="T2", status="RUNNING", task_path="T.md", workspace=str(tmp_path))
+    data = read_status(out)
+    assert data["task_id"] == "T2"
+    assert data["status"] == "RUNNING"
+
+
+def test_corrupted_json_terminal_rebuilt_via_finalize(tmp_path):
+    """已损坏 task.json：finalize_terminal 锁内重建终态（兼容 update_status 的可恢复语义）。"""
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "task.json").write_text("{broken", encoding="utf-8")
+    finalize_terminal(out, task_id="T2", status="FAILED", task_path="T.md", workspace=str(tmp_path))
     data = read_status(out)
     assert data["task_id"] == "T2"
     assert data["status"] == "FAILED"
+    assert data["terminal_generation"] == 1
 
 
 def test_read_missing_returns_none(tmp_path):
     assert read_status(tmp_path / "nope") is None
+    assert read_canonical_terminal(tmp_path / "nope") is None
 
 
 # ---------- runner 集成 ----------

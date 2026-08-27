@@ -19,8 +19,11 @@ Core / UI 边界（设计 §14）：
   REPORT.md / last_run.json / config.json / launcher 内存状态；
   绝不写 task.json / run.json / route.json / boundary.json / REPORT.md
 - 不复制 Router / Runner / Lifecycle / Agent 逻辑
-- 不实现 Phase E（cancel / CANCELLED）、Phase F（项目切换 / Duplicate UX）；
-  stuck 仅提示，不做 definitive dead-runner 判定（RW-020 边界）
+- Phase E：CANCELLED 作为合法终态已进入状态映射（§11.1 CANCELLED → 已取消）与
+  进度收敛（§4.1.5 停在取消时刻权重和）；最终 [停止当前任务] 按钮与取消状态机
+  属 TASK-005-C，本窗口不实现
+- 不实现 Phase F（项目切换 / Duplicate UX）；stuck 仅提示，不做 definitive
+  dead-runner 判定（RW-020 边界）
 
 本模块可脱离 tkinter 主循环单测（纯函数部分）；窗口与控制器在主线程使用。
 """
@@ -62,21 +65,24 @@ STAGE_DISPLAY = {
     "COMPLETED": "已完成",
 }
 
-# 生命周期状态 → 中文（设计 §11.1；CANCELLED 属 Phase E，本阶段不增加）
+# 生命周期状态 → 中文（设计 §11.1；CANCELLED 为 Phase E 合法终态，§11.1 文案表已定义）
 STATUS_LABELS = {
     "CREATED": "已创建",
     "RUNNING": "执行中",
     "WAITING": "等待处理",
     "SUCCESS": "已完成",
     "FAILED": "执行失败",
+    "CANCELLED": "已取消",
 }
 
 # Bridge 侧收尾分类 → 中文（task.json 缺失时的兜底展示；不是 lifecycle 终态裁决）
+# CANCELLED：launcher 读取 canonical terminal 后跟随的 Bridge 侧分类（§6A.5）
 LAUNCHER_RESULT_LABELS = {
     "FINISHED": "已完成",
     "FAILED": "执行失败",
     "REPORT_NOT_FOUND": "未找到报告",
     "FAILED_TO_START": "启动失败",
+    "CANCELLED": "已取消",
 }
 
 # Bridge 健康 → 中文（与 bridge/main.py 的展示层一致；状态码仍是技术字段）

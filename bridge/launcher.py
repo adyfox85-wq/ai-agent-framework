@@ -33,6 +33,10 @@ RESULT_FINISHED = "FINISHED"
 RESULT_FAILED = "FAILED"
 RESULT_REPORT_NOT_FOUND = "REPORT_NOT_FOUND"
 RESULT_FAILED_TO_START = "FAILED_TO_START"
+# Phase E（TASK-005-A 最小兼容，设计 §6A.5）：canonical terminal = CANCELLED 时
+# wait thread 跟随 Core outcome 的 Bridge 侧分类；exit code 只是 evidence，不是判定。
+# 完整 canonical-aware wait-thread（reconciliation 触发等）归 TASK-005-B。
+RESULT_CANCELLED = "CANCELLED"
 
 
 class AlreadyRunningError(RuntimeError):
@@ -82,6 +86,21 @@ class FrameworkLauncher:
     @staticmethod
     def report_path_for(output_dir: Path) -> Path:
         return output_dir / "REPORT.md"
+
+    @staticmethod
+    def _read_canonical_terminal(output_dir: Path) -> dict | None:
+        """只读 Core canonical terminal（§6A.5 wait thread 跟随 Core outcome）。
+
+        经 ai_agent_framework.task_lifecycle 的只读 reader（§14.4 允许的只读 Core 依赖）；
+        无终态 / 读取失败 → None（回退 legacy 分类）。绝不在此写终态。
+        """
+        try:
+            from ai_agent_framework.task_lifecycle import read_canonical_terminal
+
+            result = read_canonical_terminal(output_dir)
+            return result.to_dict() if result is not None else None
+        except Exception:
+            return None
 
     # ---------- 启动 ----------
 
@@ -167,15 +186,32 @@ class FrameworkLauncher:
             exit_code = proc.wait()
 
             report = self.report_path_for(output_dir)
-            if exit_code != 0:
-                result = RESULT_FAILED
-                report_path = None
-            elif report.exists():
-                result = RESULT_FINISHED
-                report_path = str(report)
-            else:
-                result = RESULT_REPORT_NOT_FOUND
-                report_path = None
+            # Phase E 最小兼容（§6A.5）：先读 Core canonical terminal（task.json）。
+            # 存在合法终态 → last_run 跟随 Core outcome（CANCELLED 不得因非零退出被判 FAILED；
+            # exit code 只是 evidence）。完整 canonical-aware wait-thread 归 TASK-005-B。
+            canonical = self._read_canonical_terminal(output_dir)
+            if canonical is not None:
+                status = canonical.get("status")
+                if status == "CANCELLED":
+                    result = RESULT_CANCELLED
+                elif status in ("SUCCESS", "WAITING"):
+                    result = RESULT_FINISHED if report.exists() else RESULT_REPORT_NOT_FOUND
+                elif status == "FAILED":
+                    result = RESULT_FAILED
+                else:  # 非终态（异常边界）：回退到 legacy 分类
+                    canonical = None
+                if canonical is not None:
+                    report_path = str(report) if report.exists() else None
+            if canonical is None:
+                if exit_code != 0:
+                    result = RESULT_FAILED
+                    report_path = None
+                elif report.exists():
+                    result = RESULT_FINISHED
+                    report_path = str(report)
+                else:
+                    result = RESULT_REPORT_NOT_FOUND
+                    report_path = None
         except Exception:
             # 等待/读取异常：释放 RUNNING，标记失败，保留 TASK.md
             exit_code = None

@@ -118,7 +118,7 @@ pythonw 无控制台，启动异常（如导入错误）会：
   （由 Framework runner 写入）。进度条只读展示，永不回写 task.json / run.json /
   route.json / boundary.json / REPORT.md / cancel.request 等任何状态文件。
 - **100% 只在任务 SUCCESS 时保证**：SUCCESS → 100%（已完成）。
-  FAILED 停在失败阶段之前（< 100%）；WAITING 停在已完成事实（不自动推进）；
+  FAILED 停在失败阶段之前（< 100%）；WAITING / CANCELLED 停在已完成事实（不自动推进）；
   没有任务或 task.json 缺失时显示「暂无进度信息」（0%）。
 
 **「⚠ 任务可能已停滞」是什么意思？**
@@ -137,6 +137,24 @@ pythonw 无控制台，启动异常（如导入错误）会：
 
 不会。窗口只读取产物（task.json / route.json / boundary.json / REPORT.md / last_run.json / config.json），
 不写任何文件；任务状态由 Framework（runner）自己写。窗口只读，所以**关闭它不会中断任务**。
+
+**任务状态显示「已取消」（CANCELLED）是什么意思？**
+
+- CANCELLED 是 v0.4 Phase E 的**合法终态**（cooperative soft cancel 收敛结果），表示任务被
+  主动取消：已完成阶段的 Agent 结果保留，后续阶段未执行；`task.json / run.json / REPORT.md`
+  三处状态一致为 CANCELLED。
+- 触发方式（当前）：在任务输出目录 `.aaf/<Task-ID>/` 写入 `cancel.request`
+  （JSON：`{"task_id": "<Task-ID>", "requested_at": "<ISO 时间>", "request": "soft_cancel"}`）。
+  Runner 在安全检查点读到后收敛；`cancel.request` 只是**外部请求，不是终态裁决**
+  （最终状态由 Core 根据 `task.json` 裁决）。
+- **状态窗口显示 CANCELLED 时**：查看 `task.json` 的 `terminal_reason`（CANCEL_REQUESTED）与
+  `cancel_mode`（soft）；确认已完成阶段的 `<agent>_result.md` 仍保留。
+- **late cancel 不会覆盖已完成任务**：任务已 SUCCESS / WAITING / FAILED 后再写
+  cancel.request 会被吸收 / 忽略，终态不变。
+- **尚未交付**：状态窗口的「停止当前任务」按钮（TASK-005-C）与 Force Cancel
+  （进程树强终止，TASK-005-B）未实现——不要期望 UI 有停止按钮。
+- 已取消任务无法直接重跑：`TASK.md` 仍在 `tasks/active/`（证据保留），重复提交会触发
+  TASK_ALREADY_EXISTS；需要重跑时按常规流程处理（移除/重命名旧 active TASK 或走 resume 语义）。
 
 **某些字段显示 — / 未知**
 

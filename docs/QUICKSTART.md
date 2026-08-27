@@ -131,7 +131,7 @@ Bridge 校验通过后点击「执行」，Framework 开始后台运行。
 
 - **Bridge / 项目区**：当前项目、Bridge 状态（正常运行/异常）、热键、Workspace
 - **当前任务区**：Task ID、Task Name、当前阶段、当前 Agent（Hermes / WorkBuddy / Codex）、
-  已运行时长、最近活动、整体结果（执行中 / 已完成 / 等待处理 / 执行失败）、
+  已运行时长、最近活动、整体结果（执行中 / 已完成 / 等待处理 / 执行失败 / 已取消）、
   整体进度（估算百分比 + 进度条）、当前阶段占比
 - **六阶段条**：Validation / Boundary / Hermes / WorkBuddy / Codex / Report，
   每个阶段显示 ✓ 已完成 / ▶ 进行中 / ○ 未开始 / ⏸ 等待处理 / ✗ 失败；进行中阶段高亮
@@ -147,12 +147,35 @@ Bridge 校验通过后点击「执行」，Framework 开始后台运行。
 - 没有任务时窗口显示"当前没有任务"，不会报错；Task ID / 状态等英文技术字段保留原值。
 - **整体进度是估算值，不是精确剩余进度**：由固定阶段权重（Validation 5% / Boundary 5% /
   Hermes 45% / WorkBuddy 20% / Codex 20% / Report 5%）与阶段完成事实计算；
-  进度条旁标注「估算」。**100% 只在任务 SUCCESS 时保证**；FAILED / WAITING 时
+  进度条旁标注「估算」。**100% 只在任务 SUCCESS 时保证**；FAILED / WAITING / CANCELLED 时
   进度定格在已完成事实，不会显示 100%。
 - **进度不是 canonical lifecycle**：任务的权威状态始终是 `task.json`（由 Framework 写入）；
   进度条只读展示、永不回写任何状态文件。
 
 > 注意：重启 / 退出 Bridge 不会修改正在执行 Task 的状态文件（task.json / run.json 由 Framework 自己写）。
+
+## 取消任务（Soft Cancel，Phase E Core）
+
+v0.4 Phase E 已交付 **CANCELLED 终态 + cooperative soft cancel Core**（`AAF-v0.4-TASK-005-A`）：
+
+- **CANCELLED 是合法终态**（`SUCCESS / WAITING / FAILED / CANCELLED`）；任务取消后
+  `task.json / run.json / REPORT.md` 状态一致为 `CANCELLED`，已完成阶段的 Agent 结果全部保留。
+- **取消请求文件**：`.aaf/<Task-ID>/cancel.request`（最小 JSON：`task_id / requested_at / request`）。
+  它是**外部请求，不是 terminal truth**——最终状态永远由 Core 根据 `task.json` 裁决
+  （`task.json` 是唯一 canonical terminal truth，经 `state.lock` 锁内提交）。
+- **Runner 在安全检查点收敛**：收到有效 `cancel.request` 后不启动后续 Agent；
+  已完成产物保留；Core 依次落盘 `task.json(CANCELLED)` → `run.json(CANCELLED)` → `REPORT.md(CANCELLED)`。
+- **late cancel 不覆盖已提交终态**：任务已 SUCCESS / WAITING / FAILED 后到达的取消请求会被吸收 / 忽略。
+- **幂等**：重复 cancel 不会重复收尾 / 重复 bump generation（`terminal_generation` 单调递增）。
+- **恢复 finalizer（Core-owned）**：`python -m ai_agent_framework.finalize_cancelled
+  --task-id <ID> --workspace <WS> --output <OUT>`（幂等；已有终态不改写，只做 reconciliation）。
+- **尚未交付**（属于后续 TASK-005-B / 005-C，Phase E 未 COMPLETE）：
+  - 状态窗口「停止当前任务」按钮（005-C）
+  - Force Cancel（进程树强终止 + ownership verification）（005-B）
+  - 因此**不要**宣称"状态窗口已可停止任务"。
+
+> 当前状态窗口只读展示 CANCELLED（「已取消」）+ 进度定格；写入 `cancel.request` 的
+> 正式 UI 入口在 TASK-005-C 交付前，仅可通过 CLI / 测试 / 手动写文件使用。
 
 ## Step 11 — 完成后点击「复制报告」
 
@@ -161,7 +184,7 @@ Framework 完成后 Bridge 提供「复制报告」按钮（把 REPORT 转成 Pl
 ## Step 12 — 回到 Planner 粘贴
 
 把 REPORT 粘贴给 Planner。Planner 阅读：
-- 是否 SUCCESS / WAITING / FAILED
+- 是否 SUCCESS / WAITING / FAILED / CANCELLED
 - Agent 结果
 - Unresolved Issues
 - 决定下一步（修复、收口或新任务）

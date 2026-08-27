@@ -37,9 +37,10 @@ Phase A 目标：task.json = live canonical runtime view
 Phase A Closure（AAF-v0.4-TASK-001-FIX-001，2026-08-27）：
 - Tests: 216 passed
 - Review: COMPLETE（WorkBuddy APPROVE + Codex APPROVE）
-- Remote Sync: SYNCED
+- Remote Sync: SYNCED（5a8b76a）；FIX-001 closure commit f81c7ee: REMOTE_SYNC_PENDING
+  （2026-08-27 push TLS EOF，RW-018；网络恢复后 git push origin main）
 - Unresolved: None blocking
-- Commit: 5a8b76a8662ea675cdfff8f4d33c5bb6f3517d7f
+- Commit: 5a8b76a8662ea675cdfff8f4d33c5bb6f3517d7f（closure: f81c7ee）
 
 Next Phase Candidate: Phase B — Bridge Background / Tray Skeleton（不得自动启动）
 

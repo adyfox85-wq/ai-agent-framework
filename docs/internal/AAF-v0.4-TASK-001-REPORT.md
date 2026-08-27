@@ -62,6 +62,7 @@
 
 - Commit: `5a8b76a8662ea675cdfff8f4d33c5bb6f3517d7f`（feat(v0.4-phase-a): runtime state foundation — task.json live state + reader）
 - Push: SUCCESS（origin/main 已同步至 5a8b76a）
+- Closure commit `f81c7ee`（本 FIX-001 文档 closure）：**REMOTE_SYNC_PENDING**（2026-08-27 push 失败：TLS EOF / Connection reset，RW-018；直连 + 7897 http/socks5 + 7892 共 6 次重试均失败；网络恢复后重跑 `git push origin main`）
 - Phase Start Handoff: 已纳入版本控制，保留启动时原样（历史快照，未因 Phase A 完成而改写）
 
 ## Unresolved Issues

@@ -95,13 +95,19 @@ def build_report(
     task_path=None,
     task_hash: str | None = None,
     output_dir=None,
+    sync_state: dict | None = None,
 ) -> str:
     """生成 REPORT.md 文本（REPORT De-duplication，Requirement 7）。
 
     - 提供 ``task_path`` / ``task_hash``（Runner / Reconcile 新协议路径）→
       ``## Original Task`` 不再复制全文，改为 ``## Task Reference``（Task ID / Path / Hash）；
       未提供（legacy 外部调用方）→ 保留旧 ``## Original Task`` 全文嵌入（Backward Compat）。
+      FIX-002 Req 1/2：Runner 传入的 task_path 是 immutable execution snapshot
+      （TASK.snapshot.md），task_hash 只从 snapshot 计算一次并在整个 lifecycle 复用。
     - Agent Results：摘要 + 完整结果 artifact 路径（output_dir 提供时）；不复制上游 narrative 全文。
+    - ``sync_state``：``context_packet.remote_sync_state()`` 的 dict（FIX-002 Req 4/5）——
+      提供时附加 ``## Remote Sync`` 段（Commit Sync / Tracked Working Tree /
+      Task Remote Sync）；缺省（legacy 调用方）不输出该段，不虚构。
     - ``terminal``：canonical terminal metadata（TerminalResult.to_dict() 或等价 dict），
       提供时附加 ``## Terminal Generation``（派生产物 provenance，§6B.4）
     - status == CANCELLED：追加 ``## Cancellation`` 中文说明（§6.6 / req 17）；
@@ -150,6 +156,26 @@ def build_report(
         # Legacy 调用方（未提供引用信息）：保留全文嵌入，确保自包含
         task_section = f'## Original Task\n{_summarize(task, 8000)}'
 
+    sync_section = ''
+    if sync_state and isinstance(sync_state, dict) and sync_state.get('is_git_repo') is not False:
+        # FIX-002 Req 4/5：区分 commit graph sync 与 tracked working tree；
+        # Task Remote Sync 仅当两者都满足（commit+push 且 tracked CLEAN）才为 SYNCED
+        dirty = sync_state.get('tracked_dirty_entries') or []
+        sync_lines = [
+            '## Remote Sync',
+            f"- Commit Sync: {sync_state.get('commit_sync', 'UNKNOWN')}",
+            f"- Tracked Working Tree: {sync_state.get('tracked_working_tree', 'UNKNOWN')}",
+            f"- Task Remote Sync: {sync_state.get('task_remote_sync', 'UNKNOWN')}",
+        ]
+        if sync_state.get('ahead') is not None or sync_state.get('behind') is not None:
+            sync_lines.append(
+                f"- Ahead/Behind: {sync_state.get('ahead', 0)}/{sync_state.get('behind', 0)}"
+            )
+        if dirty:
+            sync_lines.append('- Tracked 未提交条目:')
+            sync_lines.extend(f'  - {d}' for d in dirty[:20])
+        sync_section = '\n\n' + '\n'.join(sync_lines)
+
     return f'''# REPORT
 
 ## Current Status
@@ -165,6 +191,7 @@ def build_report(
 
 ## Unresolved Issues
 {unresolved}
+{sync_section}
 
 ## Planner Handoff
 Use this report as the authoritative context for the next planning turn. Resolve any FAIL / REQUEST_CHANGE / unresolved warnings before creating the next TASK. If all required checks passed, plan the next smallest task without reopening completed scope.{extra}

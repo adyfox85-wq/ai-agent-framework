@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from .git_status import SYNC_SYNCED, compute_sync
 from .report import verdict_blocked
 
 PROTOCOL_VERSION = "packet/1"
@@ -46,6 +47,66 @@ STAGE_FIELDS = (
 )
 
 _SUMMARY_LIMIT = 400
+
+# ---------- Machine-Readable Stage Summary 契约（Requirement 7） ----------
+# Agent 答复末尾的可解析结构化块。Framework 只接受经 schema validation 的结果；
+# 缺失 / 损坏 / 与 narrative 冲突 → 显式 PARTIAL/UNKNOWN，不得伪装为空数组。
+STRUCTURED_RESULT_BEGIN = "AAF_STRUCTURED_RESULT_BEGIN"
+STRUCTURED_RESULT_END = "AAF_STRUCTURED_RESULT_END"
+_STRUCTURED_TAIL_RE = re.compile(
+    re.escape(STRUCTURED_RESULT_BEGIN) + r"\s*(\{.*?\})\s*" + re.escape(STRUCTURED_RESULT_END),
+    re.DOTALL,
+)
+
+# 每 agent 的结构化块 schema（必填 / 可选 / 类型约束）
+_STRUCTURED_SCHEMAS: dict[str, dict] = {
+    "hermes": {
+        "required": ("status",),
+        "optional": ("commit", "changed_files", "warnings", "findings"),
+        "types": {
+            "status": str,
+            "commit": (str, type(None)),
+            "changed_files": list,
+            "warnings": list,
+            "findings": list,
+        },
+    },
+    "workbuddy": {
+        "required": ("verdict", "blocking_rework", "findings", "warnings"),
+        "optional": (),
+        "types": {
+            "verdict": str,
+            "blocking_rework": bool,
+            "findings": list,
+            "warnings": list,
+        },
+    },
+    "codex": {
+        "required": ("verdict", "blocking_rework", "findings", "warnings"),
+        "optional": (),
+        "types": {
+            "verdict": str,
+            "blocking_rework": bool,
+            "findings": list,
+            "warnings": list,
+        },
+    },
+}
+
+# structured_summary_status 取值：
+# NOT_PROVIDED / MALFORMED / COMPLETE / CONSISTENCY_VIOLATION
+SUMMARY_STATUS_NOT_PROVIDED = "NOT_PROVIDED"
+SUMMARY_STATUS_MALFORMED = "MALFORMED"
+SUMMARY_STATUS_COMPLETE = "COMPLETE"
+SUMMARY_STATUS_VIOLATION = "CONSISTENCY_VIOLATION"
+
+# ---------- Remote Sync 语义（Requirement 4 / 5） ----------
+# 预先允许的 untracked local artifacts：不得单独导致 Task Remote Sync 失败
+PRE_ALLOWED_UNTRACKED = (
+    ".aaf/",
+    "scripts/start_bridge_hidden.vbs",
+    "AAF_TASK004_PROCESS_CHECK.txt",
+)
 
 
 # ---------- hash / size ----------
@@ -136,26 +197,58 @@ def build_stage_result(
     head_before: str | None = None,
     head_after: str | None = None,
     changed_files: list[str] | None = None,
+    structured: dict | None = None,
+    structured_status: str = SUMMARY_STATUS_NOT_PROVIDED,
 ) -> dict:
-    """确定性派生 stage 结构化结果（Requirement 5）。
+    """确定性派生 stage 结构化结果（Requirement 5 / FIX-002 Req 6–9）。
 
     只记录 Framework 可验证的事实，不解析 / 不虚构 LLM 正文语义：
     - status：result 有效 → SUCCESS，无效（空 / FRAMEWORK_ERROR）→ FAILED
-    - verdict / blocking_rework：由结论词与 report.verdict_blocked 派生
+    - verdict / blocking_rework：优先来自 schema-validated 结构化块；未提供时
+      由结论词与 report.verdict_blocked 派生（narrative fallback）
     - commit / changed_files：调用方传入的真实 git 事实（head_before / head_after）
-    - tests / findings / warnings：框架无法确定性派生 → 显式 None / 空列表，
-      真实内容保留在 <agent>_result.md narrative（evidence_paths 可追溯）
+    - findings / warnings：**未知就是未知** —— Agent 未提供结构化块（或块损坏 /
+      一致性违规）时为 None（UNKNOWN），绝不伪装为空数组（FIX-002 Req 6）。
+      `[]` 只出现在结构化块中 Agent 显式声明“确认没有”的情况。
+    - summary_complete / structured_summary_status：结构化块经 schema validation
+      且与 narrative 一致性 guard 通过 → COMPLETE；否则 PARTIAL/UNKNOWN
+      （下游必须 reference/read narrative，不得把空 findings/warnings 当完整事实）。
     """
     output_dir = Path(output_dir)
     body = result_text.strip()
     valid = bool(body) and not body.startswith("FRAMEWORK_ERROR")
     changed = list(changed_files or [])
+
+    findings: list | None = None
+    warnings: list | None = None
+    verdict = _derive_verdict(agent, result_text)
+    blocking_rework = verdict_blocked(agent, result_text)
+    summary_complete = False
+    status = structured_status
+
+    if structured is not None and isinstance(structured, dict):
+        if "verdict" in structured and structured["verdict"]:
+            verdict = structured["verdict"]
+        if "blocking_rework" in structured:
+            blocking_rework = bool(structured["blocking_rework"])
+        findings = list(structured.get("findings") or [])
+        warnings = list(structured.get("warnings") or [])
+        # Narrative / JSON 一致性 guard（FIX-002 Req 9）：structured 声明 complete 时，
+        # narrative 显式 warning / blocking finding / REQUEST_CHANGE / FAIL 不得消失
+        violations = check_narrative_json_consistency(agent, result_text, structured)
+        if violations:
+            status = SUMMARY_STATUS_VIOLATION
+            summary_complete = False
+        else:
+            status = SUMMARY_STATUS_COMPLETE
+            summary_complete = True
+
     return {
         "protocol": PROTOCOL_VERSION,
         "agent": agent,
         "status": "SUCCESS" if valid else "FAILED",
-        "verdict": _derive_verdict(agent, result_text),
-        "blocking_rework": verdict_blocked(agent, result_text),
+        "verdict": verdict,
+        "blocking_rework": blocking_rework,
         "commit": head_after,
         "commit_changed": bool(head_before and head_after and head_before != head_after),
         "tests": None,  # 框架不猜测；真实测试证据在 narrative / evidence paths
@@ -164,11 +257,265 @@ def build_stage_result(
             str(output_dir / f"{agent}_result.md"),
             str(output_dir / f"{agent}_result.json"),
         ],
-        "findings": [],   # 真实 findings 在 narrative（summary 仅导航）
-        "warnings": [],   # 真实 warnings 在 narrative（summary 仅导航）
+        "findings": findings,   # None = UNKNOWN（未提取）；[] 仅当 Agent 显式确认没有
+        "warnings": warnings,   # None = UNKNOWN（未提取）；[] 仅当 Agent 显式确认没有
+        "summary_complete": summary_complete,
+        "structured_summary_status": status,
         "summary": _summarize(result_text),
         "narrative_path": str(output_dir / f"{agent}_result.md"),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+# ---------- Machine-Readable Stage Summary：提取 / schema validation（FIX-002 Req 7） ----------
+
+def extract_structured_tail(text: str) -> tuple[dict | None, str]:
+    """从 narrative 提取结构化块。返回 (data, status)。
+
+    status: NOT_PROVIDED（无块）/ MALFORMED（存在 BEGIN 标记但 JSON 损坏或
+    块结构不完整）/ OK。注意：JSON 可解析但 schema 不合法 → 仍返回 OK，由
+    validate_structured_summary 判定（MALFORMED 语义合并，调用方负责）。
+    """
+    if not text:
+        return None, SUMMARY_STATUS_NOT_PROVIDED
+    m = _STRUCTURED_TAIL_RE.search(text)
+    if not m:
+        if STRUCTURED_RESULT_BEGIN in text:
+            # 块标记存在但结构不完整 / JSON 损坏 → 显式 MALFORMED（不是"未提供"）
+            return None, SUMMARY_STATUS_MALFORMED
+        return None, SUMMARY_STATUS_NOT_PROVIDED
+    try:
+        data = json.loads(m.group(1))
+    except json.JSONDecodeError:
+        return None, SUMMARY_STATUS_MALFORMED
+    if not isinstance(data, dict):
+        return None, SUMMARY_STATUS_MALFORMED
+    return data, "OK"
+
+
+def validate_structured_summary(agent: str, data: dict) -> tuple[dict | None, list[str]]:
+    """schema validation（FIX-002 Req 7：Framework 只接受经 schema validation 的
+    structured summary）。返回 (cleaned dict, errors)；errors 非空 → 调用方按
+    MALFORMED 处理（structured 内容不被接受）。
+    """
+    schema = _STRUCTURED_SCHEMAS.get(agent)
+    if schema is None:
+        return None, [f"unknown agent {agent!r}（无结构化块 schema）"]
+    errors: list[str] = []
+    cleaned: dict = {}
+    for field_name in (*schema["required"], *schema["optional"]):
+        if field_name not in data:
+            if field_name in schema["required"]:
+                errors.append(f"missing required field {field_name!r}")
+            continue
+        value = data[field_name]
+        expected = schema["types"].get(field_name)
+        if expected is not None and not isinstance(value, expected):
+            errors.append(
+                f"field {field_name!r} type {type(value).__name__} != expected {expected!r}"
+            )
+            continue
+        if isinstance(value, list):
+            if not all(isinstance(v, str) for v in value):
+                errors.append(f"field {field_name!r} 的元素必须是字符串")
+                continue
+            value = [v for v in value]  # 原样保留
+        cleaned[field_name] = value
+    if errors:
+        return None, errors
+    return cleaned, []
+
+
+def extract_and_validate_structured(agent: str, text: str) -> tuple[dict | None, str]:
+    """一步完成提取 + schema validation。返回 (data, status)：
+    status ∈ NOT_PROVIDED / MALFORMED / OK（data 为 validated dict）。
+    """
+    data, status = extract_structured_tail(text)
+    if status == "OK":
+        data, errors = validate_structured_summary(agent, data)
+        if errors:
+            return None, SUMMARY_STATUS_MALFORMED
+        return data, "OK"
+    return None, status
+
+
+# ---------- Narrative / JSON 一致性 guard（FIX-002 Req 9） ----------
+
+_NARRATIVE_WARNING_RE = re.compile(
+    r"(?im)^[ \t]*(?:W\d+[ \t]*[:：]|WARNING[ \t]*[:：]|⚠|warning[ \t]*[:：])"
+)
+_NARRATIVE_FAIL_RE = re.compile(r"\b(REQUEST_CHANGE|FAIL)\b")
+
+
+def narrative_warning_count(text: str) -> int:
+    """narrative 中显式 warning 标记数（W1:/W2:/WARNING:/⚠/warning: 行首标记）。"""
+    return len(_NARRATIVE_WARNING_RE.findall(text or ""))
+
+
+def check_narrative_json_consistency(agent: str, narrative: str, structured: dict) -> list[str]:
+    """一致性 guard：structured summary 声明 complete 时，narrative 中显式的
+    blocking finding / warning / REQUEST_CHANGE / FAIL 不得在 JSON 中消失。
+
+    返回违规列表（空 = 一致）。检测到违规 → 调用方标记 CONSISTENCY_VIOLATION /
+    summary_complete=False（下游必须读 narrative，不得把空 JSON 当完整事实）。
+    """
+    violations: list[str] = []
+    if not isinstance(structured, dict):
+        return violations
+    narrative = narrative or ""
+
+    # 1) warnings：narrative 显式 warning 标记不得在 structured warnings 消失
+    n_warn = narrative_warning_count(narrative)
+    s_warn = structured.get("warnings")
+    if n_warn > 0 and isinstance(s_warn, list):
+        if len(s_warn) == 0:
+            violations.append(
+                f"narrative 有 {n_warn} 处显式 warning 标记但 structured warnings 为空"
+            )
+        elif n_warn > len(s_warn):
+            violations.append(
+                f"narrative warning 标记数（{n_warn}）> structured warnings 数（{len(s_warn)}）"
+            )
+
+    # 2) verdict / blocking：narrative 显式失败结论不得在 JSON 消失
+    if agent in ("workbuddy", "codex"):
+        n_verdict = _derive_verdict(agent, narrative)
+        s_verdict = structured.get("verdict")
+        if n_verdict and s_verdict and n_verdict != s_verdict:
+            violations.append(f"narrative verdict {n_verdict} != structured verdict {s_verdict}")
+        has_fail = bool(_NARRATIVE_FAIL_RE.search(narrative))
+        if has_fail and not _narrative_has_positive_verdict(agent, narrative):
+            # narrative 有显式 REQUEST_CHANGE/FAIL 且无通过结论 → structured 必须反映 blocking
+            blocking = structured.get("blocking_rework")
+            if s_verdict not in ("REQUEST_CHANGE", "FAIL") or blocking is not True:
+                violations.append(
+                    "narrative 有显式 REQUEST_CHANGE/FAIL 且无通过结论，"
+                    "但 structured 未反映 blocking"
+                )
+    return violations
+
+
+def _narrative_has_positive_verdict(agent: str, narrative: str) -> bool:
+    """narrative 是否有明确通过结论（PASS/PASS_WITH_WARNING/APPROVE）——
+    此时 narrative 中的历史 FAIL/REQUEST_CHANGE 引用不视为当前阻断。"""
+    if agent == "workbuddy":
+        return bool(re.search(r"\bPASS_WITH_WARNING\b|\bPASS\b", narrative))
+    if agent == "codex":
+        return bool(re.search(r"\bAPPROVE\b", narrative))
+    return False
+
+
+# ---------- Remote Sync 语义（FIX-002 Req 4 / 5） ----------
+
+def _is_pre_allowed_untracked(line: str) -> bool:
+    """porcelain 行是否属于预先允许的 untracked local artifact（不得单独导致失败）。"""
+    if len(line) < 3 or line[:2].strip() != "??":
+        return False
+    path = line[3:].strip()
+    p = path.rstrip("/")
+    for allowed in PRE_ALLOWED_UNTRACKED:
+        if allowed.endswith("/"):
+            if p == allowed.rstrip("/") or p.startswith(allowed):
+                return True
+        elif p == allowed:
+            return True
+    return False
+
+
+def _porcelain_all(workspace: Path | str) -> list[str]:
+    """git status --porcelain -uall（untracked 逐文件列出，不折叠目录）。
+
+    tracked_tree_status 专用：预允许 untracked artifacts 需要逐文件判定
+    （如 scripts/start_bridge_hidden.vbs 在新目录下会折叠为 "?? scripts/"）。
+    """
+    try:
+        r = subprocess.run(
+            ["git", "status", "--porcelain", "-uall"],
+            cwd=str(workspace), capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode == 0:
+            return [line.strip() for line in r.stdout.splitlines() if line.strip()]
+    except Exception:
+        pass
+    return []
+
+
+def tracked_tree_status(workspace: Path | str) -> tuple[str, list[str]]:
+    """Tracked Working Tree：CLEAN / DIRTY（忽略预允许 untracked artifacts）。
+
+    返回 (状态, 违规 porcelain 行)。预允许项（.aaf/、start_bridge_hidden.vbs、
+    AAF_TASK004_PROCESS_CHECK.txt）单独存在 → CLEAN。
+    """
+    lines = _porcelain_all(workspace)
+    if not lines:
+        return "CLEAN", []
+    offending = [line for line in lines if not _is_pre_allowed_untracked(line)]
+    return ("DIRTY" if offending else "CLEAN"), offending
+
+
+def remote_sync_state(workspace: Path | str) -> dict:
+    """Remote Sync 真值（FIX-002 Req 4）：区分 commit graph sync 与 tracked tree。
+
+    - commit_sync: SYNCED / UNSYNCED / UNKNOWN（HEAD==origin/main 且 ahead/behind=0/0
+      只是 commit graph synced，不代表本轮 tracked 修改已同步）
+    - tracked_working_tree: CLEAN / DIRTY / UNKNOWN
+    - task_remote_sync: **SYNCED 仅当 commit_sync=SYNCED 且 tracked tree=CLEAN**
+      （本轮 tracked 修改必须 commit + push 后才能满足；预允许 untracked
+      artifacts 不阻断）；否则 UNSYNCED / NOT_APPLICABLE（非 git 仓库）
+    """
+    ws = str(workspace)
+    is_git = False
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=ws, capture_output=True, text=True, timeout=15,
+        )
+        is_git = r.returncode == 0 and r.stdout.strip() == "true"
+    except Exception:
+        is_git = False
+
+    commit_sync = "UNKNOWN"
+    ahead = behind = 0
+    has_upstream = False
+    if is_git:
+        try:
+            r = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "@{u}"],
+                cwd=ws, capture_output=True, text=True, timeout=15,
+            )
+            has_upstream = r.returncode == 0 and bool(r.stdout.strip())
+        except Exception:
+            has_upstream = False
+        if has_upstream:
+            try:
+                r = subprocess.run(
+                    ["git", "rev-list", "--left-right", "--count", "HEAD...@{u}"],
+                    cwd=ws, capture_output=True, text=True, timeout=15,
+                )
+                parts = r.stdout.split()
+                if len(parts) == 2:
+                    ahead, behind = int(parts[0]), int(parts[1])
+            except Exception:
+                pass
+            raw = compute_sync(ahead, behind, True)
+            commit_sync = "SYNCED" if raw == SYNC_SYNCED else "UNSYNCED"
+
+    tree, offending = tracked_tree_status(ws)
+    if not is_git:
+        task_remote_sync = "NOT_APPLICABLE"
+    elif commit_sync == "SYNCED" and tree == "CLEAN":
+        task_remote_sync = "SYNCED"
+    else:
+        task_remote_sync = "UNSYNCED"
+    return {
+        "is_git_repo": is_git,
+        "commit_sync": commit_sync,
+        "ahead": ahead,
+        "behind": behind,
+        "has_upstream": has_upstream,
+        "tracked_working_tree": tree,
+        "tracked_dirty_entries": offending,
+        "task_remote_sync": task_remote_sync,
     }
 
 

@@ -112,18 +112,22 @@ Codex:     TASK + Hermes full result + WorkBuddy full result
 
 ```
 Hermes:    TASK 全文（= current delta）+ required Source of Truth 路径
-WorkBuddy: TASK.md path + hash；Hermes 结构化摘要（hermes_result.json）；
-           changed files / commit / evidence paths；repo access；
-           Hermes narrative 全文只在按需读取
-Codex:     TASK.md path + hash；Hermes 结构化执行事实；WorkBuddy 结构化
+WorkBuddy: TASK.snapshot.md path + hash（immutable execution snapshot）；Hermes
+           结构化摘要（hermes_result.json）；changed files / commit / evidence 路径；
+           repo access；Hermes narrative 全文只在按需读取
+Codex:     TASK.snapshot.md path + hash；Hermes 结构化执行事实；WorkBuddy 结构化
            verdict/findings（workbuddy_result.json）；relevant repo/diff paths；
            上游 narrative 全文只在按需读取
 ```
 
 规则：
 
+- **Immutable Task Snapshot（FIX-002）**：Runner 每次新任务执行开始时把实际执行的
+  TASK 内容写入 `<output_dir>/TASK.snapshot.md`；Task Reference / task hash /
+  context_manifest / 下游 prompt / REPORT 统一引用 snapshot。active/archive
+  TASK 文件后续变化不得破坏本次 execution integrity。
 - **Agent 必须保持独立验证，不得只相信 summary。**
-  WorkBuddy / Codex prompt 内保留独立验证指令：读取 TASK 全文、检查仓库实际状态、
+  WorkBuddy / Codex prompt 内保留独立验证指令：读取 snapshot 全文、检查仓库实际状态、
   核对 changed files / commit / evidence。
 - **摘要只用于导航**：结构化 JSON 的 summary 字段明确标注"不是验证真相"。
 - **下游 prompt 不默认嵌入上游 narrative 全文**；只有引用路径。
@@ -136,31 +140,67 @@ Codex:     TASK.md path + hash；Hermes 结构化执行事实；WorkBuddy 结构
 ```
 agent / status / verdict / blocking_rework / commit / tests /
 changed_files / evidence_paths / findings / warnings
-（+ summary 导航字段 + narrative_path）
+（+ summary_complete + structured_summary_status + summary 导航字段 + narrative_path）
 ```
 
+- **Machine-Readable Stage Summary 契约（FIX-002）**：WorkBuddy / Codex 答复必须以
+  `AAF_STRUCTURED_RESULT_BEGIN {JSON} AAF_STRUCTURED_RESULT_END` 块结尾，包含
+  verdict / blocking_rework / findings / warnings；Hermes 至少包含 status /
+  changed_files / commit / warnings。Framework 只接受经过 schema validation 的
+  结构化块（`extract_and_validate_structured`）；缺失 / 损坏 → 显式
+  `structured_summary_status = NOT_PROVIDED / MALFORMED`。
+- **unknown ≠ empty（FIX-002）**：findings / warnings 未提取时为 `null`（UNKNOWN），
+  绝不伪装为 `[]`；`[]` 只出现在 Agent 显式声明"确认没有"的情况。不完整 summary
+  不得被下游当成完整事实——下游 prompt 显式标记 PARTIAL/UNKNOWN 并指引读取 narrative。
+- **Narrative / JSON 一致性 guard（FIX-002）**：structured 声明 complete 时，narrative
+  中显式 warning（W1:/WARNING:/⚠）与 REQUEST_CHANGE / FAIL（无通过结论时）不得在
+  JSON 中消失；违反 → `structured_summary_status = CONSISTENCY_VIOLATION`、
+  `summary_complete = false`（下游必须读 narrative）。
 - `.md` 长报告继续保留用于追溯（evidence_paths 引用），不再默认全文注入下游 prompt。
-- 框架只确定性派生可验证事实（status/verdict 由结论词派生、commit/changed_files
-  由 git 事实）；tests/findings/warnings 框架不猜测——真实内容在 narrative。
+- 框架只确定性派生可验证事实（status/verdict 由结论词或 validated 结构化块派生、
+  commit/changed_files 由 git 事实）；tests/findings/warnings 框架不猜测——真实内容在
+  narrative。
+
+## 5.1 Remote Sync Truth（FIX-002）
+
+`context_packet.remote_sync_state(workspace)` 确定性计算三类状态（写入 REPORT
+`## Remote Sync` 段）：
+
+- **Commit Sync**: SYNCED / UNSYNCED / UNKNOWN —— `HEAD == origin/main` 且
+  ahead/behind=0/0 只表示 commit graph synced
+- **Tracked Working Tree**: CLEAN / DIRTY —— `git status --porcelain -uall`；
+  预允许 untracked local artifacts（`.aaf/`、`scripts/start_bridge_hidden.vbs`、
+  `AAF_TASK004_PROCESS_CHECK.txt`）不得单独导致 DIRTY
+- **Task Remote Sync**: SYNCED **仅当** Commit Sync = SYNCED **且** Tracked
+  Working Tree = CLEAN（本轮 tracked 修改必须 commit + push 后才能满足）；
+  否则 UNSYNCED（非 git 仓库 → NOT_APPLICABLE，REPORT 不输出该段，不虚构）
+
+`commit_changed:false` 不能证明本轮 tracked modifications 已同步——必须以
+Task Remote Sync 为准。
 
 ## 6. Context Manifest / Integrity
 
 每个运行目录生成 `context_manifest.json`（`context_packet.write_manifest`），至少记录：
 
-- TASK path + hash + bytes
+- TASK snapshot path + hash + bytes（`TASK.snapshot.md`，immutable execution snapshot；
+  FIX-002 后不再引用可变化的 active TASK 文件）
 - 每 stage result_md / result_json 的 path + hash + bytes
 - workspace；commit / HEAD（git 事实，非 git 仓库为 null，不虚构）
 - 每 stage prompt 的 size 指标（§10）
 
 引用完整性检查：`context_packet.check_references(manifest)` —— 所有引用 path 存在且
-hash 匹配；文件后来变化 → 检测为 hash 不匹配（可追溯性不丢失）。
+hash 匹配；snapshot 或 stage 文件后来变化（含 tamper）→ 检测为 hash 不匹配
+（可追溯性不丢失）。
 
 ## 7. REPORT De-duplication
 
 最终 REPORT（`report.build_report`）：
 
 - 不再复制整份 `## Original Task <full TASK>`；
-  改为 `## Task Reference`：Task ID / Task Path / Task Hash / Artifacts 目录。
+  改为 `## Task Reference`：Task ID / Task Path（= immutable snapshot
+  `TASK.snapshot.md`）/ Task Hash / Artifacts 目录。
+- 提供 `sync_state` 时附加 `## Remote Sync` 段（§5.1：Commit Sync /
+  Tracked Working Tree / Task Remote Sync）。
 - Agent Results：摘要 + `<agent>_result.md` 完整结果路径；不复制上游 narrative 全文。
 - Planner Handoff 保留真正需要的：final status、blocking issues、verdicts、
   next-step facts、artifact references。
@@ -194,8 +234,11 @@ hash 匹配；文件后来变化 → 检测为 hash 不匹配（可追溯性不�
 
 无 tokenizer 时记录 chars/bytes，不虚构 token 精确值。
 对比方法：在同一个代表性 fixture 上构建 old full-chain prompt 与 new packet prompt，
-比较总 chars（`context_packet.compare_packet_sizes`；测试 `test_context_compaction.py`
-中固定 fixture 证明重复输入明显下降）。
+比较总 chars（`context_packet.compare_packet_sizes`）。
+测量证据（FIX-002 Req 11，可复算）：同一 fixture（tests/test_context_integrity.py
+`test_context_size_fixture_exact_numbers`，固定 workspace 路径）old full-chain
+**26,211 chars** → new packet **5,379 chars**（**-79.5%**，embedded=0，referenced=1/2）。
+只允许记录可复算数字；不得同时保留两组冲突数字。
 
 ## 11. 禁止事项（本 Policy 不授权）
 

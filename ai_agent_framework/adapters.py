@@ -33,21 +33,51 @@ def _ws_block(workspace: Path | None) -> str:
 
 
 def _task_ref_block(task: str, task_path, task_hash: str | None) -> str:
-    """TASK REFERENCE：Task ID / Path / Hash + 必须读取全文 + 缺失引用 fail-fast。"""
+    """TASK REFERENCE：Task ID / Snapshot Path / Hash + 必须读取 snapshot 全文 +
+    缺失引用 fail-fast（FIX-002 Req 1/2：统一引用 immutable execution snapshot，
+    不以可变化的 active TASK 文件作为审查完整性依据）。"""
     task_id = parse_task_fields(task).get('Task ID') or '(unknown)'
     lines = [
-        '# TASK REFERENCE',
+        '# TASK REFERENCE（execution snapshot）',
         f'- Task ID: {task_id}',
     ]
     if task_path:
-        lines.append(f'- Task Path: {task_path}')
+        lines.append(f'- Snapshot Path: {task_path}')
     if task_hash:
         lines.append(f'- Task Hash: {task_hash}')
     lines += [
         '',
-        '你必须首先读取 TASK 文件全文（以它为唯一权威输入）再进行复核/审查。',
-        '如果无法读取 TASK 文件 → 必须报告 FAIL / REQUEST_CHANGE 并明确列出缺失引用，',
+        '你必须首先读取 execution snapshot（TASK.snapshot.md）全文'
+        '（它是本次执行/验证的 immutable 权威输入，内容 = Runner 实际执行的 TASK）；',
+        'active TASK 文件的后续变化不影响本次 execution integrity。',
+        '如果无法读取 snapshot → 必须报告 FAIL / REQUEST_CHANGE 并明确列出缺失引用，',
         '不得在缺失 TASK 上下文的情况下静默继续审查。',
+    ]
+    return '\n'.join(lines)
+
+
+def _structured_contract_block(agent: str) -> str:
+    """Machine-Readable Stage Summary 契约（FIX-002 Req 7）：Agent 答复必须以
+    可解析结构化块结尾；Framework 只接受 schema-validated 结果。"""
+    if agent == 'hermes':
+        example = '{"status": "SUCCESS", "commit": "<sha 或 null>", "changed_files": ["..."], "warnings": []}'
+        fields = ('status（SUCCESS/FAILED）', 'commit（真实 git sha 或 null）',
+                  'changed_files（真实路径列表）', 'warnings（显式报告时列出；确认没有则为 []）')
+    else:
+        example = '{"verdict": "PASS_WITH_WARNING", "blocking_rework": false, "findings": ["..."], "warnings": ["..."]}'
+        verdict_opt = 'PASS / PASS_WITH_WARNING / FAIL' if agent == 'workbuddy' else 'APPROVE / REQUEST_CHANGE'
+        fields = (f'verdict（{verdict_opt}）', 'blocking_rework（true/false）',
+                  'findings（字符串数组）', 'warnings（字符串数组）')
+    lines = [
+        '# STRUCTURED RESULT CONTRACT（必读）',
+        '你的最终答复必须以上述 narrative 之后、以如下机器可读块结尾（块后不得再输出其他内容）：',
+        'AAF_STRUCTURED_RESULT_BEGIN',
+        example,
+        'AAF_STRUCTURED_RESULT_END',
+        '字段：' + '；'.join(fields) + '。',
+        '[] 表示"确认没有"，不是"未提取"；未确认的项目不要放入数组。',
+        '块前是你的 narrative（结论、证据、证据路径）；框架以本块为机器可读 summary，',
+        'narrative 仍是验证真相。',
     ]
     return '\n'.join(lines)
 
@@ -64,7 +94,12 @@ def _rel(path: str, workspace) -> str:
 
 
 def _upstream_summary_block(agent: str, output_dir: Path, workspace: Path) -> str:
-    """上游结构化 stage 摘要（来自 <agent>_result.json）；缺失 → 显式标注。"""
+    """上游结构化 stage 摘要（来自 <agent>_result.json）；缺失 → 显式标注。
+
+    FIX-002 Req 6/8：结构化 summary 缺失 / malformed / 不完整（summary_complete=false
+    或 structured_summary_status != COMPLETE）→ 显式 PARTIAL/UNKNOWN，并要求读取
+    narrative 全文复核——不得把空 findings/warnings 当成完整事实。
+    """
     stage = read_stage_result(output_dir, agent)
     if stage is None:
         return (
@@ -77,6 +112,8 @@ def _upstream_summary_block(agent: str, output_dir: Path, workspace: Path) -> st
         f'- status: {stage.get("status")}',
         f'- verdict: {stage.get("verdict")}',
         f'- blocking_rework: {stage.get("blocking_rework")}',
+        f'- summary_complete: {stage.get("summary_complete")}',
+        f'- structured_summary_status: {stage.get("structured_summary_status")}',
     ]
     if stage.get('commit'):
         lines.append(f'- commit: {stage["commit"]}')
@@ -86,6 +123,28 @@ def _upstream_summary_block(agent: str, output_dir: Path, workspace: Path) -> st
         lines.extend(f'  - {c}' for c in changed[:20])
         if len(changed) > 20:
             lines.append(f'  - …（共 {len(changed)} 项，完整列表见 result.json）')
+    findings = stage.get('findings')
+    warnings = stage.get('warnings')
+    if findings is not None:
+        lines.append(f'- findings ({len(findings)}):')
+        lines.extend(f'  - {f}' for f in findings[:10])
+        if len(findings) > 10:
+            lines.append(f'  - …（共 {len(findings)} 项）')
+    else:
+        lines.append('- findings: UNKNOWN（上游未提供结构化 findings；不得视为"确认没有"）')
+    if warnings is not None:
+        lines.append(f'- warnings ({len(warnings)}):')
+        lines.extend(f'  - {w}' for w in warnings[:10])
+        if len(warnings) > 10:
+            lines.append(f'  - …（共 {len(warnings)} 项）')
+    else:
+        lines.append('- warnings: UNKNOWN（上游未提供结构化 warnings；不得视为"确认没有"）')
+    if stage.get('summary_complete') is not True:
+        lines.append(
+            '- ⚠ 本 summary 不完整（PARTIAL/UNKNOWN）：空 findings/warnings 不代表'
+            '"确认没有"；必须读取 narrative 全文'
+            f'（{_rel(str(output_dir / f"{agent}_result.md"), workspace)}）复核后再下结论。'
+        )
     evidence = stage.get('evidence_paths') or []
     if evidence:
         lines.append('- evidence_paths:')
@@ -170,6 +229,7 @@ def _packet_prompt(
         embedded += 1 if embedded_now else 0
         referenced += 0 if embedded_now else 1
     blocks.append(validation_instruction)
+    blocks.append(_structured_contract_block(agent))
     blocks.append(ws)
 
     prompt = f"{ROLE_INSTRUCTIONS[agent]}\n\n" + '\n\n'.join(blocks)
@@ -201,13 +261,15 @@ def _extract_source_of_truth_paths(task: str) -> list[str]:
 
 
 def _hermes_prompt(task: str, workspace: Path | None, task_path, task_hash: str | None) -> tuple[str, dict]:
-    """Hermes（Executor）：TASK 全文（= current delta）+ Source of Truth 引用清单。"""
+    """Hermes（Executor）：TASK 全文（= current delta）+ Source of Truth 引用清单 +
+    Structured Result Contract。"""
     sources = _extract_source_of_truth_paths(task)
     blocks = ['# ORIGINAL TASK', task]
     if sources:
         src_lines = ['# SOURCE OF TRUTH（Repository 权威来源；按需读取，不重复全文）']
         src_lines += [f'- {s}' for s in sources]
         blocks.append('\n'.join(src_lines))
+    blocks.append(_structured_contract_block('hermes'))
     ws = _ws_block(workspace)
     if ws:
         blocks.append(ws.strip())
@@ -264,7 +326,35 @@ def build_prompt_measured(
         'embedded_artifact_count': len(previous_results),
         'referenced_artifact_count': 0,
     }
+    # FIX-002 Req 8（No Silent Information Loss）：结构化 summary 缺失（legacy 目录 /
+    # 中断目录）→ legacy 全文嵌入 fallback 之上，显式标记缺失 + 回退语义，
+    # 不得让下游把"没有 JSON"当成"没有 findings/warnings"。
+    missing = _missing_structured_upstream(agent, Path(output_dir)) if output_dir is not None else []
+    if missing:
+        note = (
+            '\n\n# STRUCTURED SUMMARY 缺失（FALLBACK_EMBEDDED）\n'
+            '- 缺失: ' + ', '.join(f'{a}_result.json' for a in missing) + '\n'
+            '- 已回退到 legacy 全文嵌入（无信息丢失）；上游 narrative 全文即验证真相。\n'
+            '- 缺失结构化 summary 不代表"确认没有 findings/warnings"；'
+            'findings/warnings 一律视为 UNKNOWN，以上游 narrative 为准。'
+        )
+        prompt = prompt + note
     return prompt, metrics
+
+
+def _missing_structured_upstream(agent: str, output_dir: Path) -> list[str]:
+    """当前 agent 缺失哪些上游结构化 result.json（用于显式标注）。"""
+    out = Path(output_dir)
+    if agent == 'workbuddy':
+        return ['hermes'] if not (out / 'hermes_result.json').exists() else []
+    if agent == 'codex':
+        missing = []
+        if not (out / 'hermes_result.json').exists():
+            missing.append('hermes')
+        if not (out / 'workbuddy_result.json').exists():
+            missing.append('workbuddy')
+        return missing
+    return []
 
 
 def build_prompt(agent: str, task: str, previous_results: dict[str, str], workspace: Path | None = None,

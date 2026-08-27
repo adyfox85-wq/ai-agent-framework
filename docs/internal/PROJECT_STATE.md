@@ -1,8 +1,8 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE；E-Ownership / Force Cancel COMPLETE — 005-A + FIX-001/002/003 与 005-B 已交付，005-B 待 WorkBuddy/Codex 复核；剩余 TASK-005-C Status Window Cancel UX + Real Windows Closure 未交付 → Phase E 不得标 COMPLETE）；Phase F NOT STARTED）**\
-> Last Updated: 2026-08-28（AAF-MAINT-CONTEXT-001 — Context Compaction / Stage Packet Protocol 交付同步）\
+> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE — 005-A + FIX-001/002/003；E-Ownership / Force Cancel 已交付 — 005-B 已执行，WorkBuddy PASS / Codex REQUEST_CHANGE → pending blocker AAF-v0.4-TASK-005-B-FIX-001；剩余 TASK-005-C Status Window Cancel UX + Real Windows Closure 未交付 → Phase E 不得标 COMPLETE）；Phase F NOT STARTED；当前唯一 Next Step = AAF-v0.4-TASK-005-B-FIX-001）**\
+> Last Updated: 2026-08-28（AAF-MAINT-CONTEXT-001-FIX-002 — Context Integrity / Structured Evidence Closure：immutable task snapshot + hash single source + Remote Sync Truth + structured summary 契约；唯一 Next Step 保持 = AAF-v0.4-TASK-005-B-FIX-001）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -28,12 +28,14 @@ Phase: A — Runtime State Foundation: COMPLETE
             005-A-FIX-003 已实现 cancel.request mutation 锁序列化（write/consume 与
             terminal writers 共享同一 state.lock，关闭 evidence replacement race）+
             forced-order 握手修正；
-            E-Ownership / Force Cancel COMPLETE — AAF-v0.4-TASK-005-B（Process Ownership
+            E-Ownership / Force Cancel 已交付 — AAF-v0.4-TASK-005-B（Process Ownership
             / Force Cancel / Recovery Integration：launch_id / control.json / Bridge
             persistent launch registry / ownership verification（11 项三方校验）/
             force cancel API（verified process-tree termination + 结构化 force evidence）/
             Core recovery finalizer force path / restart reauthentication / canonical-aware
-            wait thread + reconciliation；待 WorkBuddy/Codex 独立复核）；
+            wait thread + reconciliation；已执行：WorkBuddy PASS / Codex REQUEST_CHANGE
+            → pending blocker AAF-v0.4-TASK-005-B-FIX-001 未关闭，未经 Codex 通过不记
+            CLOSED）；
             剩余 TASK-005-C Status Window Cancel UX + Real Windows E2E Closure 未交付
             → Phase E 不得标 COMPLETE）
 Direction: Desktop Shell MVP / Runtime Observability & Control
@@ -47,9 +49,10 @@ D. Progress Visualization（COMPLETE — 2026-08-27 closure：AAF-v0.4-TASK-004-
    实现 + 测试 + 真实 Windows E2E + 独立 post-completion closure audit 通过，见下方 Phase D 段落）
 E. Safe Cancel Lifecycle（IN PROGRESS — AAF-v0.4-TASK-005-A 已交付 E-Core / Soft Cancel：
    CANCELLED 终态、state.lock、terminal generation、reconciliation、recovery finalizer 基础、
-   runner 检查点、cancel.request 契约；见下方 Phase E 段落。剩余子任务：
-   TASK-005-B（Process Ownership / Force Cancel / Recovery Integration）+
-   TASK-005-C（Cancel UI + Windows E2E Closure）完成后才能正式标记 COMPLETE）
+   runner 检查点、cancel.request 契约；见下方 Phase E 段落。005-B 已执行（E-Ownership /
+   Force Cancel 已交付，Codex REQUEST_CHANGE → pending blocker 005-B-FIX-001）；
+   剩余：005-B-FIX-001 关闭 + TASK-005-C（Cancel UI + Windows E2E Closure）完成后
+   才能正式标记 COMPLETE）
 F. Project Switching / Duplicate Task UX（NOT STARTED）
 
 Phase F 不得提前实现 / 不得自动启动。
@@ -285,7 +288,8 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
   （冻结设计 §6 / §6A / §6B 的 E-Core 部分；Force Cancel / ownership / UI 分离到后续 TASK）
 - 状态：**IN PROGRESS — E-Core / Soft Cancel COMPLETE（实现 + 测试 + 真实 E2E 通过；**
   **WorkBuddy / Codex 独立验证由本任务 route 阶段执行，判定记录于任务 REPORT；**
-  **Phase E 不得标 COMPLETE，剩余 TASK-005-B + TASK-005-C 未交付）**
+  **Phase E 不得标 COMPLETE，005-B 已执行（Codex REQUEST_CHANGE → pending blocker**
+  **005-B-FIX-001）+ TASK-005-C 未交付）**
 - 实现内容：
   - `ai_agent_framework/lock_utils.py`（新）：Core-owned per-task OS-level exclusive `state.lock`
     （§6B.1–§6B.3；Windows msvcrt.locking / POSIX flock；timeout；残留文件不占锁；crash 后 OS 自动释放；
@@ -407,7 +411,8 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
   - WorkBuddy / Codex 独立复核由本任务 route 阶段执行（verdict 见任务 REPORT.md；
     **未经两者通过不记录 FIX-003 CLOSED**）
 - **TASK-005-B（AAF-v0.4-TASK-005-B，2026-08-27）：Phase E Process Ownership / Force
-  Cancel / Recovery Integration（E-Ownership / Force Cancel COMPLETE）**：
+  Cancel / Recovery Integration（E-Ownership / Force Cancel 已交付，待 005-B-FIX-001
+  关闭后核准）**：
   - `ai_agent_framework/proc_identity.py`（新）：Windows 进程身份只读工具——真实进程
     创建时间（psutil 优先 / ctypes GetProcessTimes fallback）、live 命令行、Windows
     命令行 tokenize（CommandLineToArgvW）与规范化比较（argv[0] 解释器不参与比较——
@@ -489,15 +494,18 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
   RW-020/021/022/023/024 未自动修复、历史 TASK-004 task.json 未修改、用户本地 helper
   （scripts/start_bridge_hidden.vbs / AAF_TASK004_PROCESS_CHECK.txt / .aaf/）未动
 - WorkBuddy / Codex：由本任务 route 阶段执行（verdict 见任务 REPORT.md）
-- Next Phase Step（唯一）：**AAF-v0.4-TASK-005-C — Phase E Status Window Cancel UX +
-  Real Windows E2E Closure**（不得自动执行；005-B + 005-C 全部完成后 Phase E 才可标
-  COMPLETE）
+- Next Phase Step（历史记录，superseded）：**AAF-v0.4-TASK-005-C — Phase E Status Window
+  Cancel UX + Real Windows E2E Closure**（005-B 交付时的原候选；005-B 已执行并被 Codex
+  REQUEST_CHANGE → 该候选被 superseded，不再作为当前 Next Step；005-B-FIX-001 关闭 +
+  005-C 全部完成后 Phase E 才可标 COMPLETE）
+- **当前唯一 Next Step（当前状态）**：**AAF-v0.4-TASK-005-B-FIX-001**（005-B 的 pending
+  Codex blocker；见下方 Maintenance 段落；FIX-001 关闭前不进入 005-C）
 
 ### 0.2 Maintenance — Context Compaction / Stage Packet Protocol（AAF-MAINT-CONTEXT-001，2026-08-28）
 
 - 类型：维护任务（非 Phase 任务）；Phase E 状态未被改变（IN PROGRESS 保持）；
-  **Next Step 恢复为 AAF-v0.4-TASK-005-B-FIX-001**（005-B 的 pending blocker；
-  本任务不实现其 force-recovery blocker）
+  **当前唯一 Next Step = AAF-v0.4-TASK-005-B-FIX-001**（005-B 的 pending Codex blocker；
+  本任务不实现其 force-recovery blocker；FIX-001 关闭前不进入 005-C）
 - 解决的问题（正式登记 CTX-002，见 AAF_MASTER_BACKLOG.md）：TASK / stage prompt /
   REPORT 层层全文叠加导致 Context 膨胀——Hermes 完成后 WorkBuddy 接收 Hermes narrative
   全文，Codex 再叠加 Hermes + WorkBuddy 全文（eager full-content chaining）
@@ -527,8 +535,11 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
     Reference`（Task ID / Path / Hash）；Agent Results = 摘要 + 完整结果路径；
     无引用信息的 legacy 调用方保持旧格式
   - **Context Size 可观测性**：每 stage prompt chars/bytes + embedded/referenced
-    artifact counts 写入 manifest；同一 fixture 上 old full-chain 25,609 chars →
-    new packet 3,301 chars（-87.1%，embedded=0）
+    artifact counts 写入 manifest；测量证据（可复算，固定 workspace 路径 fixture）：
+    old full-chain 26,211 chars → new packet 5,379 chars（-79.5%，embedded=0，
+    referenced=1/2；复算来源：tests/test_context_integrity.py
+    test_context_size_fixture_exact_numbers；历史 25,609→3,301 / 26,191→3,585
+    为 superseded 初算值，已以可复算值取代）
   - **Backward Compatibility**：旧目录无 `<agent>_result.json` → 自动 legacy
     全文嵌入 fallback；旧 REPORT 无 Task Reference 参数保持原格式
   - **Anti-Regression 测试**：`tests/test_context_compaction.py` 23 项（req 11
@@ -539,6 +550,60 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
   RW-020–024 产品修复 / Agent model-provider 未动；`.aaf/` 历史产物未动；
   005-B-FIX-001 技术结论未修改
 - WorkBuddy / Codex 独立复核由本任务 route 阶段执行（verdict 见任务 REPORT.md）
+- **AAF-MAINT-CONTEXT-001-FIX-001（2026-08-28，docs-only）**：关闭 Codex 唯一 blocker
+  （PROJECT_STATE.md 当前 Next Step 自相矛盾）——统一当前状态入口：
+  - 当前唯一 Next Step = **AAF-v0.4-TASK-005-B-FIX-001**（见本段落顶部；Phase E 内旧的
+    「Next Phase Step（唯一）= 005-C」与 §0.5 旧 v0.4 快照已明确标 historical /
+    superseded，不再表现为当前 Next Step）
+  - Phase E 保持 IN PROGRESS（005-B 已执行：WorkBuddy PASS / Codex REQUEST_CHANGE →
+    pending blocker 005-B-FIX-001）；Phase F 保持 NOT STARTED
+  - Context-size 证据数字统一为可复算值：old full-chain **26,211 chars** → new packet
+    **5,379 chars**（**-79.5%**，embedded=0，referenced=1/2；复算来源
+    tests/test_context_integrity.py test_context_size_fixture_exact_numbers）；
+    AAF_MASTER_BACKLOG.md CTX-002 同步
+  - session_continuity 秒级时钟 flake（tests/test_session_continuity.py）本任务不处理，
+    已登记 **RW-025**（见 AAF_MASTER_BACKLOG.md，后续维护项）
+  - 未改任何 Context Packet / prompt / report protocol 代码（docs-only）
+- **AAF-MAINT-CONTEXT-001-FIX-002（2026-08-28，代码 + docs + tests）**：关闭 Codex
+  三个 blocker（TASK path/hash 引用不稳定 / Remote Sync 误报 / structured
+  findings-warnings 与 narrative 不一致）——补齐完整性协议（不重做 Context
+  Compaction）：
+  - **Immutable Task Snapshot（Req 1/2）**：Runner 每次执行开始时写入
+    `<output_dir>/TASK.snapshot.md`（内容 = 实际执行 TASK）；Task Reference /
+    task hash / context_manifest / WorkBuddy/Codex packet / REPORT 统一引用
+    snapshot；active/archive TASK 后续变化不影响 execution integrity；
+    Hash Single Source：hash 只从 snapshot 计算一次并全程复用
+    （`runner.py` / `reconcile.py` snapshot-aware；`check_references` 检出
+    tampered snapshot）
+  - **Remote Sync Truth（Req 4/5）**：`context_packet.remote_sync_state()` 区分
+    Commit Sync（SYNCED/UNSYNCED）与 Tracked Working Tree（CLEAN/DIRTY，
+    `-uall` 逐文件 + 预允许 untracked artifacts：`.aaf/`、
+    `scripts/start_bridge_hidden.vbs`、`AAF_TASK004_PROCESS_CHECK.txt`）；
+    Task Remote Sync 仅当两者都满足才 SYNCED；REPORT 新增 `## Remote Sync` 段；
+    `commit_changed:false` 不再作为同步证据
+  - **Structured Result Completeness（Req 6/7）**：`<agent>_result.json` 增加
+    `summary_complete` / `structured_summary_status`；findings/warnings 未提取时
+    为 `null`（UNKNOWN）而非 `[]`（unknown ≠ empty）；Agent 答复末尾
+    `AAF_STRUCTURED_RESULT_BEGIN/END` JSON 块契约（WorkBuddy/Codex: verdict /
+    blocking_rework / findings / warnings；Hermes: status / changed_files /
+    commit / warnings），Framework 只接受 schema-validated 结构化块
+  - **Narrative/JSON 一致性 guard（Req 9）**：structured 声明 complete 时，
+    narrative 显式 warning（W1:/WARNING:/⚠）与 REQUEST_CHANGE/FAIL（无通过结论）
+    不得在 JSON 消失；违反 → CONSISTENCY_VIOLATION + summary_complete=false
+    （WorkBuddy W1/W2/W3 → warnings=[] 的真实模式已被测试覆盖）
+  - **No Silent Information Loss（Req 8）**：summary 缺失/损坏/不完整 → 下游
+    prompt 显式 PARTIAL/UNKNOWN + narrative 路径指引；缺失 result.json 的 legacy
+    目录 → 全文 fallback 之上显式 FALLBACK_EMBEDDED 标注
+  - **Measurement Evidence（Req 11）**：context-size 数字统一为可复算 fixture
+    结果 26,211 → 5,379（**-79.5%**，约 80% reduction），不再保留冲突数字
+  - 测试：**554 passed**（532 基线 + 22 新增 tests/test_context_integrity.py：
+    snapshot hash 精确匹配 / active 变化不影响 / tampered 检出 / 下游引用同一
+    snapshot / tracked-dirty Remote Sync / 预允许 untracked / structured schema /
+    W1-W3 一致性 / 缺失 fallback / 真实 WorkBuddy→Codex packet / 精确测量数字）
+  - 边界遵守：Phase E force-recovery blocker / Cancel UI / Phase F / RW-020–024 /
+    session continuity clock flake 均未处理
+  - 本轮 tracked docs（PROJECT_STATE.md / AAF_MASTER_BACKLOG.md /
+    AAF_TASK_EXECUTION_POLICY.md）已 commit + push（Req 5 Closure Evidence）
 
 ### 0.2 v0.3 历史状态（CLOSED，保留）
 
@@ -638,7 +703,11 @@ docs/internal/AAF_MASTER_BACKLOG.md
 以后任何被正式确认"稍后处理"的问题，**必须进入 Master Backlog 才算
 长期登记完成**。
 
-v0.4 IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE，由 AAF-v0.4-TASK-005-A 交付；005-A-FIX-001 已关闭 Codex 两个 blocking safety defects（late non-terminal update 覆盖 terminal / recovery finalizer 无 evidence+identity 验证）；005-A-FIX-002 已实现 recovery 单一 state.lock 原子协议（identity+evidence+arbitration+commit 同一临界区，关闭遗留 recovery TOCTOU）；005-A-FIX-003 已实现 cancel.request mutation 锁序列化（write/consume 与 terminal writers 共享同一 state.lock，关闭 evidence replacement race）+ forced-order 握手修正（T_LOCKED 在 acquire 后发出）；各 FIX 验证结果见任务 REPORT，未经 WorkBuddy/Codex 通过不记 CLOSED；剩余 TASK-005-B + TASK-005-C 未交付，Phase E 不得标 COMPLETE）；Phase F NOT STARTED，不得自动启动；Next Phase Step = AAF-v0.4-TASK-005-B（Phase E Process Ownership + Force Cancel + Recovery Integration）。
+（历史快照 — superseded：以下为 005-B 交付前的 v0.4 状态记录，保留不删除；
+当前状态以顶部「0. v0.4 Current Status」块为准；当前唯一 Next Step =
+AAF-v0.4-TASK-005-B-FIX-001，Phase E 仍 IN PROGRESS，Phase F 仍 NOT STARTED）
+
+v0.4 IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE，由 AAF-v0.4-TASK-005-A 交付；005-A-FIX-001 已关闭 Codex 两个 blocking safety defects（late non-terminal update 覆盖 terminal / recovery finalizer 无 evidence+identity 验证）；005-A-FIX-002 已实现 recovery 单一 state.lock 原子协议（identity+evidence+arbitration+commit 同一临界区，关闭遗留 recovery TOCTOU）；005-A-FIX-003 已实现 cancel.request mutation 锁序列化（write/consume 与 terminal writers 共享同一 state.lock，关闭 evidence replacement race）+ forced-order 握手修正（T_LOCKED 在 acquire 后发出）；各 FIX 验证结果见任务 REPORT，未经 WorkBuddy/Codex 通过不记 CLOSED；剩余 TASK-005-B + TASK-005-C 未交付，Phase E 不得标 COMPLETE）；Phase F NOT STARTED，不得自动启动；Next Phase Step = AAF-v0.4-TASK-005-B（Phase E Process Ownership + Force Cancel + Recovery Integration；superseded 历史记录，005-B 已执行，当前唯一 Next Step 见顶部）。
 
 ------------------------------------------------------------------------
 

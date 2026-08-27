@@ -12,10 +12,12 @@ from . import cancel as cancel_mod
 from . import control as control_mod
 from .context_packet import (
     build_stage_result,
+    extract_and_validate_structured,
     file_bytes,
     git_changed_files,
     git_head,
     measure_prompt,
+    remote_sync_state,
     sha256_file,
     sha256_text,
     write_manifest,
@@ -193,7 +195,6 @@ def _check_cancel(output_dir: Path, task_id: str, task_file: Path, workspace: Pa
 def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = False, resume_from: Path | None = None,
         launch_id: str | None = None) -> Path:
     task = task_file.read_text(encoding='utf-8')
-    task_hash = sha256_text(task)  # Stage Packet 引用完整性（Requirement 6）
 
     # 正式 Task Validation（权威执行边界）：失败即中止，不进 Router / 不启动 Agent / 不进 Lifecycle
     result = validate_task_text(task)
@@ -205,9 +206,30 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
 
     # --- Runner ownership handshake（TASK-005-B req 5/8；§6A.6-4） ---
     # control.json 缺失 → 跳过（direct/legacy 无 ownership 契约）；存在但不匹配 →
-    # HandshakeError（fail safely：不接管、不执行、零 canonical 写）。
+    # HandshakeError（fail safely：不接管 / 不执行 / 零 canonical 写）。
     # 位置：Validation 之后、任何 lifecycle 写入之前。
     runner_handshake(output_dir, task_id, workspace, expected_launch_id=launch_id)
+
+    # --- Immutable Task Snapshot（FIX-002 Req 1/2） ---
+    # 每次新任务执行开始时把 Runner 实际执行的 TASK 内容写入 <output_dir>/TASK.snapshot.md；
+    # 后续 Task Reference / task hash / context_manifest / WorkBuddy/Codex packet / REPORT
+    # 统一引用 snapshot。active/archive TASK 文件后续变化不得破坏本次 execution integrity。
+    snapshot_path = output_dir / 'TASK.snapshot.md'
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if snapshot_path.exists():
+        snapshot_text = snapshot_path.read_text(encoding='utf-8')
+        if snapshot_text != task:
+            # resume / 复用目录：active 文件已变化 → 以 immutable snapshot 为执行依据
+            task = snapshot_text
+            v2 = validate_task_text(task)
+            if not v2.valid:
+                raise TaskValidationError(v2)
+    else:
+        snapshot_path.write_text(task, encoding='utf-8')
+    # Hash Single Source（FIX-002 Req 2）：Task Hash 只从 immutable snapshot 计算一次，
+    # 并在整个 execution lifecycle 中复用；snapshot 实际 SHA256 即唯一权威 hash。
+    task_hash = sha256_text(task)
+    task_bytes = len(task.encode('utf-8'))
 
     try:
         # --- Lifecycle 状态编排（确定性，不调用 LLM） ---
@@ -306,10 +328,11 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 _ls('RUNNING', stage=stage_name, agent=agent, phase_state='RUNNING')
                 # Stage Context Packet 协议（Requirement 4）：下游 prompt 只引用结构化摘要 +
                 # artifact 路径；旧目录 / 缺 JSON 自动 legacy fallback（Requirement 8）
+                # FIX-002 Req 1/2：task 引用统一使用 immutable snapshot（path + 单一 hash）
                 head_before = git_head(workspace)
                 prompt, prompt_meta = build_prompt_measured(
                     agent, task, results, workspace,
-                    output_dir=output_dir, task_path=task_file, task_hash=task_hash,
+                    output_dir=output_dir, task_path=snapshot_path, task_hash=task_hash,
                 )
                 (output_dir / f'{agent}_prompt.md').write_text(prompt, encoding='utf-8')
                 # Context size 可观测性（Requirement 10）：每 stage 记录 prompt chars/bytes +
@@ -325,7 +348,11 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     result_text = f'FRAMEWORK_ERROR\n{type(exc).__name__}: {exc}'
                 results[agent] = result_text
                 (output_dir / f'{agent}_result.md').write_text(result_text, encoding='utf-8')
-                # Structured stage result（Requirement 5）：机器可读短结果，narrative 保留追溯
+                # Structured stage result（Requirement 5 + FIX-002 Req 6–9）：
+                # narrative 保留追溯；机器可读块经提取 + schema validation 后合并；
+                # findings/warnings 未提供 → None（UNKNOWN），绝不伪装为空数组；
+                # summary 不完整 / 与 narrative 不一致 → 显式 PARTIAL/UNKNOWN。
+                structured, structured_status = extract_and_validate_structured(agent, result_text)
                 stage = build_stage_result(
                     agent=agent,
                     result_text=result_text,
@@ -333,6 +360,8 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     head_before=head_before,
                     head_after=git_head(workspace),
                     changed_files=git_changed_files(workspace),
+                    structured=structured,
+                    structured_status=structured_status,
                 )
                 write_stage_result(output_dir, stage)
                 valid = _result_is_valid(result_text)
@@ -366,18 +395,24 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
             }
         write_manifest(
             output_dir,
-            task_path=task_file,
+            task_path=snapshot_path,
             task_hash=task_hash,
-            task_bytes=len(task.encode('utf-8')),
+            task_bytes=task_bytes,
             workspace=str(workspace),
             head=head_at_start,
             stages=manifest_stages,
             prompts=prompt_metrics,
         )
 
+        # Remote Sync 真值（FIX-002 Req 4/5）：区分 commit graph sync 与 tracked tree；
+        # Task Remote Sync 仅当 tracked 修改已 commit + push 才为 SYNCED。
+        # 非 git 仓库 → NOT_APPLICABLE（REPORT 不输出 Remote Sync 段，不虚构）。
+        sync_state = remote_sync_state(workspace)
+
         report = build_report(
             task, route.agents, results, status, integrity_notes,
-            task_path=task_file, task_hash=task_hash, output_dir=output_dir,
+            task_path=snapshot_path, task_hash=task_hash, output_dir=output_dir,
+            sync_state=sync_state,
         )
         report_path = output_dir / 'REPORT.md'
 
@@ -420,7 +455,8 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 report = build_report(
                     task, route.agents, results, status, integrity_notes,
                     terminal=canonical.to_dict(),
-                    task_path=task_file, task_hash=task_hash, output_dir=output_dir,
+                    task_path=snapshot_path, task_hash=task_hash, output_dir=output_dir,
+                    sync_state=sync_state,
                 )
                 report_path.write_text(report, encoding='utf-8')
         else:

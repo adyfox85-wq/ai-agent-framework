@@ -139,19 +139,28 @@ def _build_report_from_artifacts(output_dir: Path, canonical, task_id: str) -> s
 
     - route：route.json（缺失 → 空 route）
     - agent results：<agent>_result.md（缺失 → 不加入）
-    - Original Task：TASK.md（task.json.task_path；缺失 → 空）
+    - Original Task：TASK.snapshot.md 优先（immutable execution snapshot，FIX-002
+      Req 1/2）；无 snapshot（legacy 目录）→ task.json.task_path 指向的文件
     - CANCELLED：从 cancel.request（若仍存在）读取 requested_at
     """
     task_text = ""
     task_ref_path = None
-    try:
-        task_json = read_status(output_dir) or {}
-        tp = task_json.get("task_path")
-        if tp and Path(tp).exists():
-            task_text = Path(tp).read_text(encoding="utf-8")
-            task_ref_path = str(tp)
-    except Exception:
-        task_text = ""
+    snapshot = output_dir / "TASK.snapshot.md"
+    if snapshot.exists():
+        try:
+            task_text = snapshot.read_text(encoding="utf-8")
+            task_ref_path = str(snapshot)
+        except OSError:
+            task_text = ""
+    if not task_text:
+        try:
+            task_json = read_status(output_dir) or {}
+            tp = task_json.get("task_path")
+            if tp and Path(tp).exists():
+                task_text = Path(tp).read_text(encoding="utf-8")
+                task_ref_path = str(tp)
+        except Exception:
+            task_text = ""
 
     route: list[str] = []
     route_path = output_dir / "route.json"

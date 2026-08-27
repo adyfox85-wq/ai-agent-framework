@@ -3,7 +3,7 @@
 > Project: AI Agent Framework
 > Document Type: **Living Long-Term Backlog / 长期问题与恢复登记**
 > Established: 2026-08-27（AAF-MAINT-001-FIX-002）
-> Last Updated: 2026-08-28（AAF-MAINT-CONTEXT-001 — Context Compaction / Stage Packet Protocol 交付：CTX-002 登记）
+> Last Updated: 2026-08-28（AAF-MAINT-CONTEXT-001-FIX-002 — CTX-002 补齐完整性协议：immutable snapshot / Remote Sync Truth / structured summary 契约；测量证据更新为可复算值 26,211→5,379（-79.5%））
 > Location: `docs/internal/AAF_MASTER_BACKLOG.md`
 
 ## Purpose
@@ -516,6 +516,25 @@ P3
 
 ---
 
+## RW-025 — Session Continuity Clock Flake（test_first_rollover_generates_files 秒级时钟边界）
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-025 |
+| Title | Session Continuity Clock Flake（test_first_rollover_generates_files 秒级时钟边界） |
+| Category | Tests / Session Continuity |
+| Status | OPEN |
+| Priority | P3 |
+| Evidence / Origin | AAF-MAINT-CONTEXT-001 全量跑测观察（2026-08-28）：`tests/test_session_continuity.py::test_first_rollover_generates_files` 偶发失败——`session_id()` 使用 `datetime.now()`，两次调用落在不同秒即失败；全量连跑 3 次仅 1 次出现，隔离复跑通过；该文件未被 AAF-MAINT-CONTEXT-001 / FIX-001 改动 |
+| Problem | 秒级时钟边界 flake：同一测试内两次取当前时间跨秒 → 断言失败；属测试环境问题，非产品缺陷 |
+| Current Implementation | 无（未修复；本任务明确不处理，仅登记） |
+| Remaining Gap | 需要 freeze / monotonic 时钟或跨秒容错断言 |
+| Decision | 仅登记为后续维护项，不实现（AAF-MAINT-CONTEXT-001-FIX-001 范围外） |
+| Target | 后续维护任务引入确定性时间（freeze / monotonic）后关闭 |
+| Do Not Forget | 修复时不得改变 session rollover 语义；与产品行为无关，纯测试时钟边界 |
+
+---
+
 ## 1.1 Desktop Shell Principle（桌面壳层设计原则）
 
 > 本原则**不是新的产品功能条目**，
@@ -654,7 +673,7 @@ Cluster 只是帮助未来统一设计，
 | Status | SOLVED（2026-08-28，AAF-MAINT-CONTEXT-001 交付） |
 | Priority | P1 |
 | Evidence / Origin | 真实运行观察：Hermes → WorkBuddy → Codex 层层全文叠加——WorkBuddy prompt 嵌入 Hermes narrative 全文，Codex prompt 再嵌入 Hermes + WorkBuddy 全文；REPORT 再复制整份 Original Task 与全部 Agent 全文。同一信息在 prompt / REPORT 中重复 3–5 次 |
-| Current Implementation | **Stage Context Packet 协议（reference-based / lazy-loading）**：<br>- 正式 Anti-Bloat Policy：`docs/internal/AAF_TASK_EXECUTION_POLICY.md`<br>- Compact TASK Schema：`templates/TASK.md`（TASK = current delta）<br>- 下游 prompt 只接收 TASK 引用 + 结构化摘要（`<agent>_result.json`）+ changed files / commit / evidence 路径；narrative 全文按需读取<br>- `context_manifest.json`：TASK / stage artifacts path+hash 可追溯引用（`check_references` 完整性检查）<br>- REPORT `## Original Task` 全文 → `## Task Reference`（Task ID / Path / Hash）<br>- Semantic Coverage Guard（`verify_semantic_coverage`）：压缩是去重，不是删约束<br>- Context size 每 stage 可观测（chars/bytes + embedded/referenced counts）<br>- 测量证据：同一 fixture old full-chain 25,609 chars → new packet 3,301 chars（-87.1%）<br>- Anti-Regression 测试：`tests/test_context_compaction.py`（23 项） |
+| Current Implementation | **Stage Context Packet 协议（reference-based / lazy-loading）**：<br>- 正式 Anti-Bloat Policy：`docs/internal/AAF_TASK_EXECUTION_POLICY.md`<br>- Compact TASK Schema：`templates/TASK.md`（TASK = current delta）<br>- 下游 prompt 只接收 TASK 引用 + 结构化摘要（`<agent>_result.json`）+ changed files / commit / evidence 路径；narrative 全文按需读取<br>- `context_manifest.json`：TASK snapshot（`TASK.snapshot.md`，immutable）/ stage artifacts path+hash 可追溯引用（`check_references` 完整性检查）<br>- REPORT `## Original Task` 全文 → `## Task Reference`（Task ID / Snapshot Path / Hash）+ `## Remote Sync`（Commit Sync / Tracked Working Tree / Task Remote Sync）<br>- Semantic Coverage Guard（`verify_semantic_coverage`）：压缩是去重，不是删约束<br>- Context size 每 stage 可观测（chars/bytes + embedded/referenced counts）<br>- 测量证据：同一 fixture（固定 workspace 路径）old full-chain 26,211 chars → new packet 5,379 chars（-79.5%，embedded=0，referenced=1/2；复算来源 tests/test_context_integrity.py test_context_size_fixture_exact_numbers；历史 25,609→3,301 / 26,191→3,585 为 superseded 初算值）<br>- Structured summary 契约（FIX-002）：`AAF_STRUCTURED_RESULT_BEGIN/END` JSON 块 + schema validation；findings/warnings 未提取 → null（UNKNOWN），不伪装为 []；narrative/JSON 一致性 guard（W1/W2/W3 → warnings 不得为 []）<br>- Anti-Regression 测试：`tests/test_context_compaction.py`（23 项）+ `tests/test_context_integrity.py`（22 项） |
 | Remaining Gap | 无 blocking gap。Guard 是确定性子串检查；改写措辞的语义等价性依赖 WorkBuddy 独立验证（设计如此，非缺陷） |
 | Decision | 新协议作为默认路径；旧目录自动 legacy fallback（Backward Compat） |
 | Target | 已达成：重复输入明显下降、零信息丢失、独立验证逻辑与安全边界不变 |
@@ -780,6 +799,7 @@ Framework 仍能恢复到可继续升级的状态（见 RW-009）。
 | RW-022 | Framework Final Status Aggregation: PASS_WITH_WARNING + APPROVE + Blocking NONE → WAITING | OPEN | P1 |
 | RW-023 | E2E Validation Fixed Task ID Reuse Causes Duplicate Trigger / GUI Loop | OPEN | P2 |
 | RW-024 | Completion Dialog Copy Report UX（复制报告二次弹窗 + Z 序问题） | OPEN | P2 |
+| RW-025 | Session Continuity Clock Flake（test_first_rollover_generates_files 秒级时钟边界） | OPEN | P3 |
 | BND-001 | Planner-layer Anti-Drift Validation | PARTIAL | P2 |
 | CTX-001 | Context Length / Conversation Rollover UX | PARTIAL | P1 |
 | CTX-002 | TASK / Stage Prompt / REPORT Context Bloat（层层全文叠加） | SOLVED | P1 |

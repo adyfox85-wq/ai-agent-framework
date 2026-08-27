@@ -2,7 +2,7 @@
 
 > Project: AI Agent Framework\
 > Current Version: **v0.4（IN PROGRESS — Phase A COMPLETE）**\
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-001-FIX-002）\
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-001-FIX-003）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -34,16 +34,22 @@ Phase A 目标：task.json = live canonical runtime view
 （started_at / stage / stage_started_at / last_activity_at / agent / phases），
 统一 Runtime State reader（legacy 兼容），runner EXTEND ONLY 阶段写入。
 
-Phase A Closure（AAF-v0.4-TASK-001-FIX-001 + FIX-002，2026-08-27）：
+Phase A Closure（AAF-v0.4-TASK-001-FIX-001 + FIX-002 + FIX-003，2026-08-27）：
 - Tests: 216 passed
 - Review: COMPLETE（WorkBuddy APPROVE + Codex APPROVE）
-- Remote Sync: SYNCED — closure commits f81c7ee、ca06c29 均已纳入 origin/main；
-  HEAD == origin/main（ca06c29），ahead/behind = 0/0
-- 历史记录：FIX-001 初次 push 曾因 TLS EOF 失败（RW-018 Git/network observation），
-  后续 WorkBuddy 独立验证中成功执行 push；当前无 PENDING
+- Remote Sync: SYNCED — closure commits 均已纳入 origin/main
+- Branch: main
+- Ahead/Behind: 0/0（at closure verification）
+- 实时 Git HEAD 属于执行时状态，不在本 Living Project State / durable closure doc
+  中硬编码为永久当前值；实时 HEAD 请直接用 Git 查询（git rev-parse HEAD / git status）
+- 历史记录（RW-018 Git/network observation）：FIX-001 初次 push 曾因 TLS EOF 失败，
+  后续 WorkBuddy 独立验证中成功执行 push；仅作历史环境说明，
+  当前无 remote sync blocking / PENDING
 - Unresolved: None blocking
-- Commit: 5a8b76a（Phase A implementation）；f81c7ee（FIX-001 closure）；
-  ca06c29（FIX-002 closure，HEAD == origin/main）
+- Commit 历史归属: 5a8b76a（Phase A implementation）；f81c7ee（FIX-001 closure work）；
+  ca06c29（FIX-001 REMOTE_SYNC_PENDING record）；e3d39e7（FIX-002 remote-state
+  documentation sync attempt）；FIX-003（docs-only closure consistency fix，
+  仅作历史 reference，不写为“永久 Current HEAD”）
 
 Next Phase Candidate: Phase B — Bridge Background / Tray Skeleton（不得自动启动）
 
@@ -54,8 +60,9 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
 
 ### 0.1 Phase A — Runtime State Foundation（COMPLETE）
 
-- TASK: AAF-v0.4-TASK-001（2026-08-27）；closure: AAF-v0.4-TASK-001-FIX-001 + FIX-002（2026-08-27）
-- 状态：COMPLETE（WorkBuddy APPROVE + Codex APPROVE；216 passed；Remote Sync SYNCED；HEAD == origin/main = ca06c29）
+- TASK: AAF-v0.4-TASK-001（2026-08-27）；closure: AAF-v0.4-TASK-001-FIX-001 + FIX-002 + FIX-003（2026-08-27）
+- 状态：COMPLETE（WorkBuddy APPROVE + Codex APPROVE；216 passed；Remote Sync SYNCED；
+  实时 HEAD 属执行时状态，用 Git 查询，不在此处硬编码为永久当前值）
 - 范围：task.json live runtime state / Runtime State reader / runner 阶段写入 / PROJECT_STATE 同步
 - 禁止（Phase A 不实现）：Tray / status window / pystray / autostart / progress bar / stuck 算法 /
   Safe Cancel（CANCELLED / control.json / state.lock / launch registry / force kill）/

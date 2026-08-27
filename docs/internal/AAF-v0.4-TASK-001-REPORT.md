@@ -61,11 +61,19 @@
 ## Git / Remote Sync
 
 - Commit: `5a8b76a8662ea675cdfff8f4d33c5bb6f3517d7f`（feat(v0.4-phase-a): runtime state foundation — task.json live state + reader）
-- Closure commits: `f81c7ee`（FIX-001 文档 closure）+ `ca06c29`（FIX-002 文档 closure）
-- Remote Sync: **SUCCESS / SYNCED** — WorkBuddy 在后续独立验证中成功执行 push；
-  最终 HEAD == origin/main == `ca06c294231a35f8898e5f182c59df047faf61ff`，ahead/behind = 0/0
-- 历史记录：Hermes 初次 push 曾失败（2026-08-27 TLS EOF / Connection reset，RW-018；直连 + 7897
-  http/socks5 + 7892 共 6 次重试均失败）；仅作历史说明，当前 Remote Sync 状态为 SYNCED，无 PENDING
+- Commit 历史归属:
+  - `f81c7ee` — FIX-001 closure work
+  - `ca06c29` — FIX-001 REMOTE_SYNC_PENDING record
+  - `e3d39e7` — FIX-002 remote-state documentation sync attempt
+  - FIX-003 commit（docs-only closure consistency fix）— 仅作历史 reference，不写为“永久 Current HEAD”
+- Remote Sync: **SUCCESS / SYNCED** — WorkBuddy 在后续独立验证中成功执行 push
+- Branch: main；Ahead/Behind: 0/0（at closure verification）
+- **Current live HEAD is intentionally not pinned in this durable document.
+  Use Git directly for real-time HEAD.**（实时 Git HEAD 属于执行时状态，不在本 durable
+  closure doc 中硬编码为永久当前值；实时查询：git rev-parse HEAD / git status）
+- 历史记录（RW-018）：Hermes 初次 push 曾失败（2026-08-27 TLS EOF / Connection reset；直连 + 7897
+  http/socks5 + 7892 共 6 次重试均失败）；仅作历史环境说明，
+  **No current remote sync blocking**，当前 Remote Sync 状态为 SYNCED，无 PENDING
 - Phase Start Handoff: 已纳入版本控制，保留启动时原样（历史快照，未因 Phase A 完成而改写）
 
 ## Unresolved Issues

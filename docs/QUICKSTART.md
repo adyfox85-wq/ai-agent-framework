@@ -33,7 +33,7 @@ codex --version       # 可选；路由需要 Codex 时才用
 双击仓库下的 `scripts\start_bridge.pyw`（或命令行执行 `pythonw scripts\start_bridge.pyw`）。
 
 - 无控制台窗口，Bridge 常驻系统托盘（任务栏右下角 AAF 图标）
-- 图标 Tooltip 显示状态；右键菜单提供：**打开状态 / Bridge 信息**、**重启 Bridge**、**退出 AAF**
+- 图标 Tooltip 显示状态；右键菜单提供：**打开状态窗口**、**重启 Bridge**、**退出 AAF**
 - 单实例保护：重复启动不会产生第二个 Bridge（提示后自动退出）
 
 ### 方式 B：调试方式
@@ -100,14 +100,14 @@ Bridge 会读取剪贴板并解析 TASK。
 检查弹窗显示的信息：
 - Task ID（如 `MY-001`）
 - Task Name
-- Project（应为 `My App`）
+- 当前项目（应为 `My App`）
 - Workspace（应为 `D:\projects\my-app`）
 
 信息不对 → 检查第 4 步配置或 TASK 内容。
 
-## Step 9 — 点击 Execute
+## Step 9 — 点击「执行」
 
-Bridge 校验通过后点击 Execute，Framework 开始后台运行。
+Bridge 校验通过后点击「执行」，Framework 开始后台运行。
 
 ## Step 10 — Framework 后台运行
 
@@ -121,15 +121,32 @@ Bridge 校验通过后点击 Execute，Framework 开始后台运行。
 
 | 菜单项 | 作用 |
 |---|---|
-| 打开状态 / Bridge 信息 | 打开最小信息窗口（Bridge 状态 / 热键 / 当前项目 / 最近 Task）；关闭窗口不影响 Bridge |
+| 打开状态窗口 | 打开正式状态窗口（见下）；再次点击会复用并聚焦已打开的窗口，不会重复创建 |
 | 重启 Bridge | 退出当前实例并自动启动新实例（热键在新实例中重新注册；不会出现两个 Bridge 并存） |
 | 退出 AAF | 退出 Bridge / Tray 宿主（不会取消正在执行的任务，Framework 继续在后台跑完） |
 
+### 状态窗口显示什么（只读观察界面）
+
+状态窗口每约 1 秒自动刷新，展示来自真实运行产物的状态：
+
+- **Bridge / 项目区**：当前项目、Bridge 状态（正常运行/异常）、热键、Workspace
+- **当前任务区**：Task ID、Task Name、当前阶段、当前 Agent（Hermes / WorkBuddy / Codex）、
+  已运行时长、最近活动、整体结果（执行中 / 已完成 / 等待处理 / 执行失败）
+- **六阶段条**：Validation / Boundary / Hermes / WorkBuddy / Codex / Report，
+  每个阶段显示 ✓ 已完成 / ▶ 进行中 / ○ 未开始 / ⏸ 等待处理 / ✗ 失败
+- **操作**：查看日志（打开任务输出目录）、关闭、重启 Bridge、退出 AAF
+
+要点：
+
+- 状态窗口是**只读观察界面**，不会修改任何任务文件（task.json / run.json 由 Framework 自己写）。
+- **关闭状态窗口不会退出 Bridge** —— 需要时随时从 Tray 再次打开。
+- 没有任务时窗口显示"当前没有任务"，不会报错；Task ID / 状态等英文技术字段保留原值。
+
 > 注意：重启 / 退出 Bridge 不会修改正在执行 Task 的状态文件（task.json / run.json 由 Framework 自己写）。
 
-## Step 11 — 完成后点击 Copy Report
+## Step 11 — 完成后点击「复制报告」
 
-Framework 完成后 Bridge 提供 Copy Report。
+Framework 完成后 Bridge 提供「复制报告」按钮（把 REPORT 转成 Planner Handoff 复制到剪贴板）。
 
 ## Step 12 — 回到 Planner 粘贴
 

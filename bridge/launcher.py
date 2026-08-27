@@ -46,6 +46,9 @@ class RunInfo:
     report_path: str | None
     exit_code: int | None
     result: str
+    # Phase C：任务输出目录（<ws>/.aaf/<task_id>）。legacy last_run.json 缺失时默认 None，
+    # 状态窗口据此读取 task.json / route.json / REPORT.md。
+    output_dir: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -55,6 +58,7 @@ class FrameworkLauncher:
     def __init__(self, run_py: Path | None = None, on_finished=None):
         self.state = IDLE
         self.last: RunInfo | None = None
+        self.current: RunInfo | None = None  # 正在执行的任务（内存只读事实；结束后清空）
         self.on_finished = on_finished  # 回调（主线程轮询时调用）
         self._run_py = run_py  # 测试注入；默认定位仓库 run.py
         self._lock = threading.Lock()
@@ -120,10 +124,20 @@ class FrameworkLauncher:
                     report_path=None,
                     exit_code=None,
                     result=RESULT_FAILED_TO_START,
+                    output_dir=str(output_dir),
                 )
                 self._persist_last()
                 return False
             self.state = RUNNING
+            # 内存只读事实：当前正在执行的任务（供状态窗口解析当前任务；不落盘）
+            self.current = RunInfo(
+                task_id=task_id,
+                task_path=str(task_path),
+                report_path=None,
+                exit_code=None,
+                result="RUNNING",
+                output_dir=str(output_dir),
+            )
         threading.Thread(
             target=self._wait_and_finish,
             args=(proc, task_path, workspace, output_dir, task_id),
@@ -174,7 +188,9 @@ class FrameworkLauncher:
             report_path=report_path,
             exit_code=exit_code,
             result=result,
+            output_dir=str(output_dir),
         )
+        self.current = None  # 收尾完成：不再有“当前运行中”任务
         self._persist_last()
         self.state = FINISHED
         if self.on_finished is not None:

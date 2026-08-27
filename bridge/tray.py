@@ -2,8 +2,8 @@
 
 Phase B 最小 Tray Skeleton（设计文档 §7 / §8 / §12.2）：
 - 消息专用窗口（HWND_MESSAGE）+ Shell_NotifyIconW 图标，独立 daemon 线程
-- 右键菜单最小三项：打开状态 / Bridge 信息、重启 Bridge、退出 AAF
-- 双击图标 → 打开状态
+- 右键菜单最小三项：打开状态窗口、重启 Bridge、退出 AAF
+- 双击图标 → 打开状态窗口
 - 健康显示：图标 + Tooltip 反映 Bridge / listener 健康（§8 最小模型：registered + loop alive）
 - 事件通过 on_event(str) 回调：回调在 Tray 线程执行，调用方入队、主线程处理
 
@@ -174,7 +174,7 @@ def build_tray_menu_spec(health_label: str = "正常运行", health_detail: str 
     """Tray 菜单规格：[(kind, label, menu_id)]，kind ∈ {info, sep, item}。
 
     info = 灰显信息行（健康状态），sep = 分隔线，item = 可点菜单项。
-    Phase B 最小三项：打开状态 / Bridge 信息、重启 Bridge、退出 AAF。
+    Phase B 最小三项：打开状态窗口、重启 Bridge、退出 AAF。
     """
     status_line = f"状态：{health_label}"
     if health_detail:
@@ -182,7 +182,7 @@ def build_tray_menu_spec(health_label: str = "正常运行", health_detail: str 
     return [
         ("info", status_line, 0),
         ("sep", None, 0),
-        ("item", "打开状态 / Bridge 信息", MENU_ID_OPEN),
+        ("item", "打开状态窗口", MENU_ID_OPEN),
         ("sep", None, 0),
         ("item", "重启 Bridge", MENU_ID_RESTART),
         ("item", "退出 AAF", MENU_ID_EXIT),

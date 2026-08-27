@@ -29,7 +29,7 @@ def test_menu_spec_contains_required_three_entries():
     spec = tray_mod.build_tray_menu_spec("正常运行")
     items = [(kind, label) for kind, label, _ in spec if kind == "item"]
     labels = [label for _, label in items]
-    assert "打开状态 / Bridge 信息" in labels
+    assert "打开状态窗口" in labels
     assert "重启 Bridge" in labels
     assert "退出 AAF" in labels
     # 最小三项，不多不少（Phase B 范围控制）

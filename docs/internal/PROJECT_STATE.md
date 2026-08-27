@@ -1,8 +1,8 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.4（IN PROGRESS — Phase A/B COMPLETE）**\
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-002-FIX-003）\
+> Current Version: **v0.4（IN PROGRESS — Phase A/B COMPLETE；Phase C IMPLEMENTATION COMPLETE）**\
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-003 实现完成）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -19,17 +19,43 @@ Version: v0.4
 Status: IN PROGRESS
 Phase: A — Runtime State Foundation: COMPLETE
        B — Bridge Background / Tray Skeleton: COMPLETE
+       C — Status Window + Chinese-first UI: IMPLEMENTATION COMPLETE（待 WorkBuddy/Codex 独立验证后正式 COMPLETE）
 Direction: Desktop Shell MVP / Runtime Observability & Control
 
 v0.4 主线（Phase 顺序）：
 A. Runtime State Foundation（COMPLETE）
 B. Bridge Background / Tray Skeleton（COMPLETE）
-C. Status Window + Chinese-first UI（NOT STARTED）
+C. Status Window + Chinese-first UI（IMPLEMENTATION COMPLETE — 2026-08-27，实现与真实 Windows E2E 验收已通过；
+   按 TASK 约束，COMPLETE 标记须待 WorkBuddy 独立验证 + Codex 审查通过后由 closure 更新）
 D. Progress Visualization（NOT STARTED）
 E. Safe Cancel Lifecycle（NOT STARTED）
 F. Project Switching / Duplicate Task UX（NOT STARTED）
 
-Phase A/B 已 COMPLETE；Phase C-F 不得提前实现 / 不得自动启动。
+Phase D-F 不得提前实现 / 不得自动启动；Phase C 已实现（IMPLEMENTATION COMPLETE，见上，待独立验证后正式 COMPLETE）。
+
+Phase C 目标：正式状态窗口（bridge/status_window.py）—— 只读观察 + 中文优先 +
+六阶段条事实映射；Tray 接入（打开状态窗口复用/聚焦，关闭不退出 Bridge）；
+现有弹窗文案中文化（不改 TASK 解析 / validation / launcher 语义 / lifecycle）。
+
+Phase C Implementation（AAF-v0.4-TASK-003，2026-08-27）：
+- Status Window：bridge/status_window.py（信息架构 §3 / wireframe §12.1；当前项目 / Bridge /
+  热键 / Workspace / 当前任务（Task ID / Name / 阶段 / Agent / 已运行 / 最近活动 / 整体结果）/
+  六阶段条（✓ ▶ ○ ⏸ ✗）；约 1 秒 after 只读刷新；单例复用/聚焦；关闭不退出 Bridge）
+- Runtime State Source：全部展示可追溯到 task.json（runtime_state reader）/ route.json /
+  boundary.json / REPORT.md / last_run.json / config.json / launcher 内存；UI 不写任何 canonical artifact
+- Current Task 解析：launcher RUNNING 内存任务优先 → 最近 last_run；last_run 新增持久化 output_dir
+  （legacy 无该字段时从 task_path 推导，不扫描 .aaf 猜测）
+- Chinese-first：窗口/弹窗/按钮中文（设计 §11.1 文案表）；技术字段（Task ID / SUCCESS 等）保留英文原值；
+  CANCELLED 未增加（Phase E 范围）
+- Tray：菜单项改为「打开状态窗口」；Restart / Exit / 单实例 / 热键语义未变
+- 回归：239 基线不降，全量 284 passed（+45 新增 tests/test_status_window.py）
+- 真实 Windows E2E（.aaf/AAF-v0.4-TASK-003/：EVIDENCE.md、s1–s7 步骤脚本、各阶段截图）：
+  后台 Bridge → Tray 打开状态窗口 → 空状态显示 → 真实 Ctrl+Alt+A 全路由任务
+  （Hermes→WorkBuddy→Codex→REPORT）→ 状态窗口阶段变化可见（截图验证）→ SUCCESS 收敛
+  （已完成（SUCCESS）/ 六阶段全 ✓）→ 关闭窗口 Bridge 存活 → 再次打开正常 →
+  Restart/Exit 回归通过（Exit 确认窗中文按钮；状态文件 0 变更）→ Agent 子进程无 console 黑窗
+- 待办：WorkBuddy 独立验证 + Codex 审查（TASK 流程内）；通过后由 closure 标记 Phase C COMPLETE
+- Blocking: NONE（实现侧）
 
 Phase A 目标：task.json = live canonical runtime view
 （started_at / stage / stage_started_at / last_activity_at / agent / phases），
@@ -77,8 +103,9 @@ Phase B Closure（AAF-v0.4-TASK-002 + AAF-v0.4-TASK-002-FIX-001，2026-08-27）�
   → 已登记 RW-021（见 AAF_MASTER_BACKLOG.md），与 RW-020 明确区分
 - Durable closure 报告：docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-B-CLOSURE-2026-08-27.md
 
-Next Phase Candidate: Phase C — Status Window + Chinese-first UI
-（仅标记候选；Phase C 不得标记 STARTED，必须由 Planner 后续正式生成 TASK 才算启动）
+Next Phase Candidate: Phase D — Progress Visualization
+（仅标记候选；Phase D 不得标记 STARTED，不得自动启动，
+必须由 Planner 在 Phase C 正式 COMPLETE 后生成 TASK 才算启动）
 
 v0.3: CLOSED（见下方历史块，不重开）
 v0.4 启动决定：Planner / User 已批准（见
@@ -167,10 +194,11 @@ v0.3 已 CLOSED，当前为维护 / 观察期。此期间只做：
 - 项目切换需人工改 config（RW-003）；
 - hotkey listener 偶发失活，重启恢复（RW-012）；
 - TASK parser 对换行格式兼容性有限（RW-008）；
-- 无运行时状态可视化（RW-006）；含明确 UX 要求：当前项目 / TASK / Agent / 阶段 / 进度条 / 估算百分比 / 停止（RW-006）；
+- 无运行时状态可视化（RW-006）；Phase C（v0.4）已交付只读状态窗口（当前项目 / 任务 / 阶段 / Agent / 结果），
+  剩余缺口：进度估算 / stuck 提示 / 停止入口（Phase D/E）；
 - 重复提交 Task 仅提示 TASK_ALREADY_EXISTS，无状态 / 查看 / REPORT 入口（RW-016）；
 - 无当前任务 Stop / Cancel 入口（RW-014）；
-- 无统一桌面 UI；未来 Chinese-first（RW-015）；
+- 无统一桌面 UI；未来 Chinese-first（RW-015）；Phase C（v0.4）已交付中文优先的状态窗口与弹窗文案；
 - 无会话过长提醒/承接 UX（CTX-001）；
 - 环境 / 仓库观察项：.aaf ignore 一致性、Git push 代理可靠性、Agent review 证据一致性（RW-017～RW-019，详见 Master Backlog，仅登记不实现）。
 
@@ -211,7 +239,7 @@ docs/internal/AAF_MASTER_BACKLOG.md
 以后任何被正式确认"稍后处理"的问题，**必须进入 Master Backlog 才算
 长期登记完成**。
 
-v0.4 IN PROGRESS — Phase A/B COMPLETE；Phase C-F 保持 NOT STARTED；启动 Phase C 必须由 Planner / User 显式决定（Phase C 尚未生成正式 TASK）。
+v0.4 IN PROGRESS — Phase A/B COMPLETE；Phase C IMPLEMENTATION COMPLETE（待 WorkBuddy/Codex 验证后正式 COMPLETE）；Phase D-F 保持 NOT STARTED，不得自动启动。
 
 ------------------------------------------------------------------------
 

@@ -9,11 +9,14 @@
 
 Phase B 范围：
 - 无控制台后台常驻（pythonw / .pyw）
-- Tray 最小菜单：打开状态 / 重启 Bridge / 退出 AAF
+- Tray 最小菜单：打开状态窗口 / 重启 Bridge / 退出 AAF
 - 最小 health 判定（listener registered + loop alive，§8）
 - Restart = 旧实例退出 + 新实例接管（单实例 mutex 保证不双开）
 - Exit = 只退出宿主，不写 task.json / run.json，无 cancel 语义
-不实现：完整状态窗口 / Chinese-first UI / 进度 / Stop Task / Safe Cancel（Phase C-F）。
+Phase C 范围：
+- 正式状态窗口（bridge/status_window.py：只读观察 + 中文优先 + 单例复用/聚焦）
+- 现有弹窗文案中文化（不改逻辑 / 解析 / 生命周期）
+不实现：进度 / Stop Task / Safe Cancel（Phase D-F）。
 """
 from __future__ import annotations
 
@@ -41,6 +44,7 @@ from .launcher import (
     RESULT_FINISHED,
     RESULT_REPORT_NOT_FOUND,
 )
+from .status_window import StatusWindowController, collect_status
 from .win32 import HotkeyConflictError, HotkeyListener, unregister_hotkey
 
 CONFIG_CHECK_INTERVAL = 2.0  # 秒：热键触发时检查配置变化（无需重启 Bridge）
@@ -188,7 +192,16 @@ class Bridge:
         self.busy = False  # 防抖：一次只处理一个热键
         self.launcher = FrameworkLauncher(on_finished=self._on_framework_finished)
         self.tray: tray_mod.TrayIcon | None = None
-        self._status_win = None  # 最小状态窗口（Phase C 预留入口）
+        # Phase C：正式状态窗口控制器（单例：复用/聚焦；关闭不退出 Bridge）
+        self.status_ctl = StatusWindowController(
+            root,
+            provider=lambda: collect_status(
+                self.cfg, classify_bridge_health(self.listener), self.launcher
+            ),
+            on_restart=self._restart_bridge,
+            on_exit=self._exit_aaf,
+            on_close=None,
+        )
         self._last_health: str | None = None
         self._cfg_mtime = self._config_mtime()
         self._apply_hotkey()
@@ -292,21 +305,12 @@ class Bridge:
             self._exit_aaf()
 
     def _open_status_window(self) -> None:
-        """打开最小 Bridge 信息窗口（Phase C 预留接入点）。
+        """打开正式状态窗口（Phase C）。
 
-        关闭窗口只销毁 Toplevel，不退出 Bridge（acceptance 6）。
+        单例：已存在窗口则复用并聚焦，不无限创建重复窗口；
+        关闭窗口只销毁 Toplevel，不退出 Bridge（acceptance 4）。
         """
-        if self._status_win is not None and self._status_win.winfo_exists():
-            try:
-                self._status_win.lift()
-                self._status_win.focus_force()
-            except Exception:
-                pass
-            return
-        health = classify_bridge_health(self.listener)
-        last = self.launcher.last or self.launcher.load_last()
-        rows = build_status_rows(self.cfg, health, last)
-        self._status_win = ui.show_bridge_status(self.root, rows)
+        self.status_ctl.open()
 
     def _restart_bridge(self) -> None:
         """重启 Bridge 宿主：注销热键 → 启动新实例（pythonw）→ 本实例立即退出。
@@ -382,19 +386,19 @@ class Bridge:
             )
         elif last.result == RESULT_REPORT_NOT_FOUND:
             ui.show_error(
-                "AAF Bridge — REPORT_NOT_FOUND",
+                "未找到报告",
                 f"Task ID: {last.task_id} 执行结束（exit=0）但未找到 REPORT.md。\n"
                 f"不得视为任务成功。",
             )
         elif last.result == RESULT_FAILED:
             ui.show_error(
-                "AAF TASK FAILED",
+                "任务执行失败",
                 f"Task ID: {last.task_id}\nexit={last.exit_code}\n"
                 f"详见输出目录中的 REPORT/日志。",
             )
         elif last.result == RESULT_FAILED_TO_START:
             ui.show_error(
-                "AAF Bridge — FAILED_TO_START",
+                "启动失败",
                 f"Task ID: {last.task_id} 启动失败（TASK.md 已保留）。",
             )
 
@@ -411,7 +415,7 @@ class Bridge:
         closure = handoff.git_snapshot(Path(last.task_path).parent if last.task_path else ".")
         payload = handoff.build_handoff(last, report_text, closure)
         if ui.clipboard_set_text(self.root, payload):
-            ui.show_info("AAF REPORT COPIED", f"Task ID: {last.task_id}\nPlanner Handoff 已复制到剪贴板。")
+            ui.show_info("报告已复制", f"Task ID: {last.task_id}\nPlanner Handoff 已复制到剪贴板。")
         else:
             ui.show_error("AAF Bridge", "剪贴板写入失败（可能被其他程序占用）。")
 
@@ -472,7 +476,7 @@ class Bridge:
             started = self.launcher.launch(target, workspace, output_dir, task_id)
         except AlreadyRunningError:
             ui.show_error(
-                "AAF Bridge — AAF_TASK_ALREADY_RUNNING",
+                "任务已在执行",
                 f"已有 Framework TASK 在执行中，不允许并发。\n"
                 f"新任务已保留：{target}\n"
                 f"请等待当前任务结束后重新提交。",
@@ -480,12 +484,12 @@ class Bridge:
             return
         if not started:
             ui.show_error(
-                "AAF Bridge — FAILED_TO_START",
+                "启动失败",
                 f"Framework 启动失败（TASK.md 已保留）:\n{target}\n"
                 f"Last result: {self.launcher.last.result if self.launcher.last else 'n/a'}",
             )
             return
-        ui.show_info("AAF TASK RUNNING", f"Task ID: {task_id}\nTASK.md: {target}\nFramework 已在后台执行。")
+        ui.show_info("任务已启动", f"Task ID: {task_id}\nTASK.md: {target}\nFramework 已在后台执行。")
 
 
 def main() -> int:

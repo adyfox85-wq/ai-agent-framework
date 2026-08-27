@@ -35,6 +35,7 @@ CONCURRENCY_WORKER = """\
 import sys
 from pathlib import Path
 
+from ai_agent_framework import cancel as cancel_mod
 from ai_agent_framework import finalize_cancelled
 from ai_agent_framework.task_lifecycle import finalize_terminal
 
@@ -47,6 +48,8 @@ if mode == "success":
     )
     print("OK success", c.status, c.terminal_generation, c.preserved)
 elif mode == "cancel":
+    # FIX-001：soft recovery 需要合法 cancel.request 作为 authority evidence
+    cancel_mod.write_cancel_request(out, task_id)
     c = finalize_cancelled.finalize_cancelled_task(task_id, ws, out)
     print("OK cancel", c.status, c.terminal_generation, c.preserved)
 else:

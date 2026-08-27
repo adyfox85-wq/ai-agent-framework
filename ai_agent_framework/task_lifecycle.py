@@ -13,6 +13,10 @@ Phase E（Safe Cancel Lifecycle，冻结设计 §6 / §6A / §6B）：
   无该字段不崩溃（兼容）
 - 终态一旦 committed 不可被 late event 覆盖（§6A.2 / §6B.2-D：锁内 reload 后已有终态
   → 返回现有 canonical result，不写任何东西）
+- FIX-001：``update_status`` 与 ``finalize_terminal`` 共享同一 per-task ``state.lock``
+  （§6B.1 / §6B.2）：non-terminal 更新同样在锁内 reload canonical → 已有终态 →
+  不写、返回 ``UpdateResult(preserved=True)``（terminal precedence 对任何 task.json
+  writer 生效，late RUNNING/CREATED/agent/phase update 不能把终态降回非终态）
 
 职责分离：
 - TASK.md  = formal task input
@@ -67,6 +71,58 @@ _DEFAULT_TERMINAL_REASON = {
 
 class LifecycleError(RuntimeError):
     """task.json 读写失败（不得静默忽略）。"""
+
+
+class TerminalAlreadyCommitted(LifecycleError):
+    """non-terminal update 试图写入时，canonical 已是终态（§6A.2 / §6B.2-D）。
+
+    Runner 等调用方可用此信号停止后续工作（不再启动后续 Agent），
+    并让派生产物跟随现有 canonical（reconciliation），而不是覆盖它。
+    """
+
+    def __init__(self, result: "UpdateResult"):
+        self.result = result
+        super().__init__(
+            f"terminal 已 committed（{result.status}，generation={result.terminal_generation}）——"
+            f"late non-terminal update 被拒绝，canonical 保持不变"
+        )
+
+
+@dataclass
+class UpdateResult:
+    """``update_status`` 的确定性返回（non-terminal update 结果）。
+
+    - preserved=False：本次 non-terminal 更新已原子写入
+    - preserved=True：锁内 reload 发现 canonical 已是终态 → 未写任何东西，
+      返回现有 canonical terminal 的字段（terminal precedence，§6A.2 / §6B.2-D）。
+      ``status`` 为现有终态；``terminal_generation`` 等为现有 terminal record，
+      调用方不得据此覆盖 canonical。
+    """
+
+    path: Path
+    status: str
+    task_id: str
+    output_dir: str
+    preserved: bool = False
+    terminal_generation: int | None = None
+    terminal_at: str | None = None
+    terminal_reason: str | None = None
+    report_path: str | None = None
+    cancel_mode: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "path": str(self.path),
+            "status": self.status,
+            "task_id": self.task_id,
+            "output_dir": self.output_dir,
+            "preserved": self.preserved,
+            "terminal_generation": self.terminal_generation,
+            "terminal_at": self.terminal_at,
+            "terminal_reason": self.terminal_reason,
+            "report_path": self.report_path,
+            "cancel_mode": self.cancel_mode,
+        }
 
 
 @dataclass
@@ -250,11 +306,19 @@ def update_status(
     stage: str | None = None,
     agent: str | None = None,
     phase_state: str = "RUNNING",
-) -> Path:
-    """写入/更新 task.json（**非终态**更新；原子写 + live runtime state 维护）。
+    lock_timeout: float = 10.0,
+) -> UpdateResult:
+    """写入/更新 task.json（**非终态**更新；与 terminal finalizer 同一把 state.lock）。
 
     - 终态（SUCCESS / WAITING / FAILED / CANCELLED）必须经 ``finalize_terminal``
       （锁内 critical section，§6B.2）写入——本函数直接拒绝，防止绕过锁的终态写
+    - **与 terminal finalizer 共享同一 per-task ``state.lock``（§6B.1 / FIX-001）**：\n
+      acquire state.lock → 锁内 reload canonical task.json → inspect status →\n
+      若 canonical 已是终态：不写任何东西，返回现有 canonical（``preserved=True``，\n
+      §6A.2 terminal precedence）→ 否则原子写 non-terminal update → release
+    - 锁获取失败（超时 / OS 错误）：抛 ``LockTimeout`` / ``LockError``，**不写**\n
+      task.json、不绕过锁、不 fallback 成无锁写（§6B.19：terminal safety 优先于\n
+      runtime UI freshness）
     - 原子写：临时文件 → os.replace（避免部分写入损坏 JSON）
     - 保留旧 report_path（新值为 None 时）
     - v0.4 Phase A：可选维护 live runtime state：
@@ -273,25 +337,51 @@ def update_status(
     output_dir.mkdir(parents=True, exist_ok=True)
     path = task_json_path(output_dir)
 
-    try:
-        prev = read_status(output_dir)
-    except LifecycleError:
-        prev = None  # 已损坏：从新值重建（不静默——read 已抛出过；此处重建可恢复）
+    with task_state_lock(output_dir, task_id, timeout=lock_timeout):
+        # 锁内 reload canonical（§6B.2-B：禁止使用锁外缓存旧值）
+        try:
+            prev = read_status(output_dir)
+        except LifecycleError:
+            prev = None  # 已损坏：从新值重建（不静默——read 已抛出过；此处重建可恢复）
 
-    data = _build_data(
-        prev,
-        task_id=task_id,
+        # §6B.2-C/D：canonical 已是终态 → 不写 non-terminal state，返回现有 canonical
+        prev = prev or {}
+        existing_status = prev.get("status")
+        if is_terminal_status(existing_status):
+            return UpdateResult(
+                path=path,
+                status=existing_status,
+                task_id=prev.get("task_id", task_id),
+                output_dir=str(output_dir),
+                preserved=True,
+                terminal_generation=prev.get("terminal_generation"),
+                terminal_at=prev.get("terminal_at"),
+                terminal_reason=prev.get("terminal_reason"),
+                report_path=prev.get("report_path"),
+                cancel_mode=prev.get("cancel_mode"),
+            )
+
+        data = _build_data(
+            prev,
+            task_id=task_id,
+            status=status,
+            task_path=task_path,
+            workspace=workspace,
+            report_path=report_path,
+            reason=reason,
+            stage=stage,
+            agent=agent,
+            phase_state=phase_state,
+        )
+        _atomic_write(path, data)
+
+    return UpdateResult(
+        path=path,
         status=status,
-        task_path=task_path,
-        workspace=workspace,
-        report_path=report_path,
-        reason=reason,
-        stage=stage,
-        agent=agent,
-        phase_state=phase_state,
+        task_id=task_id,
+        output_dir=str(output_dir),
+        preserved=False,
     )
-    _atomic_write(path, data)
-    return path
 
 
 def finalize_terminal(

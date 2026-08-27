@@ -25,6 +25,7 @@ import pytest
 
 from ai_agent_framework import cancel as cancel_mod
 from ai_agent_framework import runner as runner_mod
+from ai_agent_framework import task_lifecycle
 from ai_agent_framework.task_lifecycle import read_status
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -178,12 +179,21 @@ def test_e2e_scenario3_real_cli_run_py_cancel_before_agents(tmp_path):
 
 def test_e2e_scenario3_real_cli_finalize_cancelled_idempotent(tmp_path):
     """Scenario 3（CLI 级）：`python -m ai_agent_framework.finalize_cancelled` CLI
-    幂等收敛（两次调用 → 相同 canonical；run.json / REPORT 跟随 CANCELLED）。"""
+    幂等收敛（两次调用 → 相同 canonical；run.json / REPORT 跟随 CANCELLED）。
+
+    FIX-001：recovery 需要 canonical task.json 存在（req 7）——先经 lifecycle 建立
+    RUNNING canonical（真实 runner 执行中 crash 后的恢复场景），再 CLI 收敛。
+    """
     ws = tmp_path / "ws"
     ws.mkdir(exist_ok=True)
     out = ws / ".aaf" / "T-E-CLI"
     out.mkdir(parents=True, exist_ok=True)
     (out / "TASK.md").write_text(VALID_TASK, encoding="utf-8")
+    # 真实 crash-recovery 前置：runner 已建立 RUNNING canonical（无终态）
+    task_lifecycle.update_status(
+        out, task_id="T-E-CLI", status="RUNNING",
+        task_path=str(out / "TASK.md"), workspace=str(ws),
+    )
     cancel_mod.write_cancel_request(out, "T-E-CLI", requested_at="2026-08-27T12:00:00")
 
     def run_cli() -> str:

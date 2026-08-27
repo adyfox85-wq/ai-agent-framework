@@ -39,6 +39,22 @@ CANCEL_REQUEST_TYPE_SOFT = "soft_cancel"
 VALID_REQUEST_TYPES = (CANCEL_REQUEST_TYPE_SOFT,)
 
 
+def parse_requested_at(requested_at: str) -> datetime | None:
+    """严格解析 cancel.request 的 ``requested_at``（ISO 8601 时间戳）。
+
+    - 合法 → datetime；非法（非字符串 / 无法解析）→ None
+    - 供 recovery finalizer 做 authority evidence 校验（FIX-001 req 8：
+      ``requested_at`` present / valid enough per current contract）；
+      runner 检查点仍按 §6A.15 宽松处理（无效请求 → warning，不拒绝执行）
+    """
+    if not isinstance(requested_at, str) or not requested_at:
+        return None
+    try:
+        return datetime.fromisoformat(requested_at)
+    except ValueError:
+        return None
+
+
 @dataclass
 class CancelRequest:
     task_id: str

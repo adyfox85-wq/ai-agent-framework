@@ -169,6 +169,13 @@ v0.4 Phase E 已交付 **CANCELLED 终态 + cooperative soft cancel Core**（`AA
 - **幂等**：重复 cancel 不会重复收尾 / 重复 bump generation（`terminal_generation` 单调递增）。
 - **恢复 finalizer（Core-owned）**：`python -m ai_agent_framework.finalize_cancelled
   --task-id <ID> --workspace <WS> --output <OUT>`（幂等；已有终态不改写，只做 reconciliation）。
+  - **安全契约（FIX-001）**：soft cancel 收敛**必须**先存在合法 matching `cancel.request`
+    （`request=soft_cancel`、`task_id` 与 canonical `task.json.task_id` 一致、`requested_at`
+    为合法 ISO 时间戳）且 canonical `task.json` 已存在；缺失 / 损坏 / 不匹配 →
+    明确失败（exit code 6），**不得**修改 canonical、不得提交 CANCELLED。
+  - **Force recovery 未开放**：`--cancel-mode force` / `--reason FORCE_CANCELLED` 在
+    TASK-005-B 交付前一律返回 `FORCE_RECOVERY_NOT_AVAILABLE`（不伪造 force evidence）。
+  - `--evidence` 只是 **diagnostic note**，不是 authority evidence。
 - **尚未交付**（属于后续 TASK-005-B / 005-C，Phase E 未 COMPLETE）：
   - 状态窗口「停止当前任务」按钮（005-C）
   - Force Cancel（进程树强终止 + ownership verification）（005-B）
@@ -204,6 +211,9 @@ python run.py <TASK.md> --workspace D:\projects\my-app \
 
 已完成的 Agent 结果会被复用，不会从头执行。
 
-> 注意：resume 只对 `FRAMEWORK_ERROR`（环境/框架错误）阶段重新执行。
+> 注意：resume 只对 **非终态**任务生效（如 runner 中断后残留 `RUNNING` 的现场）。
+> FIX-001 后 terminal precedence（§6A.2）：SUCCESS / WAITING / FAILED / CANCELLED 一旦
+> committed，任何 late non-terminal update（含 resume 的 RUNNING 写入）都会被拒绝，
+> 任务保持终态、不重跑，resume 返回已有 REPORT。
 > 若某个 Agent 返回业务性失败（如 FAIL / REQUEST_CHANGE），该结果会被视为已完成并复用，
 > 任务通常仍停在 WAITING —— 需要按 REPORT 的返工项处理后**重新规划 / 创建新 TASK**（或先移除旧结果文件后再考虑重跑）。

@@ -446,9 +446,23 @@ def test_pqr_late_cancel_preserves_terminal(tmp_path, status):
 # ---------------------------------------------------------------------------
 
 
+def _recovery_ready(tmp_path: Path, out_name: str = "out", requested_at: str | None = None) -> Path:
+    """FIX-001 recovery 前置：建立 RUNNING canonical task.json + 合法 cancel.request。
+
+    （req 7：recovery 要求 canonical task.json 存在且 task_id 匹配——
+    真实场景是 runner crash 后残留的 RUNNING canonical。）
+    """
+    out = tmp_path / out_name
+    task_lifecycle.update_status(
+        out, task_id=_task_id(), status="RUNNING",
+        task_path=str(out / "TASK.md"), workspace=str(tmp_path),
+    )
+    cancel_mod.write_cancel_request(out, _task_id(), requested_at=requested_at)
+    return out
+
+
 def test_s_duplicate_cancel_idempotent(tmp_path):
-    out = tmp_path / "out"
-    cancel_mod.write_cancel_request(out, _task_id())
+    out = _recovery_ready(tmp_path)
     r1 = fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out)
     run1 = (out / "run.json").read_bytes()
     report1 = (out / "REPORT.md").read_bytes()
@@ -468,8 +482,7 @@ def test_s_duplicate_cancel_idempotent(tmp_path):
 
 
 def test_t_cancelled_report_content(tmp_path):
-    out = tmp_path / "out"
-    cancel_mod.write_cancel_request(out, _task_id(), requested_at="2026-08-27T10:00:00")
+    out = _recovery_ready(tmp_path, requested_at="2026-08-27T10:00:00")
     (out / "route.json").write_text(json.dumps({"agents": ["hermes", "workbuddy"], "reason": "t"}),
                                     encoding="utf-8")
     (out / "hermes_result.md").write_text("implemented ok", encoding="utf-8")
@@ -481,14 +494,18 @@ def test_t_cancelled_report_content(tmp_path):
     assert "取消请求时间: 2026-08-27T10:00:00" in report  # cancellation time
     assert "已完成阶段与 Agent 结果已保留" in report
     assert "后续阶段未执行" in report
-    # 不得伪造 Force Cancel / PID kill / ownership verified
-    assert "FORCE" not in report.upper() or "FORCE" not in report
+    # 不得伪造 Force Cancel / PID kill / ownership verified（FIX-001 修正原 tautology：
+    # 旧断言 "FORCE" not in upper() or "FORCE" not in report 恒真；soft CANCELLED REPORT
+    # 必须严格不含 FORCE）
+    assert "FORCE" not in report
+    assert "force" not in report.lower()
     assert "taskkill" not in report.lower()
     assert "PID" not in report
+    assert "ownership" not in report.lower()
 
 
 def test_u_cancelled_run_json_follows_generation(tmp_path):
-    out = tmp_path / "out"
+    out = _recovery_ready(tmp_path)  # FIX-001：RUNNING canonical + 合法 cancel.request
     fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out)
     run = json.loads((out / "run.json").read_text(encoding="utf-8"))
     assert run["status"] == "CANCELLED"
@@ -591,7 +608,7 @@ def test_w_cancel_request_is_not_terminal_authority(tmp_path):
 
 
 def test_x_recovery_finalizer_idempotent(tmp_path):
-    out = tmp_path / "out"
+    out = _recovery_ready(tmp_path)  # FIX-001：RUNNING canonical + 合法 cancel.request
     r1 = fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out)
     r2 = fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out)
     assert r1.status == "CANCELLED" and r1.terminal_generation == 1

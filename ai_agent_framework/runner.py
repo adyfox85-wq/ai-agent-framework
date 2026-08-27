@@ -105,7 +105,7 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
     try:
         # --- Lifecycle 状态编排（确定性，不调用 LLM） ---
         def _ls(status, *, report_path=None, reason=None, stage=None, agent=None, phase_state="RUNNING"):
-            task_lifecycle.update_status(
+            res = task_lifecycle.update_status(
                 output_dir,
                 task_id=task_id,
                 status=status,
@@ -117,6 +117,14 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 agent=agent,
                 phase_state=phase_state,
             )
+            if res.preserved:
+                # §6A.2 / §6B.18 Case B：另一 finalizer（recovery/cancel/其他 runner）
+                # 已提交终态（如 Agent 执行期间 CANCELLED）——late runtime/stage update
+                # 被拒绝，canonical 保持不变；中断本 run，派生产物跟随 canonical。
+                # FIX-001：update_status 与 terminal finalizer 共享 state.lock，
+                # 锁内 reload 保证这里读到的是已提交的 terminal truth。
+                raise task_lifecycle.TerminalAlreadyCommitted(res)
+            return res
 
         def _finalize(status, *, report_path=None, reason=None, stage=None, agent=None, phase_state=None,
                       terminal_reason=None, cancel_mode=None):
@@ -264,6 +272,14 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
         return report_path
     except TaskValidationError:
         raise  # Validation 失败：不进 Lifecycle（不生成虚假状态）
+    except task_lifecycle.TerminalAlreadyCommitted as exc:
+        # §6B.18 Case B（FIX-001）：另一 finalizer 已提交终态（典型：Agent 执行期间
+        # recovery/cancel finalizer 提交 CANCELLED）。Runner 的 late runtime/stage
+        # update 已被拒绝（canonical 保持终态）；不再启动后续 Agent；
+        # 派生产物跟随 canonical（run.json / REPORT 由 reconciliation 补齐）。
+        # 已完成 agent artifacts 保留（reconciliation 不删除任何 artifact）。
+        reconcile_terminal_artifacts(task_id, workspace, output_dir)
+        return output_dir / 'REPORT.md'
     except Exception as exc:
         # Framework 级失败：锁内提交 FAILED 终态后重新抛出（保持调用方行为；异常中断也有明确 lifecycle 记录）
         try:

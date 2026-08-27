@@ -62,7 +62,12 @@ Codex 阶段找不到命令。
 
 **处理**：查看 `REPORT.md` / Planner Handoff 的 **Unresolved Issues**，按其中的返工项处理后重新规划（修改 TASK 或修复后新 TASK）。
 
-> 注意：resume 只对 `FRAMEWORK_ERROR`（环境/框架错误）阶段重新执行；Agent 业务性失败（FAIL / REQUEST_CHANGE）的结果会被复用，任务通常仍停在 WAITING。
+> 注意：resume 只对**非终态**任务生效（如 runner 中断后残留 `RUNNING` 的现场，见
+> FIX-001 后 terminal precedence §6A.2：SUCCESS / WAITING / FAILED / CANCELLED 一旦
+> committed 不可被任何 late non-terminal update 降级回 RUNNING，resume 也不例外）。
+> resume 会复用已完成 Agent 结果，只重跑缺失/失败的阶段（`FRAMEWORK_ERROR` 结果会被
+> 重新执行）；若任务已是终态（WAITING / SUCCESS / FAILED / CANCELLED），resume 会被
+> 拒绝并返回已有 REPORT——此时按上方处理（修改 TASK 或新 TASK）。
 
 ## H. Bridge 进程在但热键没反应
 

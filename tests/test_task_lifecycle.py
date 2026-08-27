@@ -45,11 +45,13 @@ def test_valid_statuses():
 
 @pytest.mark.parametrize("status", ["CREATED", "RUNNING"])
 def test_write_and_read_non_terminal(tmp_path, status):
-    p = update_status(
+    res = update_status(
         tmp_path / "out", task_id="T1", status=status,
         task_path="T.md", workspace=str(tmp_path),
     )
-    assert p == tmp_path / "out" / "task.json"
+    assert res.path == tmp_path / "out" / "task.json"
+    assert res.preserved is False
+    assert res.status == status
     data = read_status(tmp_path / "out")
     assert data["task_id"] == "T1"
     assert data["status"] == status
@@ -219,14 +221,23 @@ def test_invalid_task_does_not_enter_lifecycle(tmp_path, monkeypatch):
     assert not task_json_path(out).exists()
 
 
-def test_resume_waiting_to_running_to_success(tmp_path, monkeypatch):
-    """WAITING 完成 → resume → RUNNING → 复用结果 → SUCCESS。"""
-    # 第一轮：workbuddy FAIL → WAITING
-    _, data = _run_valid(tmp_path, monkeypatch, agents=["hermes", "workbuddy"],
-                         results={"hermes": "ok", "workbuddy": "FAIL: broken"})
-    assert data["status"] == "WAITING"
+def test_resume_non_terminal_running_reuses_results(tmp_path, monkeypatch):
+    """非终态 resume（crash 后残留 RUNNING + 已完成 hermes result）→ 复用结果 → SUCCESS。
 
-    # resume：workbuddy 修正后通过；已完成的 hermes 结果复用（不重复调用）
+    FIX-001：resume 只适用于非终态（terminal precedence，§6A.2）；
+    终态（WAITING/SUCCESS/FAILED/CANCELLED）不可被 resume 降级回 RUNNING。
+    """
+    # 构造 crash 残留现场：route.json + hermes_result.md + task.json(RUNNING)
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    out = tmp_path / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "route.json").write_text(
+        json.dumps({"agents": ["hermes", "workbuddy"], "reason": "test"}), encoding="utf-8")
+    (out / "hermes_result.md").write_text("implemented ok", encoding="utf-8")
+    task_lifecycle.update_status(out, task_id="T1", status="RUNNING", task_path="T.md",
+                                 workspace=str(ws))
+
     calls = []
 
     def fake_agent(agent, prompt, workspace):
@@ -234,13 +245,44 @@ def test_resume_waiting_to_running_to_success(tmp_path, monkeypatch):
         return "ok" if agent == "workbuddy" else "implemented ok"
 
     monkeypatch.setattr(runner_mod, "run_agent", fake_agent)
-    monkeypatch.setattr(runner_mod, "_load_resume_state",
-                        lambda resume_from: (runner_mod.Route(["hermes", "workbuddy"], "test"),
-                                             {"hermes": "implemented ok"}))
     task_file = tmp_path / "TASK.md"
-    out = tmp_path / "out"
-    ws = tmp_path / "ws"
+    task_file.write_text(VALID_TASK, encoding="utf-8")
     runner_mod.run(task_file, ws, out, resume_from=out)
     final = json.loads((out / "task.json").read_text(encoding="utf-8"))
     assert final["status"] == "SUCCESS"
     assert calls == ["workbuddy"]  # hermes 结果复用，未重复执行
+
+
+def test_resume_from_terminal_is_refused(tmp_path, monkeypatch):
+    """FIX-001：终态（WAITING）不可 resume——terminal precedence 优先（§6A.2）。
+
+    late RUNNING update 不能把 terminal 降级回非终态：resume 尝试写 RUNNING 被拒绝，
+    canonical 保持 WAITING、generation 不变、不重跑任何 agent、返回已有 REPORT。
+    """
+    # 第一轮：workbuddy FAIL → WAITING（终态，generation 1）
+    _, data = _run_valid(tmp_path, monkeypatch, agents=["hermes", "workbuddy"],
+                         results={"hermes": "ok", "workbuddy": "FAIL: broken"})
+    assert data["status"] == "WAITING"
+    assert data["terminal_generation"] == 1
+    out = tmp_path / "out"
+
+    # resume：终态任务 → 拒绝降级
+    calls = []
+
+    def fake_agent(agent, prompt, workspace):
+        calls.append(agent)
+        return "ok"
+
+    monkeypatch.setattr(runner_mod, "run_agent", fake_agent)
+    monkeypatch.setattr(runner_mod, "_load_resume_state",
+                        lambda resume_from: (runner_mod.Route(["hermes", "workbuddy"], "test"),
+                                             {"hermes": "implemented ok"}))
+    task_file = tmp_path / "TASK.md"
+    ws = tmp_path / "ws"
+    report_path = runner_mod.run(task_file, ws, out, resume_from=out)
+    final = json.loads((out / "task.json").read_text(encoding="utf-8"))
+    assert final["status"] == "WAITING"  # 终态不可被 resume 降级回 RUNNING
+    assert final["terminal_generation"] == 1  # generation 不变
+    assert calls == []  # 未重跑任何 agent
+    assert report_path == out / "REPORT.md"
+    assert report_path.exists()  # 返回已有 REPORT（canonical 派生产物跟随）

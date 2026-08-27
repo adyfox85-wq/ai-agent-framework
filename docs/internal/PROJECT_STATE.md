@@ -1,8 +1,8 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE）；Phase F NOT STARTED）**\
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-005-A — Phase E Core Cancel Foundation and Soft Cancel sync）\
+> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE — 005-A-FIX-001 已关闭两个安全阻断，待 WorkBuddy/Codex 复核）；Phase F NOT STARTED）**\
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-005-A-FIX-001 — Phase E 安全阻断修复 sync）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -21,7 +21,8 @@ Phase: A — Runtime State Foundation: COMPLETE
        B — Bridge Background / Tray Skeleton: COMPLETE
        C — Status Window + Chinese-first UI: COMPLETE
        D — Progress Visualization: COMPLETE
-       E — Safe Cancel Lifecycle: IN PROGRESS（E-Core / Soft Cancel COMPLETE — AAF-v0.4-TASK-005-A；
+       E — Safe Cancel Lifecycle: IN PROGRESS（E-Core / Soft Cancel COMPLETE — AAF-v0.4-TASK-005-A，
+           005-A-FIX-001 关闭 Codex 两个 blocking safety defects 并同步；
            剩余 TASK-005-B Process Ownership / Force Cancel / Recovery Integration
            与 TASK-005-C Cancel UI + Windows E2E Closure 未交付 → Phase E 不得标 COMPLETE）
 Direction: Desktop Shell MVP / Runtime Observability & Control
@@ -309,6 +310,27 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
 - 测试：**391 passed**（334 基线 + 57 新增，零下降；tests/test_phase_e_core.py 45 项覆盖 req 28 A–Z
   全项 + tests/test_phase_e_concurrency.py 真实子进程锁/竞态 5 项（req 29，不 mock 锁）+
   tests/test_phase_e_e2e.py 真实 E2E 4 项（req 30 两个 scenario + CLI 级 run.py / finalize_cancelled））
+- **FIX-001（AAF-v0.4-TASK-005-A-FIX-001，2026-08-27）**：Codex 复审 REQUEST_CHANGE（两个 blocking
+  safety defects）→ 关闭：
+  1. **late non-terminal update 覆盖 terminal**：`update_status` 与 `finalize_terminal` 共享同一
+     per-task `state.lock`（§6B.1/§6B.2）：锁内 reload canonical → 已有终态 → 不写、返回
+     `UpdateResult(preserved=True)`；Runner post-agent runtime update 检测到终态 → 停止后续 Agent、
+     派生产物跟随 canonical。新增真实跨进程 race 测试（runtime vs CANCELLED/SUCCESS/WAITING/FAILED）、
+     generation 不丢失、lock-failure 语义、legacy terminal 拒绝 late update。
+  2. **recovery finalizer 无 evidence/identity 验证**：`finalize_cancelled_task` 新提交 CANCELLED 前
+     必须验证 canonical task.json exists + `task_id` 匹配；soft recovery 必须存在合法 matching
+     `cancel.request`（parseable / soft_cancel / task_id 匹配 / requested_at 合法）；缺失/损坏/
+     mismatch → `RecoveryEvidenceError`（fail safely，零 canonical 写）；force recovery → 005-A
+     明确拒绝 `FORCE_RECOVERY_NOT_AVAILABLE`（不伪造）；CLI 与 library 同规则（exit 6）。
+     已有终态无 evidence 仍 preserve + reconciliation 可用（req 9）。
+  - 测试：**421 passed**（391 基线 + 30 净新增，零下降；tests/test_phase_e_fix_001.py 29 项 +
+    resume 拆分 1 项：late-RUNNING 四终态、generation/metadata 保留、真实跨进程 race、
+    真实 Runner Agent-return race、真实 E2E（Runner + finalize CLI 子进程）、
+    evidence/identity 全拒绝矩阵、CLI 无 bypass、force 拒绝、no-force-kill 静态断言、
+    REPORT no-force 严格断言（修正 advisory A tautology））
+  - 行为契约变更：resume 只对非终态任务生效（终态不可被降级回 RUNNING）；recovery CLI
+    要求 validated cancel.request。QUICKSTART / TROUBLESHOOTING 已同步。
+  - WorkBuddy / Codex 独立复核由本任务 route 阶段执行（verdict 见任务 REPORT.md）
 - 真实软取消 E2E：Scenario 1（Hermes 前 cancel → Hermes 不启动 → CANCELLED 全套产物）PASS；
   Scenario 2（Hermes 完成 → WorkBuddy 前 cancel → Hermes result 保留 → CANCELLED）PASS；
   真实 run.py CLI 子进程 + finalize_cancelled CLI 幂等 PASS
@@ -417,7 +439,7 @@ docs/internal/AAF_MASTER_BACKLOG.md
 以后任何被正式确认"稍后处理"的问题，**必须进入 Master Backlog 才算
 长期登记完成**。
 
-v0.4 IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE，由 AAF-v0.4-TASK-005-A 交付；剩余 TASK-005-B + TASK-005-C 未交付，Phase E 不得标 COMPLETE）；Phase F NOT STARTED，不得自动启动；Next Phase Step = AAF-v0.4-TASK-005-B（Phase E Process Ownership + Force Cancel + Recovery Integration）。
+v0.4 IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE，由 AAF-v0.4-TASK-005-A 交付；005-A-FIX-001 已关闭 Codex 两个 blocking safety defects（late non-terminal update 覆盖 terminal / recovery finalizer 无 evidence+identity 验证），验证结果见任务 REPORT；剩余 TASK-005-B + TASK-005-C 未交付，Phase E 不得标 COMPLETE）；Phase F NOT STARTED，不得自动启动；Next Phase Step = AAF-v0.4-TASK-005-B（Phase E Process Ownership + Force Cancel + Recovery Integration）。
 
 ------------------------------------------------------------------------
 

@@ -210,27 +210,6 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
     # 位置：Validation 之后、任何 lifecycle 写入之前。
     runner_handshake(output_dir, task_id, workspace, expected_launch_id=launch_id)
 
-    # --- Immutable Task Snapshot（FIX-002 Req 1/2） ---
-    # 每次新任务执行开始时把 Runner 实际执行的 TASK 内容写入 <output_dir>/TASK.snapshot.md；
-    # 后续 Task Reference / task hash / context_manifest / WorkBuddy/Codex packet / REPORT
-    # 统一引用 snapshot。active/archive TASK 文件后续变化不得破坏本次 execution integrity。
-    snapshot_path = output_dir / 'TASK.snapshot.md'
-    output_dir.mkdir(parents=True, exist_ok=True)
-    if snapshot_path.exists():
-        snapshot_text = snapshot_path.read_text(encoding='utf-8')
-        if snapshot_text != task:
-            # resume / 复用目录：active 文件已变化 → 以 immutable snapshot 为执行依据
-            task = snapshot_text
-            v2 = validate_task_text(task)
-            if not v2.valid:
-                raise TaskValidationError(v2)
-    else:
-        snapshot_path.write_text(task, encoding='utf-8')
-    # Hash Single Source（FIX-002 Req 2）：Task Hash 只从 immutable snapshot 计算一次，
-    # 并在整个 execution lifecycle 中复用；snapshot 实际 SHA256 即唯一权威 hash。
-    task_hash = sha256_text(task)
-    task_bytes = len(task.encode('utf-8'))
-
     try:
         # --- Lifecycle 状态编排（确定性，不调用 LLM） ---
         def _ls(status, *, report_path=None, reason=None, stage=None, agent=None, phase_state="RUNNING"):
@@ -300,7 +279,29 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
             results = {}
             _ls('CREATED')  # 通过 Validation，尚未执行 Agent 链
 
+        # --- Immutable Task Snapshot（FIX-002 Req 1/2） ---
+        # 每次新任务执行开始时把 Runner 实际执行的 TASK 内容写入
+        # <output_dir>/TASK.snapshot.md；后续 Task Reference / task hash /
+        # context_manifest / WorkBuddy/Codex packet / REPORT 统一引用 snapshot。
+        # active/archive TASK 文件后续变化不得破坏本次 execution integrity。
+        # （位置：resume_from 的 output_dir 切换之后，保证写入真正执行目录）
+        snapshot_path = output_dir / 'TASK.snapshot.md'
         output_dir.mkdir(parents=True, exist_ok=True)
+        if snapshot_path.exists():
+            snapshot_text = snapshot_path.read_text(encoding='utf-8')
+            if snapshot_text != task:
+                # resume / 复用目录：active 文件已变化 → 以 immutable snapshot 为执行依据
+                task = snapshot_text
+                v2 = validate_task_text(task)
+                if not v2.valid:
+                    raise TaskValidationError(v2)
+        else:
+            snapshot_path.write_text(task, encoding='utf-8')
+        # Hash Single Source（FIX-002 Req 2）：Task Hash 只从 immutable snapshot
+        # 计算一次，并在整个 execution lifecycle 中复用；snapshot 实际 SHA256
+        # 即唯一权威 hash。
+        task_hash = sha256_text(task)
+        task_bytes = len(task.encode('utf-8'))
 
         (output_dir / 'route.json').write_text(
             json.dumps({'agents': route.agents, 'reason': route.reason}, ensure_ascii=False, indent=2),

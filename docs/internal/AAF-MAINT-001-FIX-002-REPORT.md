@@ -211,7 +211,7 @@ Codex audit 清单（源自本任务要求 17，上一轮审查均通过；报�
 - Previous Delivery Commit: `5a4913f24d0bf01eb0e6405b0883753d1a6d3a96`
   （AAF-MAINT-001-FIX-002 交付提交：Master Backlog / PROJECT_STATE / 本报告，
   已 push，未改写 Git 历史）。
-- Final Report Fix Commit: `（本修复提交哈希，由提交后的补录提交写入）`
+- Final Report Fix Commit: `09ca092`
   （AAF-MAINT-001-FIX-003 报告最终状态修复提交；随后的一次补录提交仅将本行
   哈希补入，不改写 Git 历史）。
 

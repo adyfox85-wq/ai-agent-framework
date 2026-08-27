@@ -2,6 +2,7 @@
 
 > 文档类型: 设计规格（Design Specification）
 > 任务: AAF-DESIGN-001 — Desktop Shell and Runtime Control Minimal Design
+> 修订: AAF-DESIGN-001-FIX-001（2026-08-27）— 关闭 Codex 两个 blocking findings（Force Cancel 终态双写竞态、PID/token 防误杀协议未闭合）。权威修订见 §6A；§6/§8.3/§13.3/§14/§15/§16/§19 已同步修正。仅修订设计文档，不实现。
 > 日期: 2026-08-27
 > 状态: **DESIGN COMPLETED / IMPLEMENTATION NOT STARTED**
 > 范围: 本任务只产出可执行的设计规格与实施拆分。**不实现** Tray / GUI / progress bar / cancel / autostart / project switching / packaging / heartbeat / 新 runtime schema。
@@ -34,6 +35,7 @@
 | 18. 推荐第一版范围（MVP） | §17 |
 | 19-22. 只设计 / 不启动 v0.4 / backlog 不标 SOLVED / PROJECT_STATE | §18 |
 | 23-24. WorkBuddy / Codex 审查指引 | §19 |
+| FIX-001: Safe Cancel / process ownership / 终态一致性（两个 blocking findings 关闭） | §6A（权威修订） |
 
 ---
 
@@ -383,13 +385,13 @@ Boundary 后、第一个 agent 前 → 检查
 | 第二段：强终止（仅当需要立即停止） | 用户点 [强制停止]（二次确认） | Launcher `taskkill /PID <runner_pid> /T /F`（进程树） | 只杀该 runner 及其子进程树（当前任务的 agent CLI 属于该树）→ 不误伤独立会话（§6.6）。 |
 
 - 第一段是默认与推荐路径；第二段仅在"当前 agent 明显卡死且用户要求立即终止"时使用。
-- 强终止后 task.json 无法由 runner 写终态（runner 已被杀）→ **Launcher 负责补写终态**：读取现有 task.json，写 status=CANCELLED、reason=FORCE_CANCELLED，并追加 cancel 记录。这是 Launcher 唯一允许触碰 lifecycle 的时机，且必须原子写（复用 task_lifecycle 的原子写模式）。
+- 强终止后 task.json 无法由 runner 写终态（runner 已被杀）→ **Launcher 只记录 termination evidence**（control.json + 本地记录），随后调用 **Core recovery finalizer**（`finalize_cancelled_task`）补写 CANCELLED 终态（§6A.12）。Launcher **不得**直接独立写最终 task status（§6A.1）。
 
 ### 6.5 如何避免杀错别的 Hermes / WorkBuddy / Codex 会话
 
 - **进程树边界**：只对"本任务 runner 进程"执行 `taskkill /T`。当前任务的 agent CLI（hermes/codebuddy/codex）是 runner 的直接子进程，属于该树；用户或其他任务独立启动的会话是**独立进程树**，不在树内。
-- **PID 来源**：Launcher 在 launch 时记录 `proc.pid` 并持久化到 `last_run.json`（或 task.json 的 pid 字段，§13.3 提案）。强终止前**重新校验**：该 PID 的进程命令行确实等于"本任务 run.py 路径 + 本任务 task 路径"（Windows 下用 `wmic`/PowerShell 查询命令行，或记录 launch 时生成的一次性 token 放入 runner 环境变量，强终止前用 token 校验）。**校验不过 → 拒绝强终止并报错**。
-- **唯一性**：Launcher 单任务并发保护已保证同一时刻只有一个本框架 runner；但仍需 PID+token 双重校验，防止 PID 被系统复用。
+- **PID 来源**：Launcher 在 launch 时记录 `proc.pid` 并持久化到 control.json（§6A.6/§6A.7；task.json 的 pid 字段是冗余，§13.3 提案）。强终止前**重新校验**（§6A.8）：task_id / workspace / launch_id / runner PID / process creation time / normalized command line / control 未 stale，全部通过才允许强终止。**任一校验不过 → REFUSE FORCE TERMINATION**。
+- **唯一性**：Launcher 单任务并发保护已保证同一时刻只有一个本框架 runner；但仍需 §6A.8 的完整 ownership verification（含 creation time 校验），防止 PID 被系统复用。
 
 ### 6.6 任务产物与状态更新
 
@@ -399,9 +401,9 @@ Boundary 后、第一个 agent 前 → 检查
 | `.aaf/<id>/` 全部既有产物 | 保留不动（已完成 agent 的 prompt/result 是证据） |
 | `cancel.request` | 保留为证据（或由 runner 收敛后改名为 `cancel.done`） |
 | REPORT.md | **生成**，Current Status = `CANCELLED`，列出已完成阶段、取消请求时间、取消方式（cooperative/force） |
-| run.json | 写 `status: CANCELLED` + timestamp（与现有 schema 一致，仅多一个合法值） |
-| task.json | `status: CANCELLED`，`reason: CANCEL_REQUESTED | FORCE_CANCELLED`，updated_at=取消收敛时刻 |
-| last_run.json | Bridge 侧正常记录（result=CANCELLED 或其英文映射），保证 Copy Last Report 链路可用 |
+| run.json | 写 `status: CANCELLED` + timestamp（与现有 schema 一致，仅多一个合法值）；**写者 = Runner 收敛路径或 Core recovery finalizer**（§6A.1/§6A.12），status 跟随 task.json 终态（§6A.4） |
+| task.json | `status: CANCELLED`，`reason: CANCEL_REQUESTED | FORCE_CANCELLED`，updated_at=取消收敛时刻；**写者 = Runner 收敛路径或 Core recovery finalizer**，Launcher 不直接写（§6A.1） |
+| last_run.json | Bridge 侧**跟随 Core final result** 记录（§6A.4/§6A.5），不自行推导覆盖 Core；result=CANCELLED 或其英文映射，保证 Copy Last Report 链路可用 |
 | 归档 | CANCELLED 是否可归档：**建议纳入可归档终态**（TERMINAL_STATUSES 增加 CANCELLED），保持"终态可归档"一致性 |
 
 ### 6.7 Cancel 后最终状态叫什么
@@ -440,7 +442,7 @@ Boundary 后、第一个 agent 前 → 检查
 - 场景 2：取消请求与 agent 完成同时 → 以检查点读取顺序为准：检查点读到请求 → CANCELLED；否则继续 → 完成。**状态以检查点结果为准，绝不回滚已写产物**。
 - 场景 3：取消后用户立刻再次提交相同 Task ID → active TASK.md 仍在（证据保留）→ duplicate 保护生效 → 走 §10 的 Duplicate UX 提供"查看状态/打开 REPORT"，不静默重跑。
 
-**取消请求发出后 Bridge 重启**：cancel.request 文件仍在 → 新 Bridge 的 Launcher 启动检查：若检测到残留 cancel.request 且对应任务已完成/已取消，正常忽略并提示；若任务仍在运行（孤儿 runner），提示用户选择"接管并继续"或"按取消处理"（第一版：提示 + 默认按取消处理，Launcher 补写终态）。
+**取消请求发出后 Bridge 重启**：cancel.request 文件仍在 → 新 Bridge 的 Launcher 启动检查：若检测到残留 cancel.request 且对应任务已完成/已取消，正常忽略并提示；若任务仍在运行（孤儿 runner），提示用户选择"接管并继续"或"按取消处理"——接管必须通过 §6A.9 的 ownership verification 才能取得管理权；按取消处理走 **Core recovery finalizer** 收敛为 CANCELLED（§6A.12），Launcher 不自行补写终态。
 
 ### 6.10 生命周期最小方案（汇总图）
 
@@ -452,13 +454,323 @@ Boundary 后、第一个 agent 前 → 检查
 [继续下一阶段] <──────────────────────────────────────────────┐    [跳过剩余阶段]
    │                                                            │            │
    └── 全部完成 → [SUCCESS]（取消被吸收）                      │            ▼
-                                                               │   [REPORT(CANCELLED) → run.json(CANCELLED)
-                                                               │    → task.json(CANCELLED)] → 终态
-（可选）强终止：二次确认 → taskkill /T（PID+token 校验）
-        → Launcher 补写 task.json(CANCELLED, FORCE_CANCELLED)
+                                                               │   [task.json(CANCELLED) → run.json(CANCELLED)
+                                                               │    → REPORT(CANCELLED)] → 终态（§6A.4 提交顺序）
+（可选）强终止：二次确认 → ownership verification（§6A.8）→ taskkill /T
+        → Launcher 记录 termination evidence
+        → Core recovery finalizer 写 CANCELLED（§6A.12）
 ```
 
-- **不改变现有 lifecycle 主流程代码**：现有 CREATED→RUNNING→SUCCESS/WAITING/FAILED 路径不动；仅新增检查点、CANCELLED 终态、Launcher 补写路径（均为增量）。是否纳入 v0.4 由 Planner 决策。
+- **不改变现有 lifecycle 主流程代码**：现有 CREATED→RUNNING→SUCCESS/WAITING/FAILED 路径不动；仅新增检查点、CANCELLED 终态、Core recovery finalizer 路径（均为增量）。是否纳入 v0.4 由 Planner 决策。
+
+---
+
+## 6A. Safe Cancel 状态一致性与 Process Ownership 协议（AAF-DESIGN-001-FIX-001 修订）
+
+> **本节是 §6 的权威修订（2026-08-27，AAF-DESIGN-001-FIX-001）。** 凡与本节冲突的 §6 表述，一律以本节为准；§6 中对应表述已就地修正并标注指引。本节只定义设计级协议——**当前代码不实现**（§6A.18）。
+
+### 6A.0 修订背景：两个 blocking findings
+
+Codex（AAF-DESIGN-001 审查）指出两个阻断项，本节逐一关闭：
+
+| # | Blocking Finding | 关闭位置 |
+|---|---|---|
+| 1 | **Force Cancel 终态双写竞态**：Launcher 可能写 CANCELLED，现有 wait thread 又可能因子进程非零退出写 FAILED，导致 task.json / run.json / REPORT.md / last_run.json 状态不一致 | §6A.1 唯一终态裁决者 + §6A.2 终态优先 + §6A.4 提交顺序 + §6A.5 wait thread |
+| 2 | **PID/token 防误杀协议未闭合**：只提出 PID+token，无完整、可恢复、可验证的 process ownership protocol | §6A.6–§6A.10（launch_id / control.json / ownership verification / restart / stale） |
+
+修订原则：Desktop Shell 整体方案不动；只关闭上述两项及其派生的一致性要求。
+
+### 6A.1 唯一终态裁决者（Terminal Authority）
+
+**Runner / Lifecycle Core 是 Task terminal state 的唯一 authoritative finalizer。**
+
+- 合法终态集合 `TERMINAL = {SUCCESS, WAITING, FAILED, CANCELLED}`；只有**两类入口**可以写终态：
+  1. **Runner 自身生命周期路径**：正常收敛（SUCCESS / WAITING）、FRAMEWORK_ERROR（FAILED）、检查点取消收敛（CANCELLED，§6.3）。
+  2. **Core recovery finalizer**：`finalize_cancelled_task(...)`，属于 Lifecycle Core，供强杀/崩溃后恢复终态（§6A.12）。
+- **Launcher / Desktop Shell 不得直接独立裁决最终 task status。** Launcher 可以且只能：
+  - 发出 cancel request（原子写 cancel.request）
+  - 发出 force terminate request（写 control.json.force_terminate_requested，§6A.7）
+  - 终止它**拥有且已验证**的 runner process tree（§6A.8 校验全部通过后 taskkill /T /F）
+  - 记录 termination evidence（control.json + 本地记录；exit code 是 evidence，不是判定）
+- **不存在第三条写终态路径。** wait thread 的 result（FINISHED / FAILED / REPORT_NOT_FOUND / FAILED_TO_START）是 **Bridge 视角的收尾分类**，不是 Task 终态裁决（现状即如此，§1.1 launcher 模块头注释；修订后显式化）。
+
+### 6A.2 终态优先规则（Terminal-State Precedence）
+
+**Terminal state 一旦 committed，不得被任何后续 late event 覆盖。**
+
+```text
+if terminal_state_exists(task.json):            # SUCCESS | WAITING | FAILED | CANCELLED
+    late cancel / late launcher event / late request → 拒绝写入，返回现有终态（幂等）
+```
+
+并发裁决规则（Runner 正常完成 vs force cancel）：
+
+| 时序 | 裁决 |
+|---|---|
+| Runner 在 cancel commit 前已合法进入 SUCCESS / WAITING / FAILED | **原终态胜出**（cancel 被吸收 / 拒绝） |
+| Core 已接受 cancel、进入 cancelling 状态，Runner 尚未提交终态 | **Cancel path 胜出**（终态 = CANCELLED） |
+| 只有 Launcher 观察到非零 exit code（process-exit observation） | **只是 evidence**：不能单独把 Cancel 改写为 FAILED（§6A.5） |
+
+实现约束：所有写终态入口（Runner 收敛、recovery finalizer）写前必须**原子读取现有 task.json**；已存在终态 → 放弃写入并返回现有终态。这是双写竞态的闭合机制。
+
+### 6A.3 最小中间状态（设计级，仅提案）
+
+- 允许设计级中间态：`CANCEL_REQUESTED`、`CANCELLING`。
+- 明确边界：它们只是 **UI/Launcher 内存态 + control.json 字段**（`cancel_requested` / `force_terminate_requested`），**不属于 task.json 的合法 status 集合**（`task_lifecycle.VALID_STATUSES` 不变）。
+- 这是未来 lifecycle proposal；**当前代码不实现**。
+- 最终 terminal state 只有一个：**`CANCELLED`**（task.json / run.json / REPORT / 归档规则一致使用）。
+
+### 6A.4 四类产物的一致性提交顺序（Artifact Commit Order）
+
+**第一步永远是 Core/Lifecycle 确定 terminal outcome（决策），之后才是产物落盘。** 规范顺序：
+
+```text
+A. Core/Lifecycle 确定 terminal outcome（SUCCESS | WAITING | FAILED | CANCELLED）
+B. 原子更新 task.json（唯一权威终态载体；tmp + os.replace，复用现有原子写模式）
+C. 写 run.json（status 跟随 B 的终态）
+D. 生成 REPORT.md（Current Status 行与终态一致）
+E. Launcher/Bridge 读取 Core terminal result（task.json）→ 更新 last_run.json
+```
+
+- **所有权**：A–D 全部由 Core（Runner 收敛路径或 recovery finalizer）执行；E 由 Launcher/Bridge 执行，**只跟随、不推导**。
+- **last_run.json 不能自行推导最终状态覆盖 Core**：若 last_run 与 task.json 冲突，以 Core 为准，并记录 inconsistency warning（§6A.15 同源规则）。
+- 与现状的差异说明（基于代码事实）：当前 runner 实际顺序为 REPORT.md → run.json → task.json（§1.1）。修订后终态提交提前到 task.json 先行，使"唯一权威终态"最先成为持久事实，run.json / REPORT / last_run 全部服从同一裁决，消除"REPORT 已写 CANCELLED 而 task.json 尚 RUNNING"的观察窗口。实现时允许的变体：REPORT.md 可在 B 之前生成（因 task.json 需嵌入 report_path），但**终态裁决必须先行、task.json 终态提交必须先于 run.json 与 last_run.json，且四产物 status 必须一致**。
+
+### 6A.5 wait thread 行为（Wait Thread Rule）
+
+针对当前 `bridge/launcher.py` 的 wait thread（`_wait_and_finish`），未来设计规定：
+
+```text
+子进程结束（exit code 已知）之后：
+1. 先读取 Core final result / terminal artifact（task.json.status）
+2. 若存在合法 terminal outcome（SUCCESS | WAITING | FAILED | CANCELLED）
+   → last_run.json 跟随 Core outcome（result 映射：CANCELLED → RESULT_CANCELLED 或等价映射；
+     FINISHED / FAILED 沿用现状语义，但以 Core 终态为准）
+3. 仅当：Runner 异常退出（exit code ≠ 0）
+        且不存在合法 terminal outcome（task.json 无终态 / 无 task.json）
+   → 才归类为 FRAMEWORK_ERROR / FAILED 类异常结果
+     （RESULT_FAILED / REPORT_NOT_FOUND / FAILED_TO_START 等 Bridge 收尾分类）
+```
+
+- **不得把"force cancel 导致的非零退出码"直接认定为 FAILED**：exit code 只作为 evidence 记录（RunInfo.exit_code），不参与状态判定。
+- 该规则同时消灭 Finding 1 的竞态：wait thread 不再有独立裁决权，只镜像 Core 结果。
+
+### 6A.6 Process Ownership 协议（launch_id）
+
+选定**唯一可实施协议：launch_id**（一次性随机标识，如 `uuid4().hex`；不依赖环境变量注入 token，避免继承/泄露问题）。
+
+生命周期：
+
+```text
+1. Launcher 启动 task runner 前：生成唯一 launch_id
+2. launch_id 与 (task_id, workspace, output_dir) 绑定，一一对应
+3. Launcher 原子写入 task-owned control artifact（control.json，§6A.7）：
+   task_id / workspace / launch_id / launcher_pid / started_at / runner_cmdline（实际 argv）
+4. Runner 启动后写回（原子）：
+   runner_pid / runner_creation_time / launch_id / task_id / workspace
+   （写回时校验 launch_id / task_id / workspace 与预写值一致；不一致 → 视为 ownership 异常，
+    记录并拒绝接管）
+5. Launcher 保存自身 ownership record（control.json 内 launcher_pid + 内存句柄）
+```
+
+- 同一 task 的**新一次 launch 必须生成新 launch_id**；旧 control 被 supersede（`superseded_by` 记录新 launch_id）→ 旧 control 立即 stale（§6A.10）。
+- launch_id 的用途：ownership verification（§6A.8）、restart 接管判定（§6A.9）、stale 判定（§6A.10）、recovery finalizer 的幂等键（§6A.12）。
+
+### 6A.7 Control Artifact（schema 提案）
+
+设计路径：`.aaf/<Task-ID>/control.json`（task-owned，与 task.json 同目录；仅 schema 提案，**本任务不创建真实文件**）：
+
+```jsonc
+{
+  "task_id": "AAF-XXX",                       // 绑定任务
+  "workspace": "D:\\...",                     // 绑定 workspace
+  "launch_id": "<uuid4-hex>",                 // 本次 launch 唯一标识
+  "runner_pid": 12345,                        // Runner 写回
+  "runner_creation_time": "2026-08-27T10:00:00.000",  // Runner 写回（Windows 进程创建时间）
+  "launcher_pid": 67890,                      // Launcher 预写
+  "started_at": "2026-08-27T10:00:00",        // Launcher 预写
+  "runner_cmdline": ["python", "run.py", "<task>", "--workspace", "<ws>", "--output", "<dir>"],  // Launcher 预写：实际 argv，供命令行校验
+  "cancel_requested": false,                  // cancel.request 的镜像（§6A.15）
+  "force_terminate_requested": false,         // force terminate 请求标记
+  "superseded_by": null                       // 新 launch 覆盖时记录新 launch_id
+}
+```
+
+写者归属与原子性：
+
+- Launcher：创建（launch 前预写）+ 更新 `cancel_requested` / `force_terminate_requested` / `superseded_by`。
+- Runner：启动后写回 `runner_pid` / `runner_creation_time`（并校验绑定字段）。
+- 全部原子写（tmp + os.replace），与 task.json 同一模式。
+- `task.json` 内 `pid` 字段（§13.3 提案）与 control.json 互为冗余；**ownership 判定以 control.json 为准**。
+
+### 6A.8 强制终止前的 Ownership Verification
+
+Force terminate（taskkill /T /F）执行前，**必须全部通过**以下校验（基于 control.json + 实况查询）：
+
+| # | 校验项 | 通过条件 |
+|---|---|---|
+| 1 | task_id 一致 | control.task_id == 目标 task_id |
+| 2 | workspace 一致 | control.workspace == 目标 workspace |
+| 3 | launch_id 一致 | control.launch_id == 本次会话持有的 launch_id |
+| 4 | runner PID 一致 | 实况进程 PID == control.runner_pid |
+| 5 | process creation time 一致 | 实况创建时间 == control.runner_creation_time（防 PID recycle） |
+| 6 | normalized command line 符合预期 runner entry | 实况命令行规范化后 == control.runner_cmdline 规范化（run.py <task> --workspace <ws> --output <dir>） |
+| 7 | control artifact 未过期 / 未被 superseded | 非 stale（§6A.10）且 superseded_by == null |
+
+- **任一校验失败 → REFUSE FORCE TERMINATION**（拒绝执行；UI 显示拒绝原因）。**不能降级成"尽量 kill"**——所有权不确定时宁可不杀。
+- 规范化规则（实现时定义精确实现）：大小写归一、路径归一（绝对路径 + 统一分隔符）、参数顺序无关比较；Windows 下实况命令行通过 PowerShell CIM `Win32_Process.CommandLine` 或 psutil 获取。
+
+### 6A.9 Launcher / Tray Restart 场景
+
+Launcher / Tray 重启后，**可以重新读取 control.json**，但**只有在全部满足**时才重新取得该 runner 的管理权：
+
+```text
+- PID 仍存在（进程存活）
+- creation time 一致（未被 PID recycle 顶替）
+- launch_id 一致
+- command line 一致
+- task 未有 terminal outcome（task.json 无终态）
+```
+
+- 全部满足 → 恢复管理权（可继续观察、可响应 cancel / force cancel）。
+- 任一不满足 → 状态显示 **ownership uncertain / stale control**，并**拒绝 force kill**；UI 提示用户（如：存在孤儿 runner，建议人工处理或走恢复流程）。
+- 重启后**不得自动 force kill**；**不得自动改写 task.json**（终态裁决权仍在 Core，§6A.1）。
+
+### 6A.10 Lease / Stale 规则
+
+**control artifact 不等于永远有效。** 以下任一情况 → control 视为 **stale**：
+
+| 情形 | 判定 |
+|---|---|
+| 进程已不存在 | 查 PID 无结果（或进程已退出） |
+| PID recycled | PID 存在但 creation time 与记录不一致 |
+| terminal state 已存在 | task.json 已有 SUCCESS / WAITING / FAILED / CANCELLED |
+| launch_id superseded | `superseded_by` 非空 |
+| creation time 不一致 | 与 `runner_creation_time` 记录不符 |
+
+- stale control 的处理：**不授予 force kill 权**；标记 ownership uncertain；可进入清理流程。
+- 设计级可选增强：lease 过期（`started_at` + 最大时长上限后强制视为 stale）——第一版不做，避免误判长任务。
+
+### 6A.11 Soft Cancel 与 Force Cancel 语义
+
+**Soft Cancel（默认路径）：**
+
+```text
+UI 写 cancel.request（原子）→ Runner 在 safe checkpoint 读取（§6.3）
+→ 不启动后续 agent → 已完成阶段产物全部保留
+→ Core 收敛：task.json(CANCELLED) → run.json(CANCELLED) → REPORT(CANCELLED)（§6A.4 顺序）
+→ Launcher 跟随更新 last_run.json
+```
+
+**Force Cancel（兜底路径）——三个条件全部满足才允许：**
+
+1. soft cancel 超时（设计建议：阈值配置化，默认 30–60s，实现时定值）；
+2. 用户二次确认（UI 红色警示文案，§12.3）；
+3. ownership verification 全部通过（§6A.8）。
+
+```text
+Force Cancel 动作：Launcher 终止它拥有且已验证的 runner process tree（taskkill /T /F）
+→ Launcher 只记录 termination evidence（control.json.force_terminate_requested = true + 本地记录）
+→ 最终 terminal state 由 Core recovery finalization 决定（§6A.12），Launcher 不自行写终态
+```
+
+### 6A.12 强杀后 Core 不再运行时的 Recovery Finalization
+
+场景：runner 被强杀（或崩溃、被外部终止），未留下任何终态。此时 Launcher 不能自己拼状态，必须调用 **Core 提供的独立 finalizer**：
+
+```text
+finalize_cancelled_task(output_dir, task_id, workspace, launch_id, evidence)
+    → 属于 Lifecycle Core（不是 UI/Launcher 逻辑）
+    → 原子、幂等：
+      1. 原子确认当前无 terminal state（读 task.json；已存在终态 → 幂等返回现有终态，不改写）
+      2. 写 task.json status=CANCELLED（原子；reason=FORCE_CANCELLED + evidence）
+      3. 写 run.json（status=CANCELLED）
+      4. 写 REPORT.md（Current Status=CANCELLED；注明强制终止时间与证据）
+      5. 返回 canonical result（供 Launcher 更新 last_run.json）
+```
+
+- 设计实现形态：独立 CLI 入口（如 `python -m ai_agent_framework.finalize_cancelled --output <dir> …`）或库调用；**推荐 CLI 入口**——Launcher 通过子进程调用，避免 import Core 内部执行逻辑（§14.4 防侵入规则）。
+- 幂等：重复调用（如 Launcher 重启后再调）返回相同结果，不重复改写。
+- 等价方案可接受，但必须保持"**Core 是唯一终态裁决者**"（§6A.1）。
+
+### 6A.13 Race：Agent 刚完成时用户点 Cancel
+
+| 场景 | 规则 |
+|---|---|
+| terminal commit 已完成（task.json 终态已落盘） | **Cancel 拒绝**：UI 提示"任务已在取消前完成"；保留原结果，不覆盖 |
+| cancel 已 accepted（进入 cancelling），agent result 刚落盘 | **Core 根据 lifecycle checkpoint 判定**：检查点先于 result 提交读到 cancel → CANCELLED；result 提交先于检查点 → 按正常完成。判定点在 Core，UI 不猜 |
+| 已完成 agent artifact | **保留**，不删除已完成结果（CANCELLED 只作用于未启动的后续阶段） |
+
+### 6A.14 重复 Cancel
+
+```text
+第一次点击：CANCEL_REQUESTED（UI/内存态 + 写 cancel.request）
+后续点击：显示"正在取消"，不重复发请求、不重复写文件
+任务已 terminal：按钮禁用（§6.9 状态机）
+```
+
+### 6A.15 cancel.request / task.json Mirror 不一致规则
+
+- **canonical source = Core lifecycle state（task.json）**。
+- **cancel.request 是 external request artifact，不是 terminal truth**。
+
+```text
+若 cancel.request 存在 且 task 已 terminal
+    → request 标记 consumed/ignored（如改名 cancel.done 或仅日志），不得改终态
+若 task.json.cancel_requested == true 但 request artifact 缺失
+    → Core 仍按 lifecycle record 继续执行，同时记录 inconsistency warning（不拒绝执行）
+```
+
+（现状说明：`cancel_requested` 字段属 §13.3 Phase A 提案，当前代码无此字段；本规则是设计级约定。）
+
+### 6A.16 复杂度评估调整
+
+**Core Intrusion Risk：LOW → MEDIUM**（§16 同步更新）。原因：
+
+- 新增终态（CANCELLED）进入状态机与归档规则；
+- 跨进程取消（cancel.request 契约 + 检查点收敛）；
+- process ownership（launch_id / creation time / command line 校验）；
+- recovery finalization（finalize_cancelled_task 独立入口）；
+- multi-artifact 一致性（task.json / run.json / REPORT / last_run 提交顺序与幂等规则）。
+
+### 6A.17 Heartbeat 观测补充
+
+- 未来 heartbeat **不能依赖阻塞 `GetMessageW` 的自然周期 tick**（消息循环可长期阻塞，tick 不更新 → heartbeat 恒旧）。
+- 必须使用：**timer**（`SetTimer` / tkinter `after`）或 **worker thread**（定时更新共享时间戳）或 **non-blocking heartbeat mechanism**。
+- 本任务仍不实现（设计约束；§8.3 同步）。
+
+### 6A.18 实施边界（FIX-001）
+
+- 本任务**只修订设计文档**；不实现 Cancel、不修改 runtime / launcher / lifecycle / tests / .gitignore / Desktop UI。
+- `task_lifecycle.VALID_STATUSES` 当前不含 CANCELLED —— **保持不变**（含 CANCELLED 属 Phase A/E 提案）。
+- backlog RW 状态不变（不标 SOLVED）；v0.3 CLOSED；v0.4 NOT STARTED；PROJECT_STATE 不变。
+- 实施归口：§6A 内容在实现时归入 Phase E（§15），recovery finalizer 建议独立拆分（E-core）。
+
+### 6A.19 验收对照表（FIX-001 acceptance → 小节）
+
+| Acceptance | 位置 |
+|---|---|
+| 1. 唯一 terminal finalizer | §6A.1 |
+| 2. Launcher 不直接裁决终态 | §6A.1 |
+| 3. 终态不被晚事件覆盖 | §6A.2 |
+| 4. wait thread 不只看 exit code | §6A.5 |
+| 5. last_run 跟随 Core | §6A.4/§6A.5 |
+| 6. launch_id 协议完整 | §6A.6 |
+| 7. control artifact schema | §6A.7 |
+| 8. PID creation time 校验 | §6A.8 |
+| 9. command line 校验 | §6A.8 |
+| 10. stale lease 规则 | §6A.10 |
+| 11. restart ownership recovery | §6A.9 |
+| 12. ownership 不确定拒绝 force kill | §6A.8/§6A.9 |
+| 13. Soft Cancel 语义 | §6A.11 |
+| 14. Force Cancel 语义 | §6A.11 |
+| 15. recovery finalizer 属于 Core | §6A.12 |
+| 16. race 闭合 | §6A.13 |
+| 17. duplicate cancel 闭合 | §6A.14 |
+| 18. cancel.request 非 terminal truth | §6A.15 |
+| 19. Core Intrusion Risk = MEDIUM | §6A.16 |
+| 20. heartbeat 非阻塞机制 | §6A.17 |
+| 21. 无 runtime 实现 | §6A.18 |
 
 ---
 
@@ -535,6 +847,7 @@ Bridge Health:
 
 - 提案：listener 循环内每收到一条消息（或每 N 秒）更新 `last_heartbeat` 时间戳；Tray 轮询时若 `now - last_heartbeat > 阈值` 且 3 为真 → 判定"循环活着但无消息"→ 仍算正常（热键本就低频）；该值主要用于诊断日志。
 - 本任务**不实现** heartbeat（TASK 要求 19 明确排除）。
+- **约束（FIX-001 补充）**：未来 heartbeat **不能依赖阻塞 `GetMessageW` 的自然周期 tick**（消息循环可长期阻塞，tick 不更新 → heartbeat 恒旧）；必须使用 timer（`SetTimer` / tkinter `after`）或 worker thread 或 non-blocking heartbeat mechanism（§6A.17）。仍属设计约束，不实现。
 
 ---
 
@@ -776,7 +1089,7 @@ task.json / route.json / boundary.json / `<agent>_prompt.md` / `<agent>_result.m
 - `started_at`：首次 `RUNNING` 时写入后不再变更。
 - `stage` / `stage_started_at` / `agent`：runner 每个阶段边界原子更新（与现有 update_status 同一原子写路径）。
 - `last_activity_at`：阶段边界更新 + Agent 执行期间由 runner 周期性 touch（如每 60s，轻量；仅当 last_activity_at 更新时重写 task.json——注意写入频率，建议 ≥30s 间隔，避免磁盘抖动）。
-- `pid`：runner 启动时自写（`os.getpid()`），Launcher 强终止前读取校验。
+- `pid`：runner 启动时自写（`os.getpid()`），Launcher 强终止前读取校验；与 §6A.6 的 `launch_id` 协议配合——**ownership 判定以 control.json 为准**（§6A.7），task.json.pid 是冗余字段。
 - `cancel_requested`：与 cancel.request 文件一致；UI 优先读文件（单一事实源），task.json 字段作冗余。
 - Validation 失败仍无 artifact（现状 exit 2）：设计为 Bridge/Launcher 在 FAILED_TO_START 路径旁记录"validation failed"事件到 last_run.json（增量，不动 runner）。
 
@@ -795,7 +1108,7 @@ task.json / route.json / boundary.json / `<agent>_prompt.md` / `<agent>_result.m
 | 类别 | 动作 |
 |---|---|
 | 观察（只读） | 读 task.json / route.json / boundary.json / prompt / result / REPORT / last_run.json / config.json；计算 elapsed / last activity / 估算进度 / stuck 提示；检查 listener 健康（§8） |
-| 操作（经 Bridge 代理） | 触发热键等价流程（读剪贴板→确认→落盘→launch）；写 cancel.request；调用 launcher 强终止（PID+token 校验）；更新 config（project 切换 / recent_projects）；打开日志目录 / REPORT；重启 / 退出 Bridge 进程 |
+| 操作（经 Bridge 代理） | 触发热键等价流程（读剪贴板→确认→落盘→launch）；写 cancel.request；调用 launcher 强终止（**§6A.8 ownership verification 通过后**）；更新 config（project 切换 / recent_projects）；打开日志目录 / REPORT；重启 / 退出 Bridge 进程 |
 | 展示 | 中文文案、阶段条、进度条、按钮状态机 |
 
 ### 14.2 Core 必须做什么（不变更职责）
@@ -804,7 +1117,7 @@ task.json / route.json / boundary.json / `<agent>_prompt.md` / `<agent>_result.m
 |---|---|
 | Runner | Validation / Boundary / Router 调用 / Agent 链 / 聚合 / REPORT / lifecycle 写入；新增：cancel 检查点与 CANCELLED 收敛（§6） |
 | Lifecycle | task.json 状态机（新增 CANCELLED 合法值 + §13.3 字段写入，属 Phase A/E 增量） |
-| Launcher | 启动 run.py 子进程、单任务保护、收尾判定（新增：pid 持久化、强终止与补写终态） |
+| Launcher | 启动 run.py 子进程、单任务保护、收尾判定（新增：launch_id / control.json 持久化、强终止 + 调用 Core recovery finalizer §6A.12） |
 | 协议 | TASK / REPORT 格式不变；产物契约不变 |
 
 ### 14.3 两者之间的最小接口
@@ -818,14 +1131,14 @@ task.json / route.json / boundary.json / `<agent>_prompt.md` / `<agent>_result.m
    - 写：<output_dir>/cancel.request；~/.aaf-bridge/config.json
 2. 进程契约（唯一执行通道）:
    - 启动：subprocess.run(run.py <task> --workspace <ws> --output <dir>)
-   - 终止：taskkill /T /F /PID <runner_pid>（强终止，PID+token 校验）
+   - 终止：taskkill /T /F /PID <runner_pid>（强终止，§6A.8 ownership verification 全部通过后）
    - 完成通知：launcher 等待线程 → 事件队列 → UI 弹窗（现有机制）
 ```
 
 ### 14.4 防侵入规则（未来实现时强制）
 
 1. Desktop Shell 代码**不得 import** `ai_agent_framework.router` / `runner` / `adapters` / `task_lifecycle` 并调用其内部函数来"替 Core 做事"；唯一允许的 Core 依赖 = 只读工具函数（如 `task_archive.find_report_path`、`git_status`）与配置模块。
-2. 状态显示**只读产物**；任何"写状态"动作必须经由：runner（正常收敛）/ launcher（强终止补写）/ config 模块（项目切换）三个既有归属者之一。
+2. 状态显示**只读产物**；任何"写状态"动作必须经由：runner（正常收敛）/ **Core recovery finalizer**（强杀恢复终态，§6A.12）/ config 模块（项目切换）三个归属者之一；Launcher 不得直接写终态（§6A.1）。
 3. 新增状态字段的**唯一写者**是 runner / lifecycle / launcher；UI 永远不直接写 task.json / run.json。
 4. Desktop Shell 不实现 Router 判定、不实现阶段逻辑、不实现 agent 调用；遇到需要这些能力的需求 → 回到 Core 加接口（如 `--watch-cancel` 参数），而不是在 Shell 侧复制。
 
@@ -873,11 +1186,11 @@ task.json / route.json / boundary.json / `<agent>_prompt.md` / `<agent>_result.m
 
 ### Phase E — Safe Cancel Lifecycle
 
-- **Goal**：§6 完整落地：cancel.request 契约、runner 检查点、CANCELLED 终态、Launcher pid+token 强终止与补写、UI 按钮状态机、race 规则。
-- **Files likely affected**：`ai_agent_framework/task_lifecycle.py`（CANCELLED）、`ai_agent_framework/runner.py`（`--watch-cancel <path>` 参数 + 检查点）、`bridge/launcher.py`（pid 持久化、token、taskkill、补写终态）、`bridge/status_window.py` + `bridge/tray.py`（按钮/状态机）、`tests/test_runner.py`、`tests/test_bridge_launcher.py`。
+- **Goal**：§6 + §6A 完整落地：cancel.request 契约、runner 检查点、CANCELLED 终态、Launcher 强终止（launch_id / control.json / §6A.8 ownership verification）+ Core recovery finalizer（§6A.12）、UI 按钮状态机、race 规则。
+- **Files likely affected**：`ai_agent_framework/task_lifecycle.py`（CANCELLED）、`ai_agent_framework/runner.py`（`--watch-cancel <path>` 参数 + 检查点 + control.json 写回）、`ai_agent_framework/finalize_cancelled.py`（新：Core recovery finalizer CLI，§6A.12）、`bridge/launcher.py`（launch_id、control.json、§6A.8 ownership verification、taskkill）、`bridge/status_window.py` + `bridge/tray.py`（按钮/状态机）、`tests/test_runner.py`、`tests/test_bridge_launcher.py`、`tests/test_finalize_cancelled.py`（新）。
 - **Dependencies**：A（字段）、B（宿主）；与 C/D 解耦（Core 部分可独立先行）。
 - **Risk**：**高**（进程终止安全、race condition、误杀防护）——本 Phase 必须经过 Codex 专项 audit 与真实任务演练。
-- **Acceptance**：单测覆盖检查点/终态/重复点击/race（§6.9 场景 1-3）；真实任务 Cancel 后 task.json= CANCELLED、REPORT 生成、产物保留、独立会话存活；强终止 PID+token 校验拒绝错误目标。
+- **Acceptance**：单测覆盖检查点/终态/重复点击/race（§6.9 场景 1-3）；真实任务 Cancel 后 task.json= CANCELLED、REPORT 生成、产物保留、独立会话存活；强终止 §6A.8 ownership verification 拒绝错误目标；finalizer 幂等。
 - **可单独发布 / 测试**：是（Core 侧先于 UI 发布，可用 CLI 演练）。
 
 ### Phase F — Project Switching / Duplicate UX
@@ -905,7 +1218,7 @@ task.json / route.json / boundary.json / `<agent>_prompt.md` / `<agent>_result.m
 | status window | LOW | 纯 tkinter 只读展示 |
 | progress bar | LOW | 静态权重 + 状态映射；逻辑简单，约束在文案 |
 | last activity | MEDIUM | 多源 mtime 聚合 + 阈值调参；依赖 Phase A 字段才可靠 |
-| Cancel lifecycle | **HIGH** | 进程树终止、race、误杀防护、补写终态；唯一高风险项 |
+| Cancel lifecycle | **HIGH** | 进程树终止、race、误杀防护、Core recovery finalizer；唯一高风险项 |
 | project switching | LOW | 确认窗 + config 更新 |
 | packaging | MEDIUM | PyInstaller 单目录；**第一版可不做**（pythonw + 快捷方式先行） |
 | autostart | LOW | 启动文件夹快捷方式；注册表 Run 为备选 |
@@ -916,7 +1229,7 @@ task.json / route.json / boundary.json / `<agent>_prompt.md` / `<agent>_result.m
 |---|---|---|
 | Feasibility | **HIGH** | 全部能力基于现有 tkinter/ctypes/subprocess 与产物契约；无新框架 |
 | Engineering Complexity | **MEDIUM** | 总体轻量；唯一 HIGH 项是 Cancel（集中在 Phase E） |
-| Core Intrusion Risk | **LOW** | Core 改动仅：可选字段写入（A）、检查点 + CANCELLED 终态（E）、pid/token（E）；主流程不动 |
+| Core Intrusion Risk | **MEDIUM** | 从 LOW 上调（FIX-001，§6A.16）：新增终态 CANCELLED、跨进程取消、process ownership（launch_id / creation time / command line 校验）、recovery finalization（finalize_cancelled_task）、multi-artifact 一致性提交（§6A.4）。Core 改动面仍限于 Phase A/E，但状态机与终态语义侵入深度高于原评估 |
 | Maintenance Cost | **LOW** | 单进程、文件契约、无前端/无服务/无 IPC 框架 |
 
 ---
@@ -975,15 +1288,33 @@ task.json / route.json / boundary.json / `<agent>_prompt.md` / `<agent>_result.m
 9. 是否避免大型 Dashboard（§2.2 排除 C/D；§17 Not-in-v1）。
 10. 是否没有提前实现（§18.1：零功能代码改动）。
 
+#### FIX-001 追加检查清单（WorkBuddy）
+
+1. terminal state 是否只有一个 authoritative finalizer（§6A.1）？
+2. wait thread 是否不会再把 force cancel 误判为 FAILED（§6A.5）？
+3. last_run 是否跟随 Core outcome（§6A.4/§6A.5）？
+4. PID recycle 是否处理（§6A.8 creation time 校验 / §6A.10 stale）？
+5. Launcher restart 是否安全（§6A.9）？
+6. stale lease 是否定义（§6A.10）？
+7. force cancel 是否默认拒绝不确定 ownership（§6A.8/§6A.9）？
+8. cancel.request 是否不是 terminal truth（§6A.15）？
+9. race / duplicate cancel 是否闭合（§6A.13/§6A.14）？
+10. 是否无代码实现（§6A.18）？
+
 ### Codex（架构 / scope 审计重点）
 
 1. UI / Core 边界（§14：文件契约 + 进程契约；Shell 不 import Core 执行逻辑）。
-2. Cancel lifecycle 安全性（§6：进程树边界、PID+token 校验、强终止补写终态、race 规则、重复点击状态机）。
+2. Cancel lifecycle 安全性（§6 + §6A：进程树边界、ownership verification §6A.8、Core recovery finalizer §6A.12、race 规则、重复点击状态机）。
 3. process ownership（§6.4/§7：runner 子进程归属 Bridge；孤儿 runner 场景 §6.9；Launcher 是唯一进程控制者）。
 4. stale / duplicate state（§6.9 场景 3、§13.2：cancel.request 残留、task.json 冗余字段一致性、TASK_ALREADY_EXISTS 不删除）。
 5. state source consistency（§13：task.json 单一权威 + cancel.request 文件镜像；写入者归属 §14.4）。
 6. scope creep（§2.2/§17：明确排除项清单；防漂移边界）。
 7. implementation sequencing（§15：A→B→C→D→E→F，E 风险最高需专项 audit）。
+
+#### FIX-001 专项审查清单（Codex）
+
+重点只审：terminal state consistency（§6A.2/§6A.4）、ownership verification（§6A.6–§6A.8）、force kill safety（§6A.8/§6A.10）、race conditions（§6A.2/§6A.13）、stale / restart recovery（§6A.9–§6A.12）、Core vs Launcher authority（§6A.1）。
+目标：若两个 blocking findings（终态双写竞态、PID/token 协议未闭合）均已关闭 → **APPROVE**。
 
 ---
 

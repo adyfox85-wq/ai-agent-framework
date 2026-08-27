@@ -55,7 +55,8 @@ def make_launcher(monkeypatch, tmp_path):
             captured["output"] = output
             done.set()
 
-        l = FrameworkLauncher(run_py=tmp_path / "run.py", on_finished=on_finished)
+        l = FrameworkLauncher(run_py=tmp_path / "run.py", on_finished=on_finished,
+                              registry_dir=tmp_path / "aaf-bridge" / "launches")
         l._fake_calls = calls
         l._fake_kwargs = kwarg_calls
         l._done = done
@@ -235,7 +236,8 @@ def test_wait_exception_releases_running_state(make_launcher, tmp_path, monkeypa
         captured["last"] = last
         done.set()
 
-    l = FrameworkLauncher(run_py=tmp_path / "run.py", on_finished=on_finished)
+    l = FrameworkLauncher(run_py=tmp_path / "run.py", on_finished=on_finished,
+                          registry_dir=tmp_path / "aaf-bridge" / "launches")
     out = tmp_path / "out"
     out.mkdir(parents=True)
     assert l.launch(tmp_path / "T.md", str(tmp_path), out, "AAF-T1") is True

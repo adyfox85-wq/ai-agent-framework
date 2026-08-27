@@ -12,9 +12,12 @@
     acquire task state.lock
     → 锁内 reload canonical task.json
     → validate canonical exists + canonical task_id == 请求 task_id
-    → terminal arbitration（已有终态 → 保留 canonical，不要求 evidence，不改写）
-    → 无终态：锁内验证 recovery evidence（soft: 当前锁内仍有效的 matching
-      cancel.request；force: 005-A 明确拒绝）→ 才允许新提交 CANCELLED
+    → terminal arbitration（已有终态 → 保留 canonical，不要求 evidence，不改写；
+      force request loses——TASK-005-B req 22）
+    → 无终态：锁内验证 recovery evidence
+      （soft: 当前锁内仍有效的 matching cancel.request；
+       force: TASK-005-B 结构化 force evidence 三方交叉验证
+       ——evidence ↔ control.json ↔ Bridge launch registry）
     → 经 _finalize_terminal_locked（同一锁临界区内共享 helper，不重复 acquire 锁）
       提交 CANCELLED + 持久化 terminal_generation
     → release lock
@@ -31,9 +34,15 @@ FIX-001 安全契约（Codex blocking finding 2 闭合）：
   task_id == canonical task_id + requested_at 合法（缺失/损坏/mismatch/wrong type →
   fail safely，不得修改 canonical task.json）
 - 旧 ``evidence: str | None`` 参数只是 **diagnostic note**，不是 authority evidence
-- force recovery（cancel_mode=force 或 reason=FORCE_CANCELLED）：005-A 不伪造证据验证，
-  返回 ``ForceRecoveryNotAvailable``（FORCE_RECOVERY_NOT_AVAILABLE），直至 TASK-005-B
-  提供正式 ownership evidence validator
+
+TASK-005-B（AAF-v0.4-TASK-005-B，Process Ownership / Force Cancel / Recovery）：
+- force recovery 不再一律拒绝（005-A 的 FORCE_RECOVERY_NOT_AVAILABLE 由
+  ``ForceEvidenceError`` 取代）：force（cancel_mode=force 或
+  reason=FORCE_CANCELLED）必须提供 ``force_evidence`` 结构化证据路径，
+  并在 state.lock 临界区内完成三方交叉验证（evidence ↔ control.json ↔
+  Bridge launch registry：launch_id / task_id / runner 身份 / ownership verified /
+  非 superseded / 时间序 sane）——伪造 / 过期 / 不匹配 → 安全失败，零 canonical 写
+- 已有终态 + force 请求 → 保留现有 terminal（arbitration 优先，force loses）
 
 FIX-002 单一临界区契约（Codex 遗留 recovery TOCTOU blocker 闭合）：
 - canonical identity 验证、terminal arbitration、recovery evidence 验证与
@@ -54,9 +63,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from . import cancel as cancel_mod
+from . import control as control_mod
+from . import force_evidence as force_evidence_mod
 from .lock_utils import LockTimeout, task_state_lock
 from .reconcile import reconcile_terminal_artifacts
 from .task_lifecycle import (
@@ -74,7 +86,7 @@ EXIT_OK = 0
 EXIT_USAGE = 2
 EXIT_LOCK_TIMEOUT = 4
 EXIT_RECONCILE_ERROR = 5
-EXIT_RECOVERY_ERROR = 6  # identity / evidence / force-boundary 校验失败（安全失败）
+EXIT_RECOVERY_ERROR = 6  # identity / evidence / force-evidence 校验失败（安全失败）
 
 
 class RecoveryError(RuntimeError):
@@ -85,8 +97,13 @@ class RecoveryEvidenceError(RecoveryError):
     """Soft recovery evidence（cancel.request）缺失 / 损坏 / 不匹配 / 非法。"""
 
 
-class ForceRecoveryNotAvailable(RecoveryError):
-    """force recovery 未开放（TASK-005-B 交付）；005-A 不伪造 force validation。"""
+class ForceEvidenceError(RecoveryEvidenceError):
+    """Force recovery evidence（结构化 force evidence）缺失 / 损坏 / 不匹配 / 非法。
+
+    TASK-005-B：force recovery 不再“一律拒绝”（005-A 的 FORCE_RECOVERY_NOT_AVAILABLE
+    由本类取代）——只有在真实 launch_id / registry / control / verified ownership /
+    termination evidence 全部满足时才允许 finalizer 提交 CANCELLED（req 20-22）。
+    """
 
 
 def _validate_recovery_identity(output_dir: Path, task_id: str) -> dict:
@@ -125,15 +142,16 @@ def _validate_recovery_evidence(
     task_id: str,
     cancel_mode: str,
     reason: str,
+    force_evidence: Path | str | None = None,
 ) -> None:
-    """在“准备新提交 CANCELLED”前验证 recovery evidence（FIX-001 req 8/10/12）。
+    """在“准备新提交 CANCELLED”前验证 recovery evidence（FIX-001 req 8/10/12 + TASK-005-B）。
 
     FIX-002：**必须由调用方在 state.lock 临界区内调用**——evidence 验证与
     CANCELLED commit 同属一个临界区（req 5：evidence 必须 lock-stable；验证后、
     commit 前不 release lock；不得在锁外验证后再提交）。
 
-    - force → ForceRecoveryNotAvailable（005-A 无 force evidence validator；
-      调用方在进入临界区前已拦截，此处为纵深防御）
+    - force → ``_validate_force_evidence``（TASK-005-B：结构化 force evidence
+      三方交叉验证；伪造 / 过期 / 不匹配 → ForceEvidenceError，零 canonical 写）
     - soft → 必须存在合法 matching cancel.request（parseable / soft_cancel /
       task_id 匹配 / requested_at 合法）；任何缺失/损坏/mismatch → RecoveryEvidenceError，
       不写 canonical
@@ -141,11 +159,13 @@ def _validate_recovery_evidence(
       不在此充当 authority evidence
     """
     if cancel_mode == CANCEL_MODE_FORCE or reason == TERMINAL_REASON_FORCE_CANCELLED:
-        raise ForceRecoveryNotAvailable(
-            "FORCE_RECOVERY_NOT_AVAILABLE: force recovery 需要 TASK-005-B 的 "
-            "ownership/termination evidence validator；005-A-FIX-001 不得凭任意 "
-            "字符串 evidence 提交 CANCELLED（不伪造 force validation）"
-        )
+        if force_evidence is None:
+            raise ForceEvidenceError(
+                "FORCE_EVIDENCE_REQUIRED: force recovery 必须提供结构化 force evidence "
+                "路径（TASK-005-B req 21）；不得凭任意字符串 evidence 提交 CANCELLED"
+            )
+        _validate_force_evidence(output_dir, task_id, Path(force_evidence))
+        return
     # 复用 cancel.py 的 parser / validator（req 13：不得复制第二套不一致 JSON parser）
     req, warning = cancel_mod.inspect_cancel_request(output_dir)
     if warning:
@@ -173,6 +193,124 @@ def _validate_recovery_evidence(
         )
 
 
+def _validate_force_evidence(output_dir: Path, task_id: str, force_evidence_path: Path) -> None:
+    """**锁内**验证 force recovery evidence（TASK-005-B req 20/22）。
+
+    交叉验证 evidence ↔ control.json ↔ Bridge launch registry（三方，§6B.13/§6B.14）：
+
+    1. evidence 可 parse + schema_version/kind/verification_result 结构合法（结构层）
+    2. evidence.task_id == 请求 task_id（canonical identity 已由调用方锁内验证）
+    3. control.json 存在且 lock-stable：
+       - control.launch_id == evidence.launch_id
+       - control.task_id == task_id
+       - control.superseded_by 为空（非 stale / 非 superseded）
+       - control.force_terminate_requested == true（Launcher 已确认 force 请求）
+       - control.runner_pid == evidence.runner_pid
+    4. registry（evidence.registry_path proof 字段；Bridge 私有根只读）：
+       - registry.launch_id == evidence.launch_id
+       - registry.task_id == task_id
+       - registry.state != SUPERSEDED（stale evidence 拒绝）
+       - registry.runner_pid == evidence.runner_pid
+    5. evidence.control_path proof == 本任务 output_dir 的 control.json
+    6. ownership 已验证：verification_result ∈ {VERIFIED, REAUTHENTICATED} 且
+       verification_checks 全部 True（结构层已校验；此处不再重复读）
+    7. 时间戳 sane：termination_observed_at >= termination_requested_at
+       （伪造“先观察到后请求”的时间序拒绝）
+
+    任一失败 → ForceEvidenceError（fail safely：零 canonical 写、零 generation bump）。
+    """
+    ev, err = force_evidence_mod.read_force_evidence(force_evidence_path)
+    if err:
+        raise ForceEvidenceError(f"FORCE_EVIDENCE_ERROR: {err}")
+
+    if ev.get("task_id") != task_id:
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: evidence task_id {ev.get('task_id')!r} "
+            f"!= 请求 task_id {task_id!r}（mismatch → fail safely）"
+        )
+
+    # control.json 交叉（锁内读取——与 commit 同一临界区，lock-stable）
+    control, cerr = control_mod.read_control(output_dir)
+    if control is None:
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: 缺少可验证的 control.json（{control_mod.control_path(output_dir)}）"
+            f"{'——' + cerr if cerr else ''}——force recovery 必须存在 task-owned control artifact"
+        )
+    if control.get("launch_id") != ev.get("launch_id"):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: evidence launch_id {ev.get('launch_id')!r} "
+            f"!= control.launch_id {control.get('launch_id')!r}（launch 不匹配）"
+        )
+    if control.get("task_id") != task_id:
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: control.task_id {control.get('task_id')!r} "
+            f"!= 请求 task_id {task_id!r}"
+        )
+    if control.get("superseded_by"):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: control 已 superseded（superseded_by="
+            f"{control.get('superseded_by')!r}）——stale evidence 拒绝"
+        )
+    if control.get("force_terminate_requested") is not True:
+        raise ForceEvidenceError(
+            "FORCE_EVIDENCE_ERROR: control.force_terminate_requested != true——"
+            "Launcher 未确认该 launch 的 force termination 请求，evidence 与 control 不匹配"
+        )
+    if control.get("runner_pid") != ev.get("runner_pid"):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: evidence runner_pid {ev.get('runner_pid')!r} "
+            f"!= control.runner_pid {control.get('runner_pid')!r}"
+        )
+    if control.get("runner_creation_time") and ev.get("runner_creation_time") and \
+            control.get("runner_creation_time") != ev.get("runner_creation_time"):
+        raise ForceEvidenceError(
+            "FORCE_EVIDENCE_ERROR: evidence runner_creation_time 与 control 不一致"
+        )
+    # control_path proof 字段必须指向本任务 control.json
+    if str(Path(str(ev.get("control_path") or "")).resolve()) != str(control_mod.control_path(output_dir).resolve()):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: evidence.control_path {ev.get('control_path')!r} "
+            f"!= 本任务 control.json（{control_mod.control_path(output_dir)}）"
+        )
+
+    # Bridge launch registry 交叉（evidence.registry_path proof；Core 只读 Bridge 私有根）
+    reg_path = Path(str(ev.get("registry_path") or ""))
+    try:
+        reg = json.loads(reg_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ForceEvidenceError(f"FORCE_EVIDENCE_ERROR: registry 不可读（{reg_path}）: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ForceEvidenceError(f"FORCE_EVIDENCE_ERROR: registry 损坏（{reg_path}）: {exc}") from exc
+    if not isinstance(reg, dict):
+        raise ForceEvidenceError(f"FORCE_EVIDENCE_ERROR: registry 结构非法（{reg_path}）")
+    if reg.get("launch_id") != ev.get("launch_id"):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: registry.launch_id {reg.get('launch_id')!r} "
+            f"!= evidence.launch_id {ev.get('launch_id')!r}"
+        )
+    if reg.get("task_id") != task_id:
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: registry.task_id {reg.get('task_id')!r} "
+            f"!= 请求 task_id {task_id!r}"
+        )
+    if reg.get("state") == "SUPERSEDED":
+        raise ForceEvidenceError("FORCE_EVIDENCE_ERROR: registry 已 SUPERSEDED——stale evidence 拒绝")
+    if reg.get("runner_pid") != ev.get("runner_pid"):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: registry.runner_pid {reg.get('runner_pid')!r} "
+            f"!= evidence.runner_pid {ev.get('runner_pid')!r}"
+        )
+
+    # 时间序 sane：observed >= requested（伪造时间序拒绝）
+    try:
+        req_ts = datetime.fromisoformat(ev["termination_requested_at"])
+        obs_ts = datetime.fromisoformat(ev["termination_observed_at"])
+    except (KeyError, TypeError, ValueError):
+        raise ForceEvidenceError("FORCE_EVIDENCE_ERROR: termination 时间戳不可解析") from None
+    if obs_ts < req_ts:
+        raise ForceEvidenceError("FORCE_EVIDENCE_ERROR: termination_observed_at 早于 requested_at——时间序非法")
+
+
 def finalize_cancelled_task(
     task_id: str,
     workspace: Path | str,
@@ -181,22 +319,24 @@ def finalize_cancelled_task(
     reason: str = TERMINAL_REASON_CANCEL_REQUESTED,
     cancel_mode: str = CANCEL_MODE_SOFT,
     evidence: str | None = None,
+    force_evidence: Path | str | None = None,
     lock_timeout: float = 10.0,
 ):
-    """Core recovery finalizer（§6B.21 + FIX-001 + FIX-002）。返回 canonical result dict。
+    """Core recovery finalizer（§6B.21 + FIX-001 + FIX-002 + TASK-005-B force path）。
+    返回 canonical result dict。
 
     FIX-002 单一不可分割临界区（关闭 Codex 遗留 recovery TOCTOU blocker）::
 
-        0. force boundary（纯参数校验，不依赖文件状态；005-A 明确拒绝 force recovery）
         1. acquire state.lock
         2. 锁内 reload canonical task.json
         3. 锁内 identity 校验（canonical exists + task_id == 请求 task_id；req 4：
            canonical identity 必须 lock-stable，mismatch → RecoveryError，零写零 bump）
         4. 锁内 terminal arbitration：已有终态 → 保留 canonical（req 9：无 evidence
-           也 preserve；reconciliation 仍执行），不改写
+           也 preserve；reconciliation 仍执行；force request loses——req 22），不改写
         5. 无终态 → 锁内验证 recovery evidence（req 5/8：soft 必须存在当前锁内仍
-           有效的 matching cancel.request；force 已在 0 拒绝）——验证与 commit 之间
-           **不 release lock**（req 1/4）
+           有效的 matching cancel.request；force 必须提供结构化 force evidence 路径
+           并通过 ``_validate_force_evidence`` 三方交叉验证——TASK-005-B req 20/21/22）
+           ——验证与 commit 之间 **不 release lock**（req 1/4）
         6. 经 ``_finalize_terminal_locked`` 提交 CANCELLED（req 2/3：共享锁内 helper，
            调用方已持锁，不重复 acquire；generation 恰一次 bump；无第三 terminal writer）
         7. release state.lock
@@ -205,33 +345,30 @@ def finalize_cancelled_task(
         9. 幂等：重复调用返回相同 canonical result
 
     - ``evidence``：仅 diagnostic note（req 12），不是 authority evidence；
-      authority evidence = 锁内验证的 cancel.request（soft）/ TASK-005-B ownership
-      + termination evidence（force，未开放）
+      authority evidence = 锁内验证的 cancel.request（soft）/ TASK-005-B 结构化
+      force evidence 路径（force，req 20-22）
     """
     output_dir = Path(output_dir)
     final_reason = reason
     if evidence:
         final_reason = f"{reason}: {evidence}"  # diagnostic note only（req 12）
-
-    # 0. force boundary（req 13：005-A force recovery = NOT AVAILABLE；纯参数校验，
-    #    不 acquire 锁、不依赖文件状态、不产生任何写）
-    if cancel_mode == CANCEL_MODE_FORCE or reason == TERMINAL_REASON_FORCE_CANCELLED:
-        raise ForceRecoveryNotAvailable(
-            "FORCE_RECOVERY_NOT_AVAILABLE: force recovery 需要 TASK-005-B 的 "
-            "ownership/termination evidence validator；005-A-FIX-002 不得凭任意 "
-            "字符串 evidence 提交 CANCELLED（不伪造 force validation）"
-        )
+    is_force = cancel_mode == CANCEL_MODE_FORCE or reason == TERMINAL_REASON_FORCE_CANCELLED
 
     # 1–7. 单一 state.lock 临界区：identity + arbitration + evidence + commit
+    #       （force evidence 必需性检查在锁内 arbitration **之后**——已有终态时
+    #         force request 无条件 loses，不因缺 evidence 报错，req 22）
     with task_state_lock(output_dir, task_id, timeout=lock_timeout):
         # 2/3. 锁内 reload + identity 校验（req 4：canonical identity lock-stable）
         prev = _validate_recovery_identity(output_dir, task_id)
 
-        # 4. terminal arbitration（req 9）：已有终态 → 保留 canonical、不要求
-        #    evidence、不改写（统一经共享 helper 幂等返回 preserved canonical）
+        # 4. terminal arbitration（req 9/22）：已有终态 → 保留 canonical、不要求
+        #    evidence、不改写（force request loses；统一经共享 helper 幂等返回）
         if not is_terminal_status(prev.get("status", "")):
-            # 5. 锁内 evidence 验证（req 5/8：当前锁内仍有效的 matching cancel.request）
-            _validate_recovery_evidence(output_dir, task_id, cancel_mode, reason)
+            # 5. 锁内 evidence 验证（req 5/8/20-22：soft = 当前锁内仍有效的 matching
+            #    cancel.request；force = 三方交叉验证的结构化 force evidence）
+            _validate_recovery_evidence(
+                output_dir, task_id, cancel_mode, reason, force_evidence=force_evidence
+            )
 
         # 6. 同一临界区内提交（req 1/2/3：共享锁内 helper；调用方已持锁，不再次
         #    acquire；canonical identity / evidence 与 commit 之间零 gap）
@@ -243,7 +380,7 @@ def finalize_cancelled_task(
             task_path=Path(output_dir) / "TASK.md",  # TASK.md 不一定存在；仅作 task.json 记录
             workspace=workspace,
             report_path=str(Path(output_dir) / "REPORT.md"),
-            reason="CANCEL_REQUESTED",
+            reason=TERMINAL_REASON_FORCE_CANCELLED if is_force else "CANCEL_REQUESTED",
             terminal_reason=final_reason,
             cancel_mode=cancel_mode,
         )
@@ -260,8 +397,10 @@ def main(argv: list[str] | None = None) -> int:
         description=(
             "Core-owned recovery finalizer（CANCELLED 收敛 + reconciliation；幂等）。\n"
             "安全契约（FIX-001）：soft cancel 必须先存在合法 matching cancel.request\n"
-            "（<output_dir>/cancel.request: request=soft_cancel、task_id 匹配、"
-            "requested_at 合法）；force recovery 未开放（TASK-005-B）。"
+            "（<output_dir>/cancel.request: request=soft_cancel、task_id 匹配、\n"
+            "requested_at 合法）。\n"
+            "TASK-005-B：force cancel 必须先存在通过 ownership 三方验证的结构化\n"
+            "force evidence（--force-evidence <path>；伪造/过期/不匹配 → 安全失败）。"
         ),
     )
     p.add_argument("--task-id", required=True, help="Task ID（必须与 canonical task.json.task_id 一致）")
@@ -271,19 +410,26 @@ def main(argv: list[str] | None = None) -> int:
         "--reason",
         default=TERMINAL_REASON_CANCEL_REQUESTED,
         choices=(TERMINAL_REASON_CANCEL_REQUESTED, TERMINAL_REASON_FORCE_CANCELLED),
-        help="terminal_reason（FORCE_CANCELLED 属 TASK-005-B；005-A 明确拒绝，不伪造）",
+        help="terminal_reason（FORCE_CANCELLED 要求 --force-evidence，TASK-005-B）",
     )
     p.add_argument(
         "--cancel-mode",
         default=CANCEL_MODE_SOFT,
         choices=(CANCEL_MODE_SOFT, CANCEL_MODE_FORCE),
-        help="cancel_mode（force 属 TASK-005-B；本 TASK 仅 soft，且要求合法 cancel.request）",
+        help="cancel_mode（force 要求 --force-evidence）",
     )
     p.add_argument(
         "--evidence",
         default=None,
         help="diagnostic note only（NOT authority evidence；authority evidence = "
-        "validated cancel.request / future TASK-005-B force evidence）",
+        "validated cancel.request / TASK-005-B force evidence）",
+    )
+    p.add_argument(
+        "--force-evidence",
+        default=None,
+        help="结构化 force evidence JSON 路径（force recovery 必需；TASK-005-B req 21）。"
+        "finalizer 在 state.lock 临界区内交叉验证 evidence ↔ control.json ↔ "
+        "Bridge launch registry",
     )
     p.add_argument("--lock-timeout", type=float, default=10.0, help="state.lock acquire timeout (s)")
     args = p.parse_args(argv)
@@ -296,13 +442,14 @@ def main(argv: list[str] | None = None) -> int:
             reason=args.reason,
             cancel_mode=args.cancel_mode,
             evidence=args.evidence,
+            force_evidence=args.force_evidence,
             lock_timeout=args.lock_timeout,
         )
     except LockTimeout as exc:
         print(f"FINALIZATION_BUSY: {exc}", file=sys.stderr)
         return EXIT_LOCK_TIMEOUT
     except RecoveryError as exc:
-        # identity / evidence / force-boundary 校验失败：安全失败，CLI 与 library 同规则
+        # identity / evidence / force-evidence 校验失败：安全失败，CLI 与 library 同规则
         print(f"RECOVERY_FINALIZE_ERROR: {exc}", file=sys.stderr)
         return EXIT_RECOVERY_ERROR
     except Exception as exc:  # noqa: BLE001 —— CLI 边界：明确错误码

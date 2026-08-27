@@ -237,3 +237,44 @@ def reconcile_terminal_artifacts(
         report_path=str(report_path) if report_path.exists() else None,
         actions=actions,
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """正式 Core entry point（TASK-005-B：Launcher wait thread 经子进程调用，
+    §6B.7-C / §14.4 防侵入规则——Desktop Shell 不直接 import Core 执行逻辑）。"""
+    import argparse
+    import sys
+
+    p = argparse.ArgumentParser(
+        prog="python -m ai_agent_framework.reconcile",
+        description=(
+            "Core-owned reconciliation（幂等补齐 run.json / REPORT.md 跟随 canonical "
+            "terminal；不改 canonical；无终态不臆造）。"
+        ),
+    )
+    p.add_argument("--task-id", required=True, help="Task ID")
+    p.add_argument("--workspace", required=True, help="Business project workspace")
+    p.add_argument("--output", required=True, help="Task output dir (.aaf/<Task-ID>)")
+    p.add_argument("--lock-timeout", type=float, default=10.0, help="state.lock acquire timeout (s)")
+    args = p.parse_args(argv)
+
+    try:
+        result = reconcile_terminal_artifacts(
+            args.task_id, args.workspace, args.output, lock_timeout=args.lock_timeout
+        )
+    except LockTimeout as exc:
+        print(f"RECONCILE_BUSY: {exc}", file=sys.stderr)
+        return 4
+    except ReconciliationError as exc:
+        print(f"RECONCILE_ERROR: {exc}", file=sys.stderr)
+        return 5
+    except Exception as exc:  # noqa: BLE001 —— CLI 边界：明确错误码
+        print(f"RECONCILE_ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 5
+
+    print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

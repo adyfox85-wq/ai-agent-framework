@@ -152,12 +152,27 @@ pythonw 无控制台，启动异常（如导入错误）会：
   （JSON：`{"task_id": "<Task-ID>", "requested_at": "<ISO 时间>", "request": "soft_cancel"}`）。
   Runner 在安全检查点读到后收敛；`cancel.request` 只是**外部请求，不是终态裁决**
   （最终状态由 Core 根据 `task.json` 裁决）。
-- **状态窗口显示 CANCELLED 时**：查看 `task.json` 的 `terminal_reason`（CANCEL_REQUESTED）与
-  `cancel_mode`（soft）；确认已完成阶段的 `<agent>_result.md` 仍保留。
+- **状态窗口显示 CANCELLED 时**：查看 `task.json` 的 `terminal_reason`（CANCEL_REQUESTED /
+  FORCE_CANCELLED）与 `cancel_mode`（soft / force）；确认已完成阶段的 `<agent>_result.md`
+  仍保留。
 - **late cancel 不会覆盖已完成任务**：任务已 SUCCESS / WAITING / FAILED 后再写
   cancel.request 会被吸收 / 忽略，终态不变。
-- **尚未交付**：状态窗口的「停止当前任务」按钮（TASK-005-C）与 Force Cancel
-  （进程树强终止，TASK-005-B）未实现——不要期望 UI 有停止按钮。
+- **Force Cancel（TASK-005-B 已交付，程序化能力）**：`FrameworkLauncher.request_force_cancel(task_id)`
+  是唯一 force 入口——必须先有 soft cancel.request 且超过 `force_cancel_soft_timeout`
+  （默认 30s）→ ownership verification（registry + control + live process 三方，11 项）
+  全部通过 → 才执行 `taskkill /T /F`（只对 verified runner 进程树）→ 结构化 force
+  evidence → Core recovery finalizer 收敛 CANCELLED。
+  - **ownership 未验证（PID / creation time / 命令行 / workspace / task_id 任一不匹配、
+    任务已终态、registry 已 SUPERSEDED / EXITED、进程已消失）→ REFUSE**，绝不降级成
+    "看起来像"就杀（`refusal_reason` 以 `OWNERSHIP_` 开头）。
+  - **soft timeout 不会自动 taskkill**（设计 §6A.11：必须显式 force 请求；005-C 才交付
+    最终用户按钮 / 确认窗）——不要期望当前 UI 有停止按钮。
+  - **诊断**：`~/.aaf-bridge/launches/<launch_id>.json`（registry）+ `.aaf/<Task-ID>/control.json`
+    （task-owned）+ `<launch_id>.force-evidence.json`（force 证据）三份记录可交叉核对。
+  - 已知环境坑：本机 hermes venv 的 `python.exe` 是 uv 重定向壳——Popen 直连子与真实
+    解释器是父子关系（pid 不同）。Launcher 会采纳 runner 自报身份（registry 跟随
+    control），命令行校验按 runner entry + 参数（不含解释器 argv[0]）比较；进程树
+    终止先杀 runner 树再补杀壳。**不要**手工用 registry 里的旧 pid 猜测。
 - **恢复 finalizer（崩溃/强杀后收敛）**：`python -m ai_agent_framework.finalize_cancelled
   --task-id <ID> --workspace <WS> --output <OUT>` 把无终态的 RUNNING 任务收敛为 CANCELLED。
   - soft 收敛是**单一锁原子协议**：canonical identity 验证、terminal arbitration、
@@ -165,6 +180,10 @@ pythonw 无控制台，启动异常（如导入错误）会：
     （验证与提交之间不释放锁）；要求合法 matching `cancel.request`（`request=soft_cancel`、
     `task_id` 一致、`requested_at` 合法），缺失 / 损坏 / 不匹配 → exit code 6 安全失败，
     不修改 canonical。
+  - **force 收敛（TASK-005-B）**：加 `--cancel-mode force --force-evidence <path>`——
+    evidence 必须是 Launcher 在 verified termination 后生成的结构化 JSON；finalizer 在
+    锁内三方交叉验证（evidence ↔ control.json ↔ registry），伪造 / 过期 / 不匹配 →
+    exit code 6 安全失败（零 canonical 写）。已有终态 + force → 保留现有 terminal。
   - **request 写入也要锁（FIX-003）**：`cancel.request` 不是 terminal truth，
     **但** Framework-owned 的写入 / 替换 / consume（`write_cancel_request` /
     `consume_cancel_request`）与 recovery 共享同一 per-task `state.lock`——否则
@@ -174,6 +193,11 @@ pythonw 无控制台，启动异常（如导入错误）会：
     但 recovery 锁内重新验证会拒绝损坏 / mismatch 的 evidence。
   - 已有终态（SUCCESS / WAITING / FAILED / CANCELLED）无 evidence 也会被保留，
     派生产物（run.json / REPORT.md）仍会补齐。
+- **任务已结束但 run.json / REPORT.md 缺失（partial commit）**：Launcher wait thread
+  检测到 canonical terminal 存在而派生产物不完整时，会自动调用 Core reconciliation
+  （`python -m ai_agent_framework.reconcile --task-id <ID> --workspace <WS> --output <OUT>`，
+  幂等）补齐跟随 canonical；`last_run.json` 始终镜像 canonical terminal，不按 exit code
+  推导终态。
 - 已取消任务无法直接重跑：`TASK.md` 仍在 `tasks/active/`（证据保留），重复提交会触发
   TASK_ALREADY_EXISTS；需要重跑时按常规流程处理（移除/重命名旧 active TASK 或走 resume 语义）。
 

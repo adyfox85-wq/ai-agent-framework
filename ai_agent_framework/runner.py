@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
 
 from .adapters import build_prompt, run_agent
 from . import cancel as cancel_mod
+from . import control as control_mod
+from . import proc_identity
 from . import project_boundary
 from . import task_lifecycle
 from .report import build_report, verdict_blocked
@@ -25,6 +28,90 @@ from .task_validation import TaskValidationError, parse_task_fields, validate_ta
 # soft cancel 的 runner 退出码：0（REPORT 已生成；Launcher 不得仅凭 exit code 把
 # CANCELLED 判 FAILED——§6A.5 exit code 只是 evidence，不是判定）
 CANCEL_EXIT_CODE = 0
+
+
+class HandshakeError(RuntimeError):
+    """Runner 启动 ownership handshake（§6A.6-4 / TASK-005-B req 8）失败。
+
+    触发条件：control.json 存在但与本次 launch 上下文不匹配（launch_id / task_id /
+    workspace 不一致、control 已 superseded、force_terminate_requested 已置位、
+    或调用方未提供 expected launch_id 却存在 control）。
+    处理：**fail safely**——不接管、不继续 agent execution、不获得 force ownership、
+    不修改其他 task、不写任何 canonical。
+    """
+
+
+def runner_handshake(
+    output_dir: Path,
+    task_id: str,
+    workspace: Path,
+    expected_launch_id: str | None = None,
+) -> dict | None:
+    """Runner 启动 ownership handshake（§6A.6-4 / §6B.12-G；TASK-005-B req 5/8）。
+
+    - 无 control.json → 返回 None（direct/legacy 调用路径：无 ownership 契约，
+      照常执行但不获得 force ownership）
+    - control.json 存在：
+      * expected_launch_id 未提供 → 拒绝（无法证明本次运行属于已登记 launch；
+        旧 launch 不得重新取得管理权——§6A.6“旧 launch 不得继续拥有 force kill 权”）
+      * expected_launch_id != control.launch_id → 拒绝（launch mismatch）
+      * control.task_id != task_id → 拒绝
+      * control.workspace（规范化）!= workspace（规范化）→ 拒绝
+      * control.superseded_by 非空 → 拒绝（superseded control 不再有效）
+      * control.force_terminate_requested → 拒绝（该 launch 已被请求强制终止，
+        迟到的 runner 不得继续执行）
+      * 全部通过 → 原子回写 runner_pid / runner_creation_time（state.lock 内，
+        与 Launcher 写入串行化），返回 control dict（= 取得 ownership）
+    - 任何拒绝 → 抛 HandshakeError（调用方中止执行；零 canonical 写）
+    """
+    control, err = control_mod.read_control(output_dir)
+    if control is None:
+        if err:
+            # 文件存在但损坏：不接管（fail closed；无 control = 无 ownership 契约）
+            raise HandshakeError(f"HANDSHAKE_ERROR: control.json 损坏——{err}")
+        return None
+    if expected_launch_id is None:
+        raise HandshakeError(
+            "HANDSHAKE_ERROR: control.json 已存在但调用方未提供 expected launch_id——"
+            "无法证明本次运行属于已登记 launch，拒绝接管（旧 launch 不得重新获得 "
+            "force ownership；请通过 Launcher 发起新 launch，旧 launch 会被 supersede）"
+        )
+    if control.get("launch_id") != expected_launch_id:
+        raise HandshakeError(
+            f"HANDSHAKE_ERROR: launch_id mismatch——control.launch_id "
+            f"{control.get('launch_id')!r} != expected {expected_launch_id!r}"
+        )
+    if control.get("task_id") != task_id:
+        raise HandshakeError(
+            f"HANDSHAKE_ERROR: task_id mismatch——control.task_id "
+            f"{control.get('task_id')!r} != 本次任务 {task_id!r}"
+        )
+    if proc_identity.canonicalize_path(str(control.get("workspace") or "")) != proc_identity.canonicalize_path(str(workspace)):
+        raise HandshakeError(
+            f"HANDSHAKE_ERROR: workspace mismatch——control.workspace "
+            f"{control.get('workspace')!r} != 本次 workspace {str(workspace)!r}"
+        )
+    if control.get("superseded_by"):
+        raise HandshakeError(
+            f"HANDSHAKE_ERROR: control 已被 supersede（superseded_by="
+            f"{control.get('superseded_by')!r}）——旧 launch 不得重新接管"
+        )
+    if control.get("force_terminate_requested") is True:
+        raise HandshakeError(
+            "HANDSHAKE_ERROR: control.force_terminate_requested 已置位——"
+            "该 launch 已被请求强制终止，迟到的 runner 不得继续 agent execution"
+        )
+    # 写回 runner 身份（§6A.6-4；state.lock 内原子；与 Launcher 的 RUNNING 回填串行化）
+    ct = proc_identity.process_creation_time(os.getpid())
+    control_mod.update_control(
+        output_dir,
+        {
+            "runner_pid": os.getpid(),
+            "runner_creation_time": ct.isoformat(timespec="milliseconds") if ct is not None else None,
+        },
+        task_id=task_id,
+    )
+    return control
 
 
 def _result_is_valid(body: str) -> bool:
@@ -92,7 +179,8 @@ def _check_cancel(output_dir: Path, task_id: str, task_file: Path, workspace: Pa
     return True
 
 
-def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = False, resume_from: Path | None = None) -> Path:
+def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = False, resume_from: Path | None = None,
+        launch_id: str | None = None) -> Path:
     task = task_file.read_text(encoding='utf-8')
 
     # 正式 Task Validation（权威执行边界）：失败即中止，不进 Router / 不启动 Agent / 不进 Lifecycle
@@ -101,6 +189,12 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
         raise TaskValidationError(result)
 
     task_id = parse_task_fields(task)["Task ID"]
+
+    # --- Runner ownership handshake（TASK-005-B req 5/8；§6A.6-4） ---
+    # control.json 缺失 → 跳过（direct/legacy 无 ownership 契约）；存在但不匹配 →
+    # HandshakeError（fail safely：不接管、不执行、零 canonical 写）。
+    # 位置：Validation 之后、任何 lifecycle 写入之前。
+    runner_handshake(output_dir, task_id, workspace, expected_launch_id=launch_id)
 
     try:
         # --- Lifecycle 状态编排（确定性，不调用 LLM） ---
@@ -304,9 +398,15 @@ def main() -> None:
     p.add_argument('--output', type=Path, default=Path('.aaf-run'), help='Run output directory')
     p.add_argument('--dry-run', action='store_true', help='Route only; do not invoke agents')
     p.add_argument('--resume-from', type=Path, default=None, help='Resume an existing run output dir (reuses completed agent results)')
+    p.add_argument('--launch-id', default=None, help='Expected launch_id for ownership handshake (TASK-005-B; Launcher 传入)')
     args = p.parse_args()
     try:
-        report = run(args.task, args.workspace, args.output, args.dry_run, args.resume_from)
+        report = run(args.task, args.workspace, args.output, args.dry_run, args.resume_from,
+                     launch_id=args.launch_id)
+    except HandshakeError as exc:
+        # ownership handshake 失败：fail safely（不接管 / 不执行 / 零 canonical 写）
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(3)
     except TaskValidationError as exc:
         # 校验失败：清晰错误 + 非零退出；不进入 Router / 不启动 Agent
         print(str(exc))

@@ -1,8 +1,8 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE — 005-A-FIX-001 已关闭两个安全阻断，005-A-FIX-002 已实现 recovery 单一锁原子协议，005-A-FIX-003 已实现 cancel.request mutation 锁序列化 + forced-order 握手修正，待 WorkBuddy/Codex 复核）；Phase F NOT STARTED）**\
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-005-A-FIX-003 — Phase E cancel.request mutation 锁序列化 fix sync）\
+> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE；E-Ownership / Force Cancel COMPLETE — 005-A + FIX-001/002/003 与 005-B 已交付，005-B 待 WorkBuddy/Codex 复核；剩余 TASK-005-C Status Window Cancel UX + Real Windows Closure 未交付 → Phase E 不得标 COMPLETE）；Phase F NOT STARTED）**\
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-005-B — Phase E Process Ownership / Force Cancel / Recovery Integration 交付同步）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -27,9 +27,15 @@ Phase: A — Runtime State Foundation: COMPLETE
             arbitration+commit 同一临界区，关闭遗留 recovery TOCTOU）；
             005-A-FIX-003 已实现 cancel.request mutation 锁序列化（write/consume 与
             terminal writers 共享同一 state.lock，关闭 evidence replacement race）+
-            forced-order 握手修正（T_LOCKED 在 acquire 后发出）；均待独立复核；
-            剩余 TASK-005-B Process Ownership / Force Cancel / Recovery Integration
-            与 TASK-005-C Cancel UI + Windows E2E Closure 未交付 → Phase E 不得标 COMPLETE）
+            forced-order 握手修正；
+            E-Ownership / Force Cancel COMPLETE — AAF-v0.4-TASK-005-B（Process Ownership
+            / Force Cancel / Recovery Integration：launch_id / control.json / Bridge
+            persistent launch registry / ownership verification（11 项三方校验）/
+            force cancel API（verified process-tree termination + 结构化 force evidence）/
+            Core recovery finalizer force path / restart reauthentication / canonical-aware
+            wait thread + reconciliation；待 WorkBuddy/Codex 独立复核）；
+            剩余 TASK-005-C Status Window Cancel UX + Real Windows E2E Closure 未交付
+            → Phase E 不得标 COMPLETE）
 Direction: Desktop Shell MVP / Runtime Observability & Control
 
 v0.4 主线（Phase 顺序）：
@@ -400,6 +406,82 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
     `.aaf/`、`scripts/start_bridge_hidden.vbs`、`AAF_TASK004_PROCESS_CHECK.txt` 未动。
   - WorkBuddy / Codex 独立复核由本任务 route 阶段执行（verdict 见任务 REPORT.md；
     **未经两者通过不记录 FIX-003 CLOSED**）
+- **TASK-005-B（AAF-v0.4-TASK-005-B，2026-08-27）：Phase E Process Ownership / Force
+  Cancel / Recovery Integration（E-Ownership / Force Cancel COMPLETE）**：
+  - `ai_agent_framework/proc_identity.py`（新）：Windows 进程身份只读工具——真实进程
+    创建时间（psutil 优先 / ctypes GetProcessTimes fallback）、live 命令行、Windows
+    命令行 tokenize（CommandLineToArgvW）与规范化比较（argv[0] 解释器不参与比较——
+    uv venv 重定向壳场景；身份绑定 runner entry + 参数，绝不只是"包含 run.py"）、
+    creation time 防 PID recycle 比较
+  - `ai_agent_framework/control.py`（新）：control.json task-owned artifact（§6A.7）——
+    launch_id / task_id / workspace / launcher_pid / launcher_instance_id / started_at /
+    expected_runner_entry / expected_command_line / runner_pid / runner_creation_time /
+    cancel_requested / force_terminate_requested / superseded_by；原子写 + schema 验证；
+    Framework-owned 变更经 per-task state.lock 串行化（owner protocol）；**不是
+    terminal truth**
+  - `ai_agent_framework/force_evidence.py`（新）：结构化 force termination evidence
+    （§6B.17 / req 21）——task_id / launch_id / runner_pid / runner_creation_time /
+    workspace / termination_requested_at+observed_at / exit status / verification
+    result+checks / registry+control proof 路径；原子写；recovery input 非 terminal truth
+  - `ai_agent_framework/runner.py`：Runner ownership handshake（§6A.6-4）——启动后校验
+    control.json（launch_id / task_id / workspace / 非 superseded / 非 force-requested）
+    并原子回写 runner_pid / runner_creation_time；mismatch → `HandshakeError`（fail
+    safely：不接管 / 不执行 / 零 canonical 写）；`--launch-id` CLI 参数；无 control.json
+    的 direct/legacy 调用路径保持兼容（无 ownership 契约）
+  - `ai_agent_framework/finalize_cancelled.py`：**force recovery 正式开放**（005-A 的
+    FORCE_RECOVERY_NOT_AVAILABLE 由 `ForceEvidenceError` 取代）——force 模式必须提供
+    `--force-evidence`；state.lock 临界区内三方交叉验证（evidence ↔ control.json ↔
+    Bridge launch registry：launch_id / task_id / runner 身份 / ownership verified /
+    control.force_terminate_requested / 非 superseded / 时间序 sane）→ 才提交 CANCELLED
+    （cancel_mode=force）；已有终态 + force → arbitration 优先 preserve（req 22）；
+    伪造 / 过期 / 不匹配 → exit 6 安全失败，零 canonical 写
+  - `ai_agent_framework/reconcile.py`：正式 CLI 入口 `python -m ai_agent_framework.reconcile`
+    （Launcher wait thread 经子进程调用，§14.4 防侵入；幂等）
+  - `bridge/launch_registry.py`（新）：Bridge persistent launch registry（§6B.11）——
+    `~/.aaf-bridge/launches/<launch_id>.json`，PREPARED → RUNNING → EXITED（↘
+    SUPERSEDED）；expected_command_line / launcher_instance_id / runner 身份 /
+    launch_root_pid（uv venv 壳 kill 根）；同 task 新 launch supersede 旧 launch
+  - `bridge/ownership.py`（新）：`verify_runner_ownership` 11 项校验（§6A.8/§6B.13：
+    registry/control launch_id+task_id 交叉、workspace、目标 task_id、runner PID、
+    live 存在、creation time、命令行、registry state、control 非 superseded、任务无
+    终态）→ VERIFIED / STALE / UNCERTAIN；`reauthenticate_launch`（restart 三方验证；
+    launcher_instance_id 不要求相同）
+  - `bridge/launcher.py`：launch order（§6B.12：launch_id → registry PREPARED →
+    control → Popen → PID/creation time → RUNNING → runner handshake 回写）；启动失败
+    → registry EXITED + control start_failed（无 phantom RUNNING）；`force_eligible`
+    （soft cancel 超时状态，不自动 kill）；`request_force_cancel`（ownership VERIFIED /
+    REAUTHENTICATED + eligibility → taskkill /T /F（verified runner 树 + 壳）→ 结构化
+    evidence → registry force 字段 + EXITED → Core finalizer CLI → canonical CANCELLED）；
+    `recover_launches`（restart reauthentication + 本协议 launch 的 verified-force
+    残留自动 finalizer 收敛——不扫描旧历史任务，RW-020 保持 OPEN）；canonical-aware
+    wait thread（§6B.22：有 canonical 跟随 + 派生物不完整 → reconcile CLI；无 canonical
+    + force 已请求 → 轮询/调 finalizer；否则 legacy 分类；registry EXITED；last_run
+    镜像 canonical，非零 force 退出不判 FAILED）；launcher_instance_id 只作诊断
+  - `bridge/config.py`：`force_cancel_soft_timeout`（默认 30s，§6A.11 阈值配置化）
+  - `bridge/main.py`：Bridge 启动时 `recover_launches()`（只读恢复 force capability，
+    不自动 force kill / 不改写 canonical；失败不阻断启动）
+  - 测试：**509 passed**（461 基线 + 48 净新增，零下降；tests/test_phase_e_ownership.py
+    40 项覆盖 req 32 A–AN 矩阵（launch_id 唯一 / control schema / registry PREPARED+
+    RUNNING / handshake 正反 / PID+creation time+命令行存储 / ownership 11 项全矩阵 /
+    restart reauth 正反 / launcher_instance_id 不要求相同 / normal-vs-force race
+    真实跨进程 state.lock 仲裁 / fake+stale evidence 拒绝 / wait thread 跟随 canonical /
+    last_run 镜像 / 无 UI Stop 按钮泄漏 / 无 project switching 泄漏 / Core 无进程控制
+    静态断言）；tests/test_phase_e_force_e2e.py 7 项真实 Windows E2E（dummy runner
+    进程树：verified force 全链路含 child 同树死亡 + sibling 存活 + evidence + CANCELLED
+    全套产物 + last_run + registry EXITED；wrong ownership force refused 目标存活；
+    restart reauth 正反；soft timeout 不自动 kill → 显式 force；reconciliation 恢复
+    缺 run.json / REPORT；连跑 3 轮零 flake）；dummy runner 只杀测试自己的进程树，
+    不碰真实 Hermes / WorkBuddy / Codex 会话（req 33）
+  - 环境实证：本机 hermes venv `python.exe` 是 uv 重定向壳——Popen 直连子 ≠ 真实
+    解释器（父子关系，pid 不同）；Launcher 采纳 runner 自报身份（registry 跟随
+    control），命令行校验排除解释器 argv[0]，进程树终止先杀 runner 树再补杀壳；
+    已写入 TROUBLESHOOTING 已知环境坑
+  - 边界遵守：无 Status Window Stop UX / 无确认窗 / 无 project switching（Phase F）/
+    无 RW-020 自动 orphan 修复（保持 OPEN）/ 无 RW-021/022/023/024 顺手修复；
+    `.aaf/`、`scripts/start_bridge_hidden.vbs`、`AAF_TASK004_PROCESS_CHECK.txt` 未动；
+    无 git clean
+  - WorkBuddy / Codex 独立复核由本任务 route 阶段执行（verdict 见任务 REPORT.md；
+    **未经两者通过不记录 E-Ownership / Force Cancel CLOSED**）
 - 真实软取消 E2E：Scenario 1（Hermes 前 cancel → Hermes 不启动 → CANCELLED 全套产物）PASS；
   Scenario 2（Hermes 完成 → WorkBuddy 前 cancel → Hermes result 保留 → CANCELLED）PASS；
   真实 run.py CLI 子进程 + finalize_cancelled CLI 幂等 PASS
@@ -407,8 +489,9 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
   RW-020/021/022/023/024 未自动修复、历史 TASK-004 task.json 未修改、用户本地 helper
   （scripts/start_bridge_hidden.vbs / AAF_TASK004_PROCESS_CHECK.txt / .aaf/）未动
 - WorkBuddy / Codex：由本任务 route 阶段执行（verdict 见任务 REPORT.md）
-- Next Phase Step（唯一）：**AAF-v0.4-TASK-005-B — Phase E Process Ownership + Force Cancel +
-  Recovery Integration**（不得自动执行；005-B + 005-C 全部完成后 Phase E 才可标 COMPLETE）
+- Next Phase Step（唯一）：**AAF-v0.4-TASK-005-C — Phase E Status Window Cancel UX +
+  Real Windows E2E Closure**（不得自动执行；005-B + 005-C 全部完成后 Phase E 才可标
+  COMPLETE）
 
 ### 0.2 v0.3 历史状态（CLOSED，保留）
 

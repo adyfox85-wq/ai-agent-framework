@@ -15,6 +15,10 @@ DEFAULT_CONFIG = {
     "hotkey": "ctrl+alt+a",
     "current_project": "",
     "current_workspace": "",
+    # Phase E / TASK-005-B（§6A.11 阈值配置化，默认 30s）：soft cancel 发出后等待
+    # 多久才进入 force-eligible 状态。达到 timeout ≠ 自动 force kill——仍需显式
+    # force 请求 + ownership verification（req 15/17）。
+    "force_cancel_soft_timeout": 30,
 }
 
 # Win32 修饰键

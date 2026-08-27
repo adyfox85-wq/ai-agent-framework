@@ -191,6 +191,14 @@ class Bridge:
         self.events: queue.Queue = queue.Queue()
         self.busy = False  # 防抖：一次只处理一个热键
         self.launcher = FrameworkLauncher(on_finished=self._on_framework_finished)
+        # Phase E / TASK-005-B（§6B.13）：restart 后重新认证既有 launch 的 ownership
+        # （registry + control + live process 三方验证；只读恢复 force capability，
+        # 不自动 force kill、不改写 canonical；launcher_instance_id 不要求相同）。
+        # 失败 / 无 launch：无副作用，不影响 Bridge 正常启动。
+        try:
+            self.launcher.recover_launches()
+        except Exception:  # noqa: BLE001 —— restart 恢复失败不阻断 Bridge 启动
+            pass
         self.tray: tray_mod.TrayIcon | None = None
         # Phase C：正式状态窗口控制器（单例：复用/聚焦；关闭不退出 Bridge）
         self.status_ctl = StatusWindowController(

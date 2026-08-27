@@ -722,7 +722,8 @@ def test_launcher_follows_cancelled_canonical_not_exit_code(tmp_path, monkeypatc
         captured["last"] = last
         done.set()
 
-    l = launcher_mod.FrameworkLauncher(run_py=tmp_path / "run.py", on_finished=on_finished)
+    l = launcher_mod.FrameworkLauncher(run_py=tmp_path / "run.py", on_finished=on_finished,
+                                       registry_dir=tmp_path / "aaf-bridge" / "launches")
     assert l.launch(task_file, str(tmp_path), out, _task_id()) is True
     assert done.wait(5.0)
     assert l.last.result == launcher_mod.RESULT_CANCELLED  # 不因 exit 1 被判 FAILED
@@ -739,6 +740,7 @@ def test_launcher_legacy_path_unchanged_without_canonical(tmp_path, monkeypatch)
                         lambda *a, **k: _FakeProc(exit_code=2, stdout_text=""))
     done = threading.Event()
     l = launcher_mod.FrameworkLauncher(run_py=tmp_path / "run.py",
+                                       registry_dir=tmp_path / "aaf-bridge" / "launches",
                                        on_finished=lambda last, output: done.set())
     assert l.launch(tmp_path / "T.md", str(tmp_path), out, "AAF-X") is True
     assert done.wait(5.0)

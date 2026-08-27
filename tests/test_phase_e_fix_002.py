@@ -287,12 +287,12 @@ import ai_agent_framework.finalize_cancelled as fc_mod
 out, tid, ws = sys.argv[1], sys.argv[2], sys.argv[3]
 orig = fc_mod._validate_recovery_evidence
 
-def adversarial(output_dir, task_id, cancel_mode, reason):
+def adversarial(output_dir, task_id, cancel_mode, reason, force_evidence=None):
     # 锁内验证当前证据（有效）→ 验证后、commit 前：rogue 外部 writer 替换 cancel.request。
     # FIX-003：官方 write_cancel_request 现在遵守同一 state.lock（锁内调用 = nested
     # reentry）且拒绝 mismatched task_id —— 对抗写入只能来自不守协议的 rogue 写者，
     # 故用 raw write 模拟（协议不拦截手工文件操作）。
-    orig(output_dir, task_id, cancel_mode, reason)
+    orig(output_dir, task_id, cancel_mode, reason, force_evidence=force_evidence)
     Path(output_dir, "cancel.request").write_text(
         json.dumps({"task_id": "OTHER-TASK", "requested_at": "2026-08-27T10:00:00",
                     "request": "soft_cancel"}), encoding="utf-8")
@@ -387,9 +387,9 @@ import ai_agent_framework.finalize_cancelled as fc_mod
 out, tid, ws = sys.argv[1], sys.argv[2], sys.argv[3]
 orig = fc_mod._validate_recovery_evidence
 
-def adversarial(output_dir, task_id, cancel_mode, reason):
+def adversarial(output_dir, task_id, cancel_mode, reason, force_evidence=None):
     # identity 验证完成后、commit 前：B 试图改写 canonical identity（raw write）
-    orig(output_dir, task_id, cancel_mode, reason)
+    orig(output_dir, task_id, cancel_mode, reason, force_evidence=force_evidence)
     Path(output_dir, "task.json").write_text(
         json.dumps({"task_id": "B-ROGUE", "status": "RUNNING"}), encoding="utf-8")
 
@@ -437,9 +437,9 @@ def test_f_failed_validation_generation_unchanged(tmp_path):
         fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out)
     assert "terminal_generation" not in read_status(out)
 
-    # 失败路径 3：force
+    # 失败路径 3：force（无结构化 evidence → FORCE_EVIDENCE_REQUIRED；TASK-005-B）
     out2 = _recovery_ready(tmp_path)
-    with pytest.raises(fc_mod.ForceRecoveryNotAvailable):
+    with pytest.raises(fc_mod.ForceEvidenceError, match="FORCE_EVIDENCE_REQUIRED"):
         fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out2, cancel_mode="force")
     assert "terminal_generation" not in read_status(out2)
 
@@ -447,8 +447,9 @@ def test_f_failed_validation_generation_unchanged(tmp_path):
     out3 = _recovery_ready(tmp_path)
     c = fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out3)
     assert c.terminal_generation == 1
-    with pytest.raises(fc_mod.ForceRecoveryNotAvailable):
-        fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out3, cancel_mode="force")
+    # 已有终态 + force（无 evidence）→ arbitration 优先：preserve，不报错（req 22）
+    c2 = fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out3, cancel_mode="force")
+    assert c2.preserved is True and c2.terminal_generation == 1
     assert read_status(out3)["terminal_generation"] == 1
 
 
@@ -516,27 +517,27 @@ def test_i_existing_terminal_reconciliation_repairs_missing_derived(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# J. force recovery 仍拒绝（req 13 / req 19-J）
+# J. force recovery evidence gate（TASK-005-B req 20/22：无证据拒绝 / 有终态 preserve）
 # ---------------------------------------------------------------------------
 
 
-def test_j_force_recovery_refused_any_state(tmp_path):
-    # non-terminal + 合法 evidence + force → 拒绝
+def test_j_force_recovery_evidence_gate_any_state(tmp_path):
+    # non-terminal + force（无证据）→ 拒绝（FORCE_EVIDENCE_REQUIRED）
     out = _recovery_ready(tmp_path)
-    with pytest.raises(fc_mod.ForceRecoveryNotAvailable, match="FORCE_RECOVERY_NOT_AVAILABLE"):
+    with pytest.raises(fc_mod.ForceEvidenceError, match="FORCE_EVIDENCE_REQUIRED"):
         fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out, cancel_mode="force")
-    with pytest.raises(fc_mod.ForceRecoveryNotAvailable, match="FORCE_RECOVERY_NOT_AVAILABLE"):
+    with pytest.raises(fc_mod.ForceEvidenceError, match="FORCE_EVIDENCE_REQUIRED"):
         fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out, reason="FORCE_CANCELLED")
     data = read_status(out)
     assert data["status"] == "RUNNING" and "terminal_generation" not in data
     assert not (out / "run.json").exists()
 
-    # 已有终态 + force → 同样明确拒绝（不部分处理 force 请求）
+    # 已有终态 + force（无证据）→ arbitration 优先：preserve（force request loses，req 22）
     out2 = tmp_path / "out2"
     finalize_terminal(out2, task_id=_task_id(), status="CANCELLED", task_path="T.md",
                       workspace=str(tmp_path))
-    with pytest.raises(fc_mod.ForceRecoveryNotAvailable, match="FORCE_RECOVERY_NOT_AVAILABLE"):
-        fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out2, cancel_mode="force")
+    c = fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out2, cancel_mode="force")
+    assert c.status == "CANCELLED" and c.preserved is True
     assert read_status(out2)["status"] == "CANCELLED"
 
 

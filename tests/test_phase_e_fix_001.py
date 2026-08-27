@@ -515,20 +515,35 @@ def test_p_existing_cancelled_preserved_idempotently(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Q. force recovery refused（req 10 / req 19-Q）
+# Q. force recovery evidence gate（TASK-005-B req 20/21：无结构化 evidence 拒绝）
 # ---------------------------------------------------------------------------
 
 
-def test_q_force_recovery_refused_in_005a(tmp_path):
+def test_q_force_recovery_requires_structured_evidence(tmp_path):
+    """TASK-005-B：force recovery 不再一律拒绝（005-A 语义被扩展）——但无结构化
+    force evidence 路径时仍拒绝（FORCE_EVIDENCE_REQUIRED），零 canonical 写。"""
     out = _recovery_ready(tmp_path)
-    with pytest.raises(fc_mod.ForceRecoveryNotAvailable, match="FORCE_RECOVERY_NOT_AVAILABLE"):
+    with pytest.raises(fc_mod.ForceEvidenceError, match="FORCE_EVIDENCE_REQUIRED"):
         fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out, cancel_mode="force")
-    with pytest.raises(fc_mod.ForceRecoveryNotAvailable, match="FORCE_RECOVERY_NOT_AVAILABLE"):
+    with pytest.raises(fc_mod.ForceEvidenceError, match="FORCE_EVIDENCE_REQUIRED"):
         fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out, reason="FORCE_CANCELLED")
     data = read_status(out)
     assert data["status"] == "RUNNING"  # 未提交任何终态
     assert "terminal_generation" not in data
     assert not (out / "run.json").exists()
+
+
+def test_force_recovery_terminal_preserved_without_evidence(tmp_path):
+    """req 22：已有终态 + force 请求（无 evidence）→ preserve existing terminal，
+    force request loses（不因缺 evidence 报错——arbitration 优先）。"""
+    from ai_agent_framework.task_lifecycle import finalize_terminal
+
+    out = tmp_path / "out"
+    finalize_terminal(out, task_id=_task_id(), status="CANCELLED", task_path="T.md",
+                      workspace=str(tmp_path), report_path=str(out / "REPORT.md"))
+    c = fc_mod.finalize_cancelled_task(_task_id(), str(tmp_path), out, cancel_mode="force")
+    assert c.status == "CANCELLED" and c.preserved is True
+    assert read_status(out)["status"] == "CANCELLED"
 
 
 def test_arbitrary_evidence_string_does_not_authorize(tmp_path):
@@ -569,11 +584,11 @@ def test_r_cli_cannot_cancel_without_valid_evidence(tmp_path):
     assert "RECOVERY_EVIDENCE_ERROR" in proc.stderr
     assert read_status(out)["status"] == "RUNNING"  # CLI 无 bypass：canonical 未被修改
 
-    # force CLI 同样拒绝（FORCE_RECOVERY_NOT_AVAILABLE）
+    # force CLI 同样拒绝（无 --force-evidence → FORCE_EVIDENCE_REQUIRED；TASK-005-B）
     proc_f = _run_cli("--task-id", _task_id(), "--workspace", str(tmp_path),
                       "--output", str(out), "--cancel-mode", "force")
     assert proc_f.returncode == fc_mod.EXIT_RECOVERY_ERROR
-    assert "FORCE_RECOVERY_NOT_AVAILABLE" in proc_f.stderr
+    assert "FORCE_EVIDENCE_REQUIRED" in proc_f.stderr
     assert read_status(out)["status"] == "RUNNING"
 
     # canonical task_id 不匹配 → 拒绝

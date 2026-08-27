@@ -187,13 +187,47 @@ v0.4 Phase E 已交付 **CANCELLED 终态 + cooperative soft cancel Core**（`AA
     （超时 / OS 错误）→ 明确错误（`LockTimeout` / `LockError`），不写、不 consume、
     不 fallback 成无锁写。读取（runner 检查点 / inspect）保持无锁（非权威读）；
     recovery 的权威验证始终在其锁内完成。
-  - **Force recovery 未开放**：`--cancel-mode force` / `--reason FORCE_CANCELLED` 在
-    TASK-005-B 交付前一律返回 `FORCE_RECOVERY_NOT_AVAILABLE`（不伪造 force evidence）。
+  - **Force recovery（TASK-005-B 已开放，带结构化证据门禁）**：`--cancel-mode force` /
+    `--reason FORCE_CANCELLED` 必须同时提供 `--force-evidence <path>`——Launcher 在
+    **verified process-tree termination** 后生成的结构化证据（`task_id / launch_id /
+    runner_pid / runner_creation_time / workspace / termination 时间戳与 exit status /
+    verification result / registry+control proof 路径`）。finalizer 在 `state.lock`
+    临界区内三方交叉验证（evidence ↔ `control.json` ↔ Bridge launch registry：
+    launch_id / task_id / runner 身份 / ownership verified / 非 superseded / 时间序
+    sane）——伪造 / 过期 / 不匹配 → 安全失败（exit code 6），零 canonical 写。
+    已有终态 + force 请求 → 保留现有 terminal（arbitration 优先，force request loses）。
   - `--evidence` 只是 **diagnostic note**，不是 authority evidence。
-- **尚未交付**（属于后续 TASK-005-B / 005-C，Phase E 未 COMPLETE）：
-  - 状态窗口「停止当前任务」按钮（005-C）
-  - Force Cancel（进程树强终止 + ownership verification）（005-B）
-  - 因此**不要**宣称"状态窗口已可停止任务"。
+- **Process Ownership Protocol（TASK-005-B）**：每次真实 launch 生成唯一 `launch_id`，
+  绑定 `task_id / workspace / output_dir`：
+  - **control.json**（`.aaf/<Task-ID>/control.json`，task-owned）：`launch_id / task_id /
+    workspace / launcher_pid / launcher_instance_id / started_at / expected_runner_entry /
+    expected_command_line / runner_pid / runner_creation_time / cancel_requested /
+    force_terminate_requested / superseded_by`——全部原子写 + schema 验证；**不是
+    terminal truth**。
+  - **Bridge launch registry**（`~/.aaf-bridge/launches/<launch_id>.json`，Bridge-owned
+    第二份独立记录）：状态机 `PREPARED → RUNNING → EXITED`（↘ `SUPERSEDED`）；同一
+    task 新 launch 会 supersede 旧 launch（旧 launch 立即失去 force-kill 权）。
+  - **Runner handshake**：runner 启动后校验 `control.json`（launch_id / task_id /
+    workspace 匹配）并原子回写 `runner_pid / runner_creation_time`（真实 Windows 进程
+    创建时间）；不匹配 → 拒绝接管、不执行、零写。
+  - **Ownership verification（11 项）**：force termination 前必须 registry ↔ control ↔
+    live process（PID + creation time + 规范化命令行）三方全部一致且任务无终态——
+    任一失败 → **REFUSE FORCE TERMINATION**（不降级成"看起来像"就杀）。
+  - **Restart reauthentication**：Bridge 重启后从 registry + control + live process
+    三方恢复管理权（`launcher_instance_id` 只作诊断，不作为恢复前提）。
+  - **Force Cancel API**：`FrameworkLauncher.request_force_cancel(task_id)` —— soft
+    cancel 超时（默认 30s，`force_cancel_soft_timeout` 可配）→ ownership VERIFIED /
+    REAUTHENTICATED → `taskkill /T /F`（只对 verified runner 进程树）→ 记录结构化
+    force evidence → 调 Core recovery finalizer → canonical `CANCELLED`。**严禁 soft
+    timeout 自动 taskkill**——必须显式 force 请求。005-C 才交付最终用户按钮 / 确认窗。
+  - **wait thread canonical-aware**：进程退出后跟随 canonical terminal；派生产物
+    （run.json / REPORT.md）不完整 → 调 Core reconciliation（`python -m
+    ai_agent_framework.reconcile`）恢复；last_run 永远镜像 canonical，不按 exit code
+    推导。
+- **尚未交付**（属于后续 TASK-005-C，Phase E 未 COMPLETE）：
+  - 状态窗口「停止当前任务」按钮 / 确认窗 / 正在取消 UX（005-C）
+  - 因此**不要**宣称"状态窗口已可停止任务"；Force Cancel 目前是 API / CLI 能力
+    （程序化 / 测试入口），不是最终用户按钮。
 
 > 当前状态窗口只读展示 CANCELLED（「已取消」）+ 进度定格；写入 `cancel.request` 的
 > 正式 UI 入口在 TASK-005-C 交付前，仅可通过 CLI / 测试 / 手动写文件使用。

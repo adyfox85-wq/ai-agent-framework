@@ -52,7 +52,7 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
 
     try:
         # --- Lifecycle 状态编排（确定性，不调用 LLM） ---
-        def _ls(status, *, report_path=None, reason=None):
+        def _ls(status, *, report_path=None, reason=None, stage=None, agent=None, phase_state="RUNNING"):
             task_lifecycle.update_status(
                 output_dir,
                 task_id=task_id,
@@ -61,6 +61,9 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 workspace=workspace,
                 report_path=report_path,
                 reason=reason,
+                stage=stage,
+                agent=agent,
+                phase_state=phase_state,
             )
 
         if resume_from is not None:
@@ -103,6 +106,8 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
             for agent in route.agents:
                 if agent in results:
                     continue  # resume：复用已完成结果，不重复执行
+                stage_name = agent.upper()
+                _ls('RUNNING', stage=stage_name, agent=agent, phase_state='RUNNING')
                 prompt = build_prompt(agent, task, results, workspace)
                 (output_dir / f'{agent}_prompt.md').write_text(prompt, encoding='utf-8')
                 try:
@@ -111,7 +116,9 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     result_text = f'FRAMEWORK_ERROR\n{type(exc).__name__}: {exc}'
                 results[agent] = result_text
                 (output_dir / f'{agent}_result.md').write_text(result_text, encoding='utf-8')
-                if not _result_is_valid(result_text):
+                valid = _result_is_valid(result_text)
+                _ls('RUNNING', stage=stage_name, agent=agent, phase_state=('SUCCESS' if valid else 'FAILED'))
+                if not valid:
                     break  # 执行链保护：必需节点无有效结果 → 停止后续节点
             status = _aggregate_status(route.agents, results)
             final_status = 'SUCCESS' if status == 'SUCCESS' else 'WAITING'
@@ -133,8 +140,18 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
             encoding='utf-8',
         )
 
-        # 终态（dry-run: CREATED + reason=DRY_RUN）；REPORT 生成后回填 report_path
-        _ls(final_status, report_path=report_path, reason=('DRY_RUN' if dry else None))
+        # REPORT 阶段完成 + 终态（dry-run: CREATED + reason=DRY_RUN；REPORT 生成后回填 report_path）
+        if not dry:
+            _ls('RUNNING', stage='REPORT', agent=None, phase_state='SUCCESS')
+            _ls(
+                final_status,
+                report_path=report_path,
+                stage='COMPLETED',
+                agent=None,
+                phase_state=('SUCCESS' if final_status == 'SUCCESS' else 'WAITING'),
+            )
+        else:
+            _ls(final_status, report_path=report_path, reason=('DRY_RUN' if dry else None))
         return report_path
     except TaskValidationError:
         raise  # Validation 失败：不进 Lifecycle（不生成虚假状态）

@@ -20,6 +20,12 @@ from pathlib import Path
 # 正式 Task Status（唯一合法集合；ARCHIVED 属于存储生命周期，不属于执行结果）
 VALID_STATUSES = ("CREATED", "RUNNING", "WAITING", "SUCCESS", "FAILED")
 
+# 正式 Stage（v0.4 Phase A Runtime State；CANCELLED 不属于 Phase A）
+VALID_STAGES = ("VALIDATION", "BOUNDARY", "HERMES", "WORKBUDDY", "CODEX", "REPORT", "COMPLETED")
+
+# 阶段状态（Phase A 支持集合）
+VALID_PHASE_STATES = ("PENDING", "RUNNING", "SUCCESS", "WAITING", "FAILED", "SKIPPED")
+
 _STATUS_REASON = "reason"  # internal，非正式状态
 
 
@@ -55,15 +61,25 @@ def update_status(
     workspace: Path | str,
     report_path: Path | str | None = None,
     reason: str | None = None,
+    stage: str | None = None,
+    agent: str | None = None,
+    phase_state: str = "RUNNING",
 ) -> Path:
     """写入/更新 task.json。
 
     - 原子写：临时文件 → os.replace（避免部分写入损坏 JSON）
     - 保留旧 report_path（新值为 None 时）
+    - v0.4 Phase A：可选维护 live runtime state：
+      started_at（首次 RUNNING）/ last_activity_at（每次更新）/
+      stage + stage_started_at（stage 首次进入或变化时）/ agent / phases
     - 写入失败抛 LifecycleError（调用方不得静默吞掉）
     """
     if status not in VALID_STATUSES:
         raise LifecycleError(f"非法 lifecycle status: {status!r}（允许: {', '.join(VALID_STATUSES)}）")
+    if stage is not None and stage not in VALID_STAGES:
+        raise LifecycleError(f"非法 stage: {stage!r}（允许: {', '.join(VALID_STAGES)}）")
+    if phase_state not in VALID_PHASE_STATES:
+        raise LifecycleError(f"非法 phase_state: {phase_state!r}（允许: {', '.join(VALID_PHASE_STATES)}）")
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -75,14 +91,49 @@ def update_status(
     except LifecycleError:
         prev = None  # 已损坏：从新值重建（不静默——read 已抛出过；此处重建可恢复）
 
+    now = datetime.now()
+    now_iso = now.isoformat(timespec="seconds")
+
     data = {
         "task_id": task_id,
         "status": status,
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "updated_at": now_iso,
         "task_path": str(task_path),
         "workspace": str(workspace),
         "report_path": str(report_path) if report_path is not None else (prev or {}).get("report_path"),
     }
+
+    # --- v0.4 Phase A live runtime state ---
+    prev = prev or {}
+    # started_at：首次进入 RUNNING 时固定
+    if status == "RUNNING" and not prev.get("started_at"):
+        data["started_at"] = now_iso
+    elif prev.get("started_at"):
+        data["started_at"] = prev["started_at"]
+    # last_activity_at：每次状态活动都更新
+    data["last_activity_at"] = now_iso
+
+    if stage is not None:
+        data["stage"] = stage
+        data["agent"] = agent
+        phases = dict(prev.get("phases") or {})
+        entry = dict(phases.get(stage) or {})
+        entry["state"] = phase_state
+        entry["started_at"] = entry.get("started_at") or now_iso
+        entry["updated_at"] = now_iso
+        phases[stage] = entry
+        data["phases"] = phases
+        # stage_started_at：阶段首次进入（或阶段变化）时设置
+        if not prev.get("stage_started_at") or prev.get("stage") != stage:
+            data["stage_started_at"] = entry["started_at"]
+        else:
+            data["stage_started_at"] = prev["stage_started_at"]
+    else:
+        # 保留已有 runtime 字段（非 stage 更新，如终态无 stage 时）
+        for key in ("stage", "stage_started_at", "agent", "phases", "started_at"):
+            if prev.get(key) is not None:
+                data[key] = prev[key]
+
     if reason is not None:
         data[_STATUS_REASON] = reason
 

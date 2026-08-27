@@ -1,39 +1,71 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.3（CLOSED，当前为维护/观察期）**\
-> Last Updated: 2026-08-27（AAF-DESIGN-001）\
-> Document Type: **Living Project State / 持续更新的当前状态入口**\
+> Current Version: **v0.4（IN PROGRESS — Phase A Runtime State Foundation）**\
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-001）\
+> Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
 > 级变更、版本状态变化或关键风险变化，都应更新本文件。
 >
-> 下方 v0.2 及更早内容属于历史状态，保留不删除；当前状态以顶部 v0.3 块为准。
+> 下方 v0.3 及更早内容属于历史状态，保留不删除；当前状态以顶部 v0.4 块为准。
 
 ------------------------------------------------------------------------
 
-## 0. v0.3 Current Status（当前状态）
+## 0. v0.4 Current Status（当前状态）
+
+``` text
+Version: v0.4
+Status: IN PROGRESS
+Phase: A — Runtime State Foundation
+Direction: Desktop Shell MVP / Runtime Observability & Control
+
+v0.4 主线（Phase 顺序）：
+A. Runtime State Foundation（当前）
+B. Bridge Background / Tray Skeleton
+C. Status Window + Chinese-first UI
+D. Progress Visualization
+E. Safe Cancel Lifecycle
+F. Project Switching / Duplicate Task UX
+
+当前只进入 Phase A；B-F 不得提前实现。
+
+Phase A 目标：task.json = live canonical runtime view
+（started_at / stage / stage_started_at / last_activity_at / agent / phases），
+统一 Runtime State reader（legacy 兼容），runner EXTEND ONLY 阶段写入。
+
+Regression Baseline: 216 passed（AAF-v0.4-TASK-001 起）
+Review: 进行中
+Remote Sync: 进行中
+
+v0.3: CLOSED（见下方历史块，不重开）
+v0.4 启动决定：Planner / User 已批准（见
+docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.md）
+```
+
+### 0.1 Phase A — Runtime State Foundation（当前）
+
+- TASK: AAF-v0.4-TASK-001（2026-08-27）
+- 状态：实施中
+- 范围：task.json live runtime state / Runtime State reader / runner 阶段写入 / PROJECT_STATE 同步
+- 禁止（Phase A 不实现）：Tray / status window / pystray / autostart / progress bar / stuck 算法 /
+  Safe Cancel（CANCELLED / control.json / state.lock / launch registry / force kill）/
+  project switching UI / Duplicate dialog / Desktop Shell packaging
+
+### 0.2 v0.3 历史状态（CLOSED，保留）
 
 ``` text
 Version: v0.3
 Core Implementation: COMPLETE
 Core Acceptance: PASS
-Lifecycle: CLOSED（v0.3 已收官，当前处于维护/观察期）
+Lifecycle: CLOSED（v0.3 已收官；不因 v0.4 开发重新定义 v0.3）
 
 v0.3 三大核心方向：
 1. Task Automation     ✅ COMPLETE（000-A/B/C + 001 Validation + 002 Lifecycle + 003 Archive）
 2. Session Continuity  ✅ COMPLETE（004）
 3. Project Boundary    ✅ COMPLETE（005）
 
-Regression Baseline: 206 passed（commit 457df93 起；本文件更新前已复跑验证）
-Review: WorkBuddy APPROVE（v0.3 READY_TO_CLOSE）
-Remote Sync: SUCCESS
-
-当前阶段：
-v0.3 CLOSED
-→ 维护 / 观察期（当前）
-→ Master Backlog 已建立（AAF-MAINT-001-FIX-002）
-→ v0.4 未启动（必须由 Planner / User 显式决定）
+v0.3 closure: WorkBuddy APPROVE + Codex milestone audit APPROVE + Blocking=0
 ```
 
 ### 0.1 Maintenance Period（当前维护/观察期）

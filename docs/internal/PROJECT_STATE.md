@@ -1,8 +1,8 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.4（IN PROGRESS — Phase A/B COMPLETE；Phase C IMPLEMENTATION COMPLETE）**\
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-003 实现完成）\
+> Current Version: **v0.4（IN PROGRESS — Phase A/B/C COMPLETE；Phase D-F NOT STARTED）**\
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-003-FIX-001 Phase C closure sync）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -19,19 +19,19 @@ Version: v0.4
 Status: IN PROGRESS
 Phase: A — Runtime State Foundation: COMPLETE
        B — Bridge Background / Tray Skeleton: COMPLETE
-       C — Status Window + Chinese-first UI: IMPLEMENTATION COMPLETE（待 WorkBuddy/Codex 独立验证后正式 COMPLETE）
+       C — Status Window + Chinese-first UI: COMPLETE
 Direction: Desktop Shell MVP / Runtime Observability & Control
 
 v0.4 主线（Phase 顺序）：
 A. Runtime State Foundation（COMPLETE）
 B. Bridge Background / Tray Skeleton（COMPLETE）
-C. Status Window + Chinese-first UI（IMPLEMENTATION COMPLETE — 2026-08-27，实现与真实 Windows E2E 验收已通过；
-   按 TASK 约束，COMPLETE 标记须待 WorkBuddy 独立验证 + Codex 审查通过后由 closure 更新）
+C. Status Window + Chinese-first UI（COMPLETE — 2026-08-27 closure：AAF-v0.4-TASK-003-FIX-001 正式同步；
+   实现 + WorkBuddy 独立验证 + Codex 审查全部通过，见下方 Phase C 段落）
 D. Progress Visualization（NOT STARTED）
 E. Safe Cancel Lifecycle（NOT STARTED）
 F. Project Switching / Duplicate Task UX（NOT STARTED）
 
-Phase D-F 不得提前实现 / 不得自动启动；Phase C 已实现（IMPLEMENTATION COMPLETE，见上，待独立验证后正式 COMPLETE）。
+Phase D-F 不得提前实现 / 不得自动启动；Phase D 仅为 Next Phase Candidate（见下），不得标记 STARTED。
 
 Phase C 目标：正式状态窗口（bridge/status_window.py）—— 只读观察 + 中文优先 +
 六阶段条事实映射；Tray 接入（打开状态窗口复用/聚焦，关闭不退出 Bridge）；
@@ -54,8 +54,16 @@ Phase C Implementation（AAF-v0.4-TASK-003，2026-08-27）：
   （Hermes→WorkBuddy→Codex→REPORT）→ 状态窗口阶段变化可见（截图验证）→ SUCCESS 收敛
   （已完成（SUCCESS）/ 六阶段全 ✓）→ 关闭窗口 Bridge 存活 → 再次打开正常 →
   Restart/Exit 回归通过（Exit 确认窗中文按钮；状态文件 0 变更）→ Agent 子进程无 console 黑窗
-- 待办：WorkBuddy 独立验证 + Codex 审查（TASK 流程内）；通过后由 closure 标记 Phase C COMPLETE
-- Blocking: NONE（实现侧）
+- WorkBuddy: PASS_WITH_WARNING（无 blocking rework；warning = TASK #10 与冻结设计中文映射措辞差异
+  （实现遵循冻结设计，正确）+ Validator 未亲自重跑完整 GUI E2E（证据由 Hermes 提供，结构支撑充分））
+- Codex: APPROVE（Blocking Issues: NONE；Scope Leakage: NONE；Recommended Phase C Status: COMPLETE）
+- Blocking: NONE（实现侧 + 验证侧）
+- Remote Sync: SYNCED
+- 正式 closure: AAF-v0.4-TASK-003-FIX-001（2026-08-27）——见下方「0.2 Phase C」段落与
+  docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-C-CLOSURE-2026-08-27.md
+- 汇总语义异常（已登记 RW-022，非 Phase C 实现问题）：最终 REPORT 顶部 Current Status 曾为 WAITING，
+  但 WorkBuddy 无 blocking rework + Codex APPROVE + Blocking Issues NONE；该 WAITING 来自
+  aggregation / warning semantics，不是 Phase C implementation blocker（详见 AAF_MASTER_BACKLOG.md RW-022）
 
 Phase A 目标：task.json = live canonical runtime view
 （started_at / stage / stage_started_at / last_activity_at / agent / phases），
@@ -140,6 +148,46 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
 - 禁止（Phase B 不实现）：Phase C-F 全部内容 / autostart / Safe Cancel（CANCELLED /
   cancel.request / control.json / state.lock / launch registry / force kill）/
   RW-020 / completion reattachment
+
+### 0.2 Phase C — Status Window + Chinese-first UI（COMPLETE）
+
+- TASK: AAF-v0.4-TASK-003（2026-08-27）；closure: AAF-v0.4-TASK-003-FIX-001（Phase C Closure Sync，2026-08-27）
+- 状态：COMPLETE（WorkBuddy PASS_WITH_WARNING（无 blocking rework）+ Codex APPROVE；284 passed；
+  Remote Sync SYNCED；实时 HEAD 属执行时状态，用 Git 查询，不在此处硬编码为永久当前值）
+- Implementation commit: 5458def（feat(v0.4-phase-c): status window + chinese-first UI）
+- 范围：bridge/status_window.py 正式状态窗口（Bridge/Project 区 + Current Task 区 + 六阶段条
+  ✓▶○⏸✗、约 1s tkinter.after 只读刷新、单例复用/聚焦、关闭不退出 Bridge）/ Chinese-first
+  （窗口/弹窗/按钮中文、技术字段保留英文原值）/ Runtime State 只读展示（runtime_state reader +
+  last_run.json + config + launcher 内存；UI 零写 canonical artifact）/ Tray「打开状态窗口」接入
+  （restart / exit / 单实例 / 热键语义未变）/ 现有 Bridge 弹窗文案中文化
+  （不改 TASK 解析 / validation / launcher 语义 / lifecycle）
+- 验收证据：.aaf/AAF-v0.4-TASK-003/（EVIDENCE.md、空状态截图 + 4 张阶段截图 + 最终收敛截图、
+  s1–s7 步骤脚本、evidence.jsonl）；正式 closure 报告见
+  docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-C-CLOSURE-2026-08-27.md
+- 测试：284 passed（239 基线 + 45 新增 tests/test_status_window.py，零下降；覆盖 req 19 A–L 全项：
+  status/stage/agent 映射、legacy/缺失字段、空状态、当前任务解析、elapsed/last activity 格式化、
+  窗口单例、Tray 集成、中文文案、刷新回调安全）
+- Windows E2E：PASS（后台 Bridge → Tray 打开状态窗口 → 空状态显示 → 真实 Ctrl+Alt+A 全路由任务
+  Hermes→WorkBuddy→Codex→REPORT → 阶段变化可见（截图验证）→ SUCCESS 收敛（已完成（SUCCESS）/
+  六阶段全 ✓）→ 关闭窗口 Bridge 存活 → 再次打开正常 → Restart/Exit 回归通过
+  （Exit 确认窗中文按钮；状态文件 0 变更）→ Agent 子进程无 console 黑窗）
+- Current Task resolution: PASS / Stage strip: PASS / elapsed / last activity: PASS /
+  singleton window behavior: PASS / Tray integration: PASS / no-console regression: PASS
+- WorkBuddy: PASS_WITH_WARNING（无 blocking rework；warning = TASK #10 与冻结设计中文映射措辞差异 +
+  Validator 未重跑完整 GUI E2E，均非代码问题）
+- Codex: APPROVE（Blocking Issues: NONE；Scope Leakage: NONE；Recommended Phase C Status: COMPLETE）
+- Remote Sync: SYNCED
+- Phase D-F scope leakage: NONE
+- Blocking: NONE
+- 汇总语义异常（已登记 RW-022，非 Phase C 实现问题）：最终 REPORT 顶部 Current Status 曾为 WAITING，
+  但 WorkBuddy PASS_WITH_WARNING（无 blocking rework）+ Codex APPROVE + Blocking Issues NONE；
+  该 WAITING 来自 aggregation / warning semantics，不是 Phase C implementation blocker
+  （详见 AAF_MASTER_BACKLOG.md RW-022）
+- 既有缺口（不重复登记）：Bridge Restart / Exit 后 completion notification continuity 丢失
+  → RW-021（OPEN / P2）；Phase C E2E 中再次复现，已按 RW-021 覆盖，未重复新建 issue，本阶段不实现
+- 禁止（Phase C 不实现）：Phase D-F 全部内容（progress bar / percentage / phase weights /
+  stuck detection / Safe Cancel / launch registry / completion reattachment / project switching /
+  Duplicate UX）/ RW-020 / RW-021 / final-status aggregation fix
 
 ### 0.2 v0.3 历史状态（CLOSED，保留）
 
@@ -239,7 +287,7 @@ docs/internal/AAF_MASTER_BACKLOG.md
 以后任何被正式确认"稍后处理"的问题，**必须进入 Master Backlog 才算
 长期登记完成**。
 
-v0.4 IN PROGRESS — Phase A/B COMPLETE；Phase C IMPLEMENTATION COMPLETE（待 WorkBuddy/Codex 验证后正式 COMPLETE）；Phase D-F 保持 NOT STARTED，不得自动启动。
+v0.4 IN PROGRESS — Phase A/B/C COMPLETE；Phase D-F 保持 NOT STARTED，不得自动启动；Next Phase Candidate = Phase D — Progress Visualization（仅标记候选，不启动，须由 Planner 正式生成 TASK 才算启动）。
 
 ------------------------------------------------------------------------
 

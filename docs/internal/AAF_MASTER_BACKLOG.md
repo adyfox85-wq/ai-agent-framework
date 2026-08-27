@@ -3,7 +3,7 @@
 > Project: AI Agent Framework
 > Document Type: **Living Long-Term Backlog / 长期问题与恢复登记**
 > Established: 2026-08-27（AAF-MAINT-001-FIX-002）
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-002-FIX-002 — Phase B closure sync + RW-021 登记）
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-003-FIX-001 — Phase C closure sync + RW-022 登记）
 > Location: `docs/internal/AAF_MASTER_BACKLOG.md`
 
 ## Purpose
@@ -437,7 +437,7 @@ P3
 | Category | Bridge lifecycle / Runtime UX / Completion notification |
 | Status | OPEN |
 | Priority | P2 |
-| Evidence / Origin | AAF-v0.4-TASK-002-FIX-001 real Windows validation, 2026-08-27。真实验收中主动执行了 Bridge Restart / Exit / restart：Framework runner / validation task 可以继续运行并最终生成 SUCCESS REPORT，但启动该 task 的原 Bridge instance 被 Restart / Exit 后，新 Bridge instance 不会自动恢复原 launcher wait-thread / completion callback，用户没有收到原有「任务完成」提示 / Planner Handoff copy action，只能手工发现 REPORT.md。 |
+| Evidence / Origin | AAF-v0.4-TASK-002-FIX-001 real Windows validation, 2026-08-27。真实验收中主动执行了 Bridge Restart / Exit / restart：Framework runner / validation task 可以继续运行并最终生成 SUCCESS REPORT，但启动该 task 的原 Bridge instance 被 Restart / Exit 后，新 Bridge instance 不会自动恢复原 launcher wait-thread / completion callback，用户没有收到原有「任务完成」提示 / Planner Handoff copy action，只能手工发现 REPORT.md。<br><br>2026-08-27 再次复现（AAF-v0.4-TASK-003）：Phase C E2E 过程中 Bridge 被正常切换/重启后，runner / task 最终完成并产生 REPORT，但用户未收到 completion notification / Planner Handoff copy action（与既有登记一致，仅补充事实，未重复新建 issue）。 |
 | Scenario | Bridge instance A 启动 Framework task → Framework runner 独立继续运行 → Bridge A 被 Restart / Exit → Bridge instance B 启动 → runner 最终正常完成并生成 REPORT → Bridge B 不持有原 launcher completion callback → 用户没有收到完成通知 / Planner Handoff copy action |
 | Current Implementation | Launcher completion callback / wait-thread 属原 Bridge process 内存；Bridge restart 后新 instance 不会重新关联旧 in-flight runner。 |
 | Problem | Framework execution success 和用户 completion notification 是两个不同事实：REPORT 已成功生成 ≠ 用户一定收到完成提示。任务产物完整（canonical task / REPORT 最终 SUCCESS），但用户侧 notification continuity 丢失。 |
@@ -448,6 +448,29 @@ P3
 | Target | Bridge 换代（Restart / Exit / relaunch）后仍能发现 in-flight task，并在其完成后恢复 completion notification / Planner Handoff / REPORT availability 提示。 |
 | Related | RW-020（明确区分，见上）、RW-014（Task Stop / Cancel）、RW-016（Duplicate Task Status UX）；设计文档 `docs/design/AAF-DESKTOP-SHELL-MINIMAL-DESIGN.md` §6B（launch registry / ownership 恢复协议）、§7（Bridge Background Runtime）、§15（Phase E Safe Cancel Lifecycle）——仅引用未来架构关系，不提前实现 Phase E |
 | Do Not Forget | Framework execution success 和用户 completion notification 是两个不同事实。REPORT 已成功生成 ≠ 用户一定收到完成提示。 |
+
+---
+
+## RW-022 — Framework Final Status Aggregation: PASS_WITH_WARNING + APPROVE + Blocking NONE → WAITING
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-022 |
+| Title | Framework Final Status Aggregation: PASS_WITH_WARNING + APPROVE + Blocking NONE → WAITING |
+| Category | Framework lifecycle / Report aggregation / Planner handoff semantics |
+| Status | OPEN |
+| Priority | P1 |
+| Evidence / Origin | AAF-v0.4-TASK-003 real execution, 2026-08-27。最终 REPORT 顶部 Current Status = WAITING，但：Hermes implementation SUCCESS、Tests 284 passed、WorkBuddy PASS_WITH_WARNING（blocking rework: NONE）、Codex APPROVE（Blocking Issues: NONE）、Scope Leakage: NONE、Remote Sync: SYNCED、Codex Recommended Phase C Status = COMPLETE。<br><br>同类顶部 WAITING 先前已出现于 AAF-v0.4-TASK-002（Phase B）REPORT（当时 Codex closure review 在 REPORT 生成时点尚未完成，属可解释实例）；Phase C 为更干净的反例：全部 Agent 均已完成且无 blocking，顶部仍聚合为 WAITING。 |
+| Observed Behavior | - Hermes implementation success（284 passed）<br>- WorkBuddy PASS_WITH_WARNING（无 blocking rework）<br>- Codex APPROVE / Blocking Issues NONE<br>- Scope Leakage NONE / Remote Sync SYNCED<br>- 但最终 REPORT 顶部 Current Status = WAITING |
+| Problem | Framework final status aggregation 疑似把 warning / unresolved 文本段当作 blocking 处理：即使 reviewer 明确报告 no blocking rework / no blocking issues，只要存在非阻断 warning 文本，顶部状态仍被聚合为 WAITING。WAITING 因此无法表达「确实需要后续处理」与「有非阻断 warning 的 SUCCESS」的区别，会误导 Planner / user 认为需要干预。 |
+| Desired Behavior | Final task status aggregation 应区分：<br>A. Blocking rework：FAIL / REQUEST_CHANGE / unresolved blocking issue / execution failure<br>B. Non-blocking warning：PASS_WITH_WARNING / informational warning / recommendation / documentation blemish<br>当最终 reviewer 明确 APPROVE 且 blocking issues = NONE 时，非阻断 warning 不应自动强制顶部 WAITING。目标：Planner / user 能区分「SUCCESS with warnings」与「WAITING（确实需要后续处理）」。 |
+| Important Boundary | 本登记不修改 lifecycle semantics、不修改 task terminal state、不重写历史 REPORT；aggregation fix 属 Framework Core 变更，须由 Planner 立项，不在此登记任务中实现。 |
+| Current Implementation | 无；最终 REPORT 顶部状态由 Framework aggregation 生成，当前将非阻断 warning 亦聚合为 WAITING。 |
+| Remaining Gap | Framework REPORT aggregation 层需区分 blocking / non-blocking 类别，并据此决定顶部状态（属 Framework Core 变更）。 |
+| Decision | 当前只登记（本 closure sync 任务不实现 aggregation fix）。 |
+| Target | 最终 REPORT 顶部状态：SUCCESS（含 PASS_WITH_WARNING 且无 blocking）≠ WAITING（确实需要后续处理）。WAITING 应表达「需要后续处理 / 尚未闭环」，而不是「存在任意 warning 文本」。 |
+| Related | RW-019（Agent review evidence consistency）、RW-021（completion notification continuity，同为 REPORT 生成 ≠ 用户闭环的语义区分）；AAF-v0.4-TASK-002（Phase B）为同现象早期实例 |
+| Do Not Forget | 本次顶部 WAITING 不是 Phase C implementation failure；不得据此重开 Phase C、不得改写历史 REPORT、不得手动改写 task terminal state。 |
 
 ---
 
@@ -694,6 +717,7 @@ Framework 仍能恢复到可继续升级的状态（见 RW-009）。
 | RW-019 | Agent Review Execution Evidence Consistency | OBSERVATION | P2 |
 | RW-020 | Dead Runner / Orphaned RUNNING State Detection | OPEN | P1 |
 | RW-021 | Bridge Restart / Exit Completion Notification Continuity | OPEN | P2 |
+| RW-022 | Framework Final Status Aggregation: PASS_WITH_WARNING + APPROVE + Blocking NONE → WAITING | OPEN | P1 |
 | BND-001 | Planner-layer Anti-Drift Validation | PARTIAL | P2 |
 | CTX-001 | Context Length / Conversation Rollover UX | PARTIAL | P1 |
 | HIST-001 | Historical Framework Optimization Set Recovery | RECOVERY_PENDING | P2 |

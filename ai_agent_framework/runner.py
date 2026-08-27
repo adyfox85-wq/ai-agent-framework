@@ -27,7 +27,7 @@ from . import project_boundary
 from . import task_lifecycle
 from .report import build_report, verdict_blocked
 from .reconcile import reconcile_terminal_artifacts
-from .router import Route, RouteStatus, decide_route, parse_explicit_route
+from .router import ALLOWED_ROUTE_AGENTS, Route, RouteStatus, decide_route, parse_explicit_route
 from .task_lifecycle import (
     TERMINAL_REASON_CANCEL_REQUESTED,
     TERMINAL_REASON_FRAMEWORK_ERROR,
@@ -144,18 +144,76 @@ def _aggregate_status(agents: list[str], results: dict[str, str]) -> str:
     return 'SUCCESS'
 
 
-def _load_resume_state(output_dir: Path) -> tuple[Route, dict[str, str]]:
-    """从已有输出目录恢复：route.json + 非 FRAMEWORK_ERROR 的 agent 结果。"""
-    route_data = json.loads((output_dir / 'route.json').read_text(encoding='utf-8'))
-    route = Route(route_data['agents'], route_data['reason'])
+def _verify_resume_route_evidence(output_dir: Path, route: Route) -> None:
+    """route.json 只作 persisted execution evidence（FIX-005 Req 2/5）。
+
+    authoritative route 由调用方从 immutable TASK.snapshot.md 重新派生
+    （``decide_route(snapshot)``）；此处比较 persisted ``route.json`` 与
+    snapshot-derived route：``agents`` 必须完全一致（顺序敏感）。任何不一致 /
+    损坏 / 含未知 agent / 缺少 required agent → **fail closed**：抛
+    TaskValidationError（resume 被拒绝；不启动后续 Agent；不得 SUCCESS）。
+    """
+    rj = output_dir / 'route.json'
+    try:
+        route_data = json.loads(rj.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise TaskValidationError(ValidationResult(
+            valid=False,
+            errors=[(
+                f'RESUME_ROUTE_EVIDENCE: route.json 无法读取/解析'
+                f'（{type(exc).__name__}: {exc}）——persisted route evidence '
+                f'损坏，resume fail closed'
+            )],
+        ))
+    persisted_agents = route_data.get('agents') if isinstance(route_data, dict) else None
+    if not isinstance(persisted_agents, list) or any(
+        not isinstance(a, str) for a in persisted_agents
+    ):
+        raise TaskValidationError(ValidationResult(
+            valid=False,
+            errors=[
+                'RESUME_ROUTE_EVIDENCE: route.json 缺少合法 agents 数组——'
+                'persisted route evidence 非法，resume fail closed'
+            ],
+        ))
+    unknown = [a for a in persisted_agents if a not in ALLOWED_ROUTE_AGENTS]
+    if unknown:
+        raise TaskValidationError(ValidationResult(
+            valid=False,
+            errors=[(
+                f'RESUME_ROUTE_EVIDENCE: route.json 含未知 route agent '
+                f'{unknown}——persisted route evidence 非法，resume fail closed'
+            )],
+        ))
+    if persisted_agents != route.agents:
+        raise TaskValidationError(ValidationResult(
+            valid=False,
+            errors=[(
+                f'RESUME_ROUTE_EVIDENCE: persisted route.json route '
+                f'({" -> ".join(persisted_agents)}) 与 snapshot-derived '
+                f'required route ({" -> ".join(route.agents)}) 不一致——'
+                f'resume rejected（fail closed；route.json 不得缩短或改变 '
+                f'required route）'
+            )],
+        ))
+
+
+def _load_resume_state(output_dir: Path, required_agents: list[str]) -> dict[str, str]:
+    """从已有输出目录恢复 agent 结果（仅限 snapshot-derived required route）。
+
+    FIX-005 Req 3/4：复用集合严格受 ``required_agents``（snapshot-derived
+    required route）约束——即使 persisted route.json 被篡改成更短的链，
+    也不得据此认为后续 agent 非必需；缺失的 required agent 在 resume 时
+    重新执行。route.json 不参与结果加载范围。
+    """
     results: dict[str, str] = {}
-    for agent in route.agents:
+    for agent in required_agents:
         rf = output_dir / f'{agent}_result.md'
         if rf.exists():
             body = rf.read_text(encoding='utf-8')
             if not body.strip().startswith('FRAMEWORK_ERROR'):
                 results[agent] = body
-    return route, results
+    return results
 
 
 def _check_cancel(output_dir: Path, task_id: str, task_file: Path, workspace: Path) -> bool:
@@ -293,8 +351,18 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
             return output_dir / 'REPORT.md'
 
         if resume_from is not None:
-            route, results = _load_resume_state(resume_from)
             output_dir = resume_from
+            # --- Resume Route Authority（FIX-005 Req 1–4）---
+            # authoritative route 必须重新从 immutable TASK.snapshot.md 派生
+            # （此时 task 已是 snapshot 内容；无 snapshot 的 legacy 目录 =
+            # 已验证 intake，随后补写为 snapshot）。route.json 只作 persisted
+            # execution evidence：必须与 snapshot-derived route 完全一致，
+            # 否则 fail closed（不启动后续 Agent / 不得 SUCCESS）。
+            route = decide_route(task)
+            _verify_resume_route_evidence(output_dir, route)
+            # 结果复用集合受 snapshot-derived required route 约束：
+            # tampered route.json 不得缩短 required agent set。
+            results = _load_resume_state(output_dir, route.agents)
             # legacy resume 目录（FIX-002 之前的旧目录）可能没有 snapshot →
             # 从已验证任务内容补写（保证 manifest / prompt 引用可解析）
             if not (output_dir / 'TASK.snapshot.md').exists():

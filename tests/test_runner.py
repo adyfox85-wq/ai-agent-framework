@@ -606,3 +606,159 @@ def test_invalid_explicit_route_runner_fails_validation(tmp_path, monkeypatch):
         assert 'Route' in str(exc.value)
         assert calls == []            # 未启动任何 Agent
         assert not (out / 'route.json').exists()  # 未产生路由产物
+
+
+def test_duplicate_route_field_runner_fails_validation(tmp_path, monkeypatch):
+    """Req 6/7：重复 Route 字段 → runner 在 Validation 阶段失败（不执行 Agent、
+    不写 route.json），重复值相同 / 不同均 fail-closed。"""
+    calls = []
+
+    def fake_run_agent(agent, prompt, workspace):
+        calls.append(agent)
+        return 'ok'
+
+    monkeypatch.setattr(runner_mod, 'run_agent', fake_run_agent)
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    for route_block in ('Route: hermes\nRoute: hermes\n', 'Route: hermes\nRoute: workbuddy\n'):
+        task_file = tmp_path / 'TASK.md'
+        task_file.write_text(MINIMAL_VALID_TASK + route_block, encoding='utf-8')
+        out = tmp_path / 'out-dup'
+        with pytest.raises(runner_mod.TaskValidationError) as exc:
+            runner_mod.run(task_file, ws, out)
+        assert 'Route' in str(exc.value)
+        assert calls == []
+        assert not (out / 'route.json').exists()
+
+
+# --- FIX-005：Resume Route Authority（Req 1–5/10；Acceptance 1–4） ---
+
+def _run_explicit_once(tmp_path, monkeypatch, task_text=MINIMAL_EXPLICIT_ROUTE_TASK):
+    """首次正式运行（mock agents 全过）→ 生成 snapshot + route.json + 全部结果。"""
+    monkeypatch.setattr(runner_mod, 'run_agent', _fake_agents_ok)
+    task_file = tmp_path / 'TASK.md'
+    task_file.write_text(task_text, encoding='utf-8')
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    out = tmp_path / 'out'
+    runner_mod.run(task_file, ws, out)
+    return task_file, ws, out
+
+
+def test_resume_tampered_shorter_route_rejected(tmp_path, monkeypatch):
+    """Req 2/5A + Acceptance 2/3：snapshot 要求 hermes -> workbuddy -> codex，
+    route.json 被改为 hermes -> workbuddy → resume 拒绝（不启动 Agent、不得
+    SUCCESS），required Codex 无法通过 tampered route.json 被跳过。"""
+    import json
+    task_file, ws, out = _run_explicit_once(tmp_path, monkeypatch)
+    (out / 'route.json').write_text(
+        json.dumps({'agents': ['hermes', 'workbuddy'], 'reason': 'explicit route (machine field)'}),
+        encoding='utf-8',
+    )
+    calls = []
+
+    def fake_run_agent(agent, prompt, workspace):
+        calls.append(agent)
+        return 'ok'
+
+    monkeypatch.setattr(runner_mod, 'run_agent', fake_run_agent)
+    with pytest.raises(runner_mod.TaskValidationError) as exc:
+        runner_mod.run(task_file, ws, out, resume_from=out)
+    assert 'RESUME_ROUTE_EVIDENCE' in str(exc.value)
+    assert calls == []  # 未启动任何后续 Agent
+    # 既有 terminal（第一次运行 SUCCESS）不被篡改伪造
+    report = (out / 'REPORT.md').read_text(encoding='utf-8')
+    assert 'SUCCESS' in report.split('## Route')[0]
+
+
+def test_resume_reordered_route_rejected(tmp_path, monkeypatch):
+    """Req 5B：route.json 顺序变化（workbuddy 提前）→ 顺序敏感比较 → rejected。"""
+    import json
+    task_file, ws, out = _run_explicit_once(tmp_path, monkeypatch)
+    (out / 'route.json').write_text(
+        json.dumps({'agents': ['workbuddy', 'hermes', 'codex'], 'reason': 'x'}),
+        encoding='utf-8',
+    )
+    with pytest.raises(runner_mod.TaskValidationError, match='RESUME_ROUTE_EVIDENCE'):
+        runner_mod.run(task_file, ws, out, resume_from=out)
+
+
+def test_resume_unknown_agent_route_rejected(tmp_path, monkeypatch):
+    """Req 5C：route.json 含未知 agent → rejected。"""
+    import json
+    task_file, ws, out = _run_explicit_once(tmp_path, monkeypatch)
+    (out / 'route.json').write_text(
+        json.dumps({'agents': ['hermes', 'alien'], 'reason': 'x'}),
+        encoding='utf-8',
+    )
+    with pytest.raises(runner_mod.TaskValidationError, match='RESUME_ROUTE_EVIDENCE'):
+        runner_mod.run(task_file, ws, out, resume_from=out)
+
+
+def test_resume_malformed_route_json_rejected(tmp_path, monkeypatch):
+    """Req 5D：route.json malformed → rejected safely（不崩溃、不启动 Agent）。"""
+    task_file, ws, out = _run_explicit_once(tmp_path, monkeypatch)
+    (out / 'route.json').write_text('{not valid json!!', encoding='utf-8')
+    with pytest.raises(runner_mod.TaskValidationError, match='RESUME_ROUTE_EVIDENCE'):
+        runner_mod.run(task_file, ws, out, resume_from=out)
+
+
+def test_resume_missing_route_json_rejected(tmp_path, monkeypatch):
+    """Req 2：route.json 缺失（evidence 缺失）→ fail closed。"""
+    task_file, ws, out = _run_explicit_once(tmp_path, monkeypatch)
+    (out / 'route.json').unlink()
+    with pytest.raises(runner_mod.TaskValidationError, match='RESUME_ROUTE_EVIDENCE'):
+        runner_mod.run(task_file, ws, out, resume_from=out)
+
+
+def test_resume_required_codex_cannot_be_bypassed(tmp_path, monkeypatch):
+    """Req 3/4 + Acceptance 3：crash 残留（RUNNING）中 route.json 完好（与
+    snapshot 一致）但 codex_result.md 缺失 → resume 不得认为 Codex 非必需——
+    Codex 必须重新执行，route.json 不得被缩短，最终 SUCCESS 必须包含 Codex。"""
+    import json
+    from ai_agent_framework import task_lifecycle
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    out = tmp_path / 'out'
+    out.mkdir()
+    # crash 残留现场：snapshot（显式 Route 含 codex）+ 一致的 route.json +
+    # hermes/workbuddy 结果 + task.json(RUNNING)——codex 尚未执行
+    (out / 'TASK.snapshot.md').write_text(MINIMAL_EXPLICIT_ROUTE_TASK, encoding='utf-8')
+    (out / 'route.json').write_text(
+        json.dumps({'agents': ['hermes', 'workbuddy', 'codex'],
+                    'reason': 'explicit route (machine field)'}),
+        encoding='utf-8')
+    (out / 'hermes_result.md').write_text('implemented ok', encoding='utf-8')
+    (out / 'workbuddy_result.md').write_text('**Result: PASS**\nverified', encoding='utf-8')
+    task_lifecycle.update_status(out, task_id='T-EXPLICIT', status='RUNNING',
+                                 task_path=str(out / 'TASK.snapshot.md'), workspace=str(ws))
+    task_file = tmp_path / 'TASK.md'
+    task_file.write_text(MINIMAL_EXPLICIT_ROUTE_TASK, encoding='utf-8')
+
+    calls = []
+
+    def fake_run_agent(agent, prompt, workspace):
+        calls.append(agent)
+        return 'APPROVE'
+
+    monkeypatch.setattr(runner_mod, 'run_agent', fake_run_agent)
+    report_path = runner_mod.run(task_file, ws, out, resume_from=out)
+    assert calls == ['codex']  # hermes/workbuddy 结果复用；codex 重新执行
+    report = report_path.read_text(encoding='utf-8')
+    assert '## Current Status\nSUCCESS' in report
+    rj = json.loads((out / 'route.json').read_text(encoding='utf-8'))
+    assert rj['agents'] == ['hermes', 'workbuddy', 'codex']  # required set 未缩短
+
+
+def test_resume_route_derived_from_snapshot_not_route_json(tmp_path, monkeypatch):
+    """Req 1/3：resume 的 route authority 来自 snapshot——即使 route.json 被
+    换成一条不同但 agent 数相同的链（缺 hermes 的 workbuddy -> codex），
+    与 snapshot-derived route 不一致 → rejected。"""
+    import json
+    task_file, ws, out = _run_explicit_once(tmp_path, monkeypatch)
+    (out / 'route.json').write_text(
+        json.dumps({'agents': ['workbuddy', 'codex'], 'reason': 'x'}),
+        encoding='utf-8',
+    )
+    with pytest.raises(runner_mod.TaskValidationError, match='RESUME_ROUTE_EVIDENCE'):
+        runner_mod.run(task_file, ws, out, resume_from=out)

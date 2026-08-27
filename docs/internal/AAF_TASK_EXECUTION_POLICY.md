@@ -109,6 +109,20 @@ Formal validator（`task_validation.py`）保持最小必填集
   不含 Codex → Validation 阶段直接发现 Route inconsistency 并拒绝执行
   （Runner 的防御性不变量断言：declared route ≠ computed route → 失败）。
 - **旧 TASK 无 `Route:` 字段 → 保持 legacy keyword inference 不变**。
+- **Route 字段唯一性（FIX-005 Req 6/7）**：`Route:` 是 machine-authoritative
+  control field，必须**唯一**——出现次数 >1（无论值相同 / 不同 / 一个合法一个
+  非法）→ **Task Validation FAIL（fail-closed）**，不得 first/last wins。
+  唯一性在正式 parser 层验证（`task_validation.count_field_occurrences`，
+  通用 helper，可复用于其他 machine-authoritative control field）。
+- **Resume Route Authority（FIX-005 Req 1–5）**：resume 时 authoritative route
+  必须重新从 immutable `TASK.snapshot.md` 派生（`decide_route(snapshot)`，
+  含显式 Route 解析与 legacy heuristic 两条路径）；`route.json` 只作 persisted
+  **execution evidence**——必须与 snapshot-derived route 的 agents 完全一致
+  （顺序敏感）。不一致 / 损坏 / 含未知 agent / 缺少 required agent →
+  **fail closed**（resume 被拒绝；不启动后续 Agent；不得 SUCCESS）。已有 agent
+  结果可复用，但复用集合受 snapshot-derived required route 约束（tampered
+  route.json 不得缩短 required agent set；最终 status / integrity 判断一律以
+  snapshot-derived required route 为准）。
 
 ## 3. Semantic Coverage Guard（压缩不丢信息）
 

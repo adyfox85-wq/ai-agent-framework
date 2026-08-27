@@ -226,6 +226,8 @@ def test_resume_non_terminal_running_reuses_results(tmp_path, monkeypatch):
 
     FIX-001：resume 只适用于非终态（terminal precedence，§6A.2）；
     终态（WAITING/SUCCESS/FAILED/CANCELLED）不可被 resume 降级回 RUNNING。
+    FIX-005：resume 的 authoritative route 从任务内容重新派生，route.json
+    只作 evidence（须与派生 route 一致，这里保持一致）。
     """
     # 构造 crash 残留现场：route.json + hermes_result.md + task.json(RUNNING)
     ws = tmp_path / "ws"
@@ -245,6 +247,9 @@ def test_resume_non_terminal_running_reuses_results(tmp_path, monkeypatch):
         return "ok" if agent == "workbuddy" else "implemented ok"
 
     monkeypatch.setattr(runner_mod, "run_agent", fake_agent)
+    # route 派生与残留 route.json 保持一致（FIX-005 Req 2：evidence 必须一致）
+    monkeypatch.setattr(runner_mod, "decide_route",
+                        lambda task: runner_mod.Route(["hermes", "workbuddy"], "test"))
     task_file = tmp_path / "TASK.md"
     task_file.write_text(VALID_TASK, encoding="utf-8")
     runner_mod.run(task_file, ws, out, resume_from=out)
@@ -275,8 +280,7 @@ def test_resume_from_terminal_is_refused(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runner_mod, "run_agent", fake_agent)
     monkeypatch.setattr(runner_mod, "_load_resume_state",
-                        lambda resume_from: (runner_mod.Route(["hermes", "workbuddy"], "test"),
-                                             {"hermes": "implemented ok"}))
+                        lambda output_dir, required_agents: {"hermes": "implemented ok"})
     task_file = tmp_path / "TASK.md"
     ws = tmp_path / "ws"
     report_path = runner_mod.run(task_file, ws, out, resume_from=out)

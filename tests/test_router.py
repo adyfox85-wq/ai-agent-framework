@@ -288,3 +288,44 @@ def test_legacy_route_inference_unchanged_without_route_field():
     route2 = decide_route('请检查这张页面设计图的视觉效果和一致性')
     assert route2.agents[0] == 'workbuddy'
     assert 'hermes' not in route2.agents
+
+
+# --- FIX-005：重复 Route 字段 fail-closed（Req 6/7） ---
+
+def test_duplicate_identical_route_fields_rejected():
+    """多个 Route 字段值完全相同 → 仍 INVALID（fail-closed，不得 first wins）。"""
+    task = '完成资料汇总。\nRoute: hermes -> workbuddy -> codex\nRoute: hermes -> workbuddy -> codex\n'
+    r = parse_explicit_route(task)
+    assert r.status is RouteStatus.INVALID
+    assert '重复' in (r.error or '')
+    with pytest.raises(ValueError, match='INVALID_ROUTE'):
+        decide_route(task)
+
+
+def test_duplicate_conflicting_route_fields_rejected():
+    """多个 Route 字段值不同 → INVALID（不得 first/last wins）。"""
+    task = '完成资料汇总。\nRoute: hermes -> workbuddy\nRoute: workbuddy\n'
+    r = parse_explicit_route(task)
+    assert r.status is RouteStatus.INVALID
+    assert '重复' in (r.error or '')
+
+
+def test_duplicate_route_one_valid_one_invalid_rejected():
+    """一个合法一个非法 → 仍 INVALID（fail-closed）。"""
+    task = '完成资料汇总。\nRoute: hermes -> workbuddy -> codex\nRoute: alien\n'
+    assert parse_explicit_route(task).status is RouteStatus.INVALID
+
+
+def test_duplicate_heading_style_route_rejected():
+    """标题式 `# Route` 重复声明 → 同样 INVALID。"""
+    task = '# Route\nhermes -> workbuddy\n# Route\nworkbuddy\n'
+    assert parse_explicit_route(task).status is RouteStatus.INVALID
+
+
+def test_single_route_field_still_valid():
+    """唯一一个 Route 字段 → 行为不变（VALID + authoritative）。"""
+    task = '完成资料汇总。\nRoute: hermes -> workbuddy -> codex\n'
+    r = parse_explicit_route(task)
+    assert r.status is RouteStatus.VALID
+    assert r.agents == ['hermes', 'workbuddy', 'codex']
+    assert decide_route(task).agents == ['hermes', 'workbuddy', 'codex']

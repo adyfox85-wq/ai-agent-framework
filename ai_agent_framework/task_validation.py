@@ -52,6 +52,28 @@ _DOTDOT = re.compile(r"(^|[\s/\\])\.\.[\s/\\]|(^|[\s/\\])\.\.$")
 _ABSOLUTE_WINDOWS = re.compile(r"^[A-Za-z]:[\\/]")
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
+# machine-authoritative control field（如 Route）唯一性契约的通用 regex 缓存
+_FIELD_OCCURRENCE_RE_CACHE: dict[str, re.Pattern] = {}
+
+
+def count_field_occurrences(body: str, field_key: str) -> int:
+    """统计字段出现次数（同行式 `Key: value` 或标题式 `# Key` + 下一行值）。
+
+    machine-authoritative control field（如 Route，FIX-005 Req 6/7）要求
+    唯一：出现次数 >1 → 调用方必须 fail-closed（不得 first/last wins）。
+    其他 machine-authoritative control fields 如有同类唯一性 contract，
+    可复用本 helper 保证契约一致（不得扩大重构范围）。
+    """
+    pat = _FIELD_OCCURRENCE_RE_CACHE.get(field_key)
+    if pat is None:
+        pat = re.compile(
+            r"(?im)^[ \t]*(?:#+[ \t]*)?"
+            + re.escape(field_key)
+            + r"[ \t]*(?:[:：]|$)"
+        )
+        _FIELD_OCCURRENCE_RE_CACHE[field_key] = pat
+    return len(pat.findall(body or ""))
+
 
 @dataclass
 class ValidationResult:

@@ -6,6 +6,7 @@ from ai_agent_framework.task_validation import (
     REQUIRED_FIELDS,
     TaskValidationError,
     ValidationResult,
+    count_field_occurrences,
     parse_task_fields,
     validate_task_text,
 )
@@ -193,6 +194,34 @@ def test_valid_explicit_route_passes_validation():
 def test_absent_route_passes_validation_legacy():
     """完全没有 Route 字段 → 不触发 route 校验（legacy heuristic 路径不受影响）。"""
     assert validate_task_text(VALID_TASK).valid is True
+
+
+# ---------- FIX-005：重复 Route 字段 fail-closed（Req 6/7） ----------
+
+def test_count_field_occurrences_helper():
+    """通用唯一性 helper：同行式 / 标题式计数；Route Hint 不误计。"""
+    assert count_field_occurrences("Route: hermes\n", "Route") == 1
+    assert count_field_occurrences("Route: hermes\nRoute: workbuddy\n", "Route") == 2
+    assert count_field_occurrences("# Route\nhermes -> workbuddy\n", "Route") == 1
+    assert count_field_occurrences("Route Hint: hermes -> workbuddy -> codex\n", "Route") == 0
+    assert count_field_occurrences("Route: hermes\n", "Task ID") == 0
+    assert count_field_occurrences("", "Route") == 0
+
+
+def test_duplicate_route_field_fails_validation():
+    """重复 Route 字段（相同 / 不同 / 一合法一非法）→ Task Validation FAIL。"""
+    cases = {
+        "Route: hermes\nRoute: hermes\n": "identical",
+        "Route: hermes\nRoute: workbuddy\n": "conflicting",
+        "Route: hermes -> workbuddy -> codex\nRoute: alien\n": "one valid one invalid",
+        "# Route\nhermes -> workbuddy\n# Route\nworkbuddy\n": "duplicate heading style",
+    }
+    for route_block, why in cases.items():
+        text = VALID_TASK.replace("AAF_TASK_END", route_block + "AAF_TASK_END")
+        r = validate_task_text(text)
+        assert r.valid is False, f"{why}: {route_block!r}"
+        assert any("Route" in e for e in r.errors), f"{why}: {r.errors}"
+        assert any("重复" in e for e in r.errors), f"{why}: {r.errors}"
 
 
 # ---------- Integration：Router 边界 ----------

@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import re
 
-from .task_validation import parse_task_fields
+from .task_validation import count_field_occurrences, parse_task_fields
 
 
 @dataclass(frozen=True)
@@ -39,15 +39,11 @@ ALLOWED_ROUTE_AGENTS = ("hermes", "workbuddy", "codex")
 # canonical machine Route 字段的分隔符：-> / → / > / , / 空白（容错 parse）
 _ROUTE_SPLIT_RE = re.compile(r"\s*(?:->|→|>|,)\s*|\s+")
 
-# Route 字段存在性（区分“字段缺失”与“字段存在但为空”；FIX-004 Req 7/8）：
-# 同行式 `Route: xxx` 或标题式 `# Route` + 下一行值。
-_ROUTE_FIELD_RE = re.compile(r"(?im)^[ \t]*(?:#+[ \t]*)?Route[ \t]*(?:[:：]|$)")
-
 ROUTE_REASON_EXPLICIT = "explicit route (machine field)"
 
 
 def parse_explicit_route(task_text: str) -> RouteParseResult:
-    """三态解析 TASK 的 canonical machine Route 字段（FIX-003 Req 1/2 + FIX-004 Req 7–9）。
+    """三态解析 TASK 的 canonical machine Route 字段（FIX-003 Req 1/2 + FIX-004 Req 7–9 + FIX-005 Req 6/7）。
 
     ``Route: hermes -> workbuddy -> codex`` 是结构化机器字段（非人类说明文字）。
     返回 ``RouteParseResult(status, agents, error)``：
@@ -57,10 +53,24 @@ def parse_explicit_route(task_text: str) -> RouteParseResult:
       empty route / duplicate agent 结构一律 INVALID，必须 Task Validation FAIL，
       绝不静默回退 heuristic。
 
+    FIX-005 Req 6/7：Route 字段必须**唯一**。出现次数 >1（无论值相同 / 不同 /
+    一个合法一个非法）→ 一律 INVALID（fail-closed）；唯一性在正式 parser 层
+    验证，不得 first/last wins（count_field_occurrences 为通用 helper，可复用
+    于其他 machine-authoritative control field）。
+
     Route Hint 仍是纯人类补充，不参与机器路由（parse 只认 ``Route:`` 字段）。
     """
-    if not _ROUTE_FIELD_RE.search(task_text or ""):
+    occurrences = count_field_occurrences(task_text or "", "Route")
+    if occurrences == 0:
         return RouteParseResult(RouteStatus.ABSENT)
+    if occurrences > 1:
+        return RouteParseResult(
+            RouteStatus.INVALID,
+            error=(
+                f"Route 字段重复声明（{occurrences} 个）——machine control "
+                f"field 必须唯一（fail-closed，不得 first/last wins）"
+            ),
+        )
     field = (parse_task_fields(task_text).get("Route") or "").strip().lower()
     if not field:
         return RouteParseResult(RouteStatus.INVALID, error="Route 字段存在但为空")

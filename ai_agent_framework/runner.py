@@ -28,7 +28,7 @@ from . import project_boundary
 from . import task_lifecycle
 from .report import build_report, verdict_blocked
 from .reconcile import reconcile_terminal_artifacts
-from .router import Route, decide_route
+from .router import Route, decide_route, parse_explicit_route
 from .task_lifecycle import (
     TERMINAL_REASON_CANCEL_REQUESTED,
     TERMINAL_REASON_FRAMEWORK_ERROR,
@@ -36,7 +36,12 @@ from .task_lifecycle import (
     TERMINAL_REASON_WAITING,
     finalize_terminal,
 )
-from .task_validation import TaskValidationError, parse_task_fields, validate_task_text
+from .task_validation import (
+    TaskValidationError,
+    ValidationResult,
+    parse_task_fields,
+    validate_task_text,
+)
 
 # soft cancel 的 runner 退出码：0（REPORT 已生成；Launcher 不得仅凭 exit code 把
 # CANCELLED 判 FAILED——§6A.5 exit code 只是 evidence，不是判定）
@@ -276,6 +281,21 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 )
                 project_boundary.write_boundary_json(output_dir, task_id, bcheck, None)
             route = decide_route(task)
+            # Route Completeness / Acceptance Bypass Guard（FIX-003 Req 3/4）：
+            # TASK 显式声明的 Route 是 authoritative；Router 必须与其一致。
+            # 若声明了 required route（如含 codex）而实际计算路由不含该 agent，
+            # 必须在 Validation 阶段直接失败——不得跑完后误报 SUCCESS。
+            # （decide_route 已优先采纳显式 Route；此处是防御性不变量断言。）
+            declared_route = parse_explicit_route(task)
+            if declared_route is not None and route.agents != declared_route:
+                raise TaskValidationError(ValidationResult(
+                    valid=False,
+                    errors=[(
+                        f"Route inconsistency: TASK 显式声明 Route: "
+                        f"{' -> '.join(declared_route)}，但 Router 计算结果为 "
+                        f"{' -> '.join(route.agents)}——拒绝以错误路由继续执行"
+                    )],
+                ))
             results = {}
             _ls('CREATED')  # 通过 Validation，尚未执行 Agent 链
 
@@ -375,14 +395,18 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
             status = _aggregate_status(route.agents, results)
             final_status = 'SUCCESS' if status == 'SUCCESS' else 'WAITING'
 
-        # 执行链完整性保护：必需 Executor / Validator 无有效结果 → REPORT 明确标记
-        # （dry-run 不执行 Agent，属预期，不生成误导性 notes）
+        # 执行链完整性保护：必需 Executor / Validator / Reviewer 无有效结果 → REPORT 明确标记
+        # （FIX-003 Req 3：required route 含 codex 而 codex 未执行 / 缺结果 /
+        # FRAMEWORK_ERROR → 不得 SUCCESS；_aggregate_status 已保证 WAITING，
+        # 这里补充显式 integrity note。dry-run 不执行 Agent，属预期，不生成误导性 notes）
         integrity_notes = []
         if not dry:
             if 'hermes' in route.agents and not _result_is_valid(results.get('hermes', '')):
                 integrity_notes.append('Required executor Hermes did not run or produced no valid result')
             if 'workbuddy' in route.agents and not _result_is_valid(results.get('workbuddy', '')):
                 integrity_notes.append('Required validator WorkBuddy did not run or produced no valid result')
+            if 'codex' in route.agents and not _result_is_valid(results.get('codex', '')):
+                integrity_notes.append('Required reviewer Codex did not run or produced no valid result')
 
         # Context Manifest / Integrity（Requirement 6）：stage 产物 path+hash 可追溯引用；
         # 引用模式不因文件后来变化而失去可追溯性（check_references 可验证）
@@ -403,6 +427,7 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
             head=head_at_start,
             stages=manifest_stages,
             prompts=prompt_metrics,
+            intake_task_path=task_file,
         )
 
         # Remote Sync 真值（FIX-002 Req 4/5）：区分 commit graph sync 与 tracked tree；
@@ -413,7 +438,7 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
         report = build_report(
             task, route.agents, results, status, integrity_notes,
             task_path=snapshot_path, task_hash=task_hash, output_dir=output_dir,
-            sync_state=sync_state,
+            sync_state=sync_state, intake_task_path=task_file,
         )
         report_path = output_dir / 'REPORT.md'
 
@@ -457,7 +482,7 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     task, route.agents, results, status, integrity_notes,
                     terminal=canonical.to_dict(),
                     task_path=snapshot_path, task_hash=task_hash, output_dir=output_dir,
-                    sync_state=sync_state,
+                    sync_state=sync_state, intake_task_path=task_file,
                 )
                 report_path.write_text(report, encoding='utf-8')
         else:

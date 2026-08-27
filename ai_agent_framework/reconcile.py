@@ -145,6 +145,7 @@ def _build_report_from_artifacts(output_dir: Path, canonical, task_id: str) -> s
     """
     task_text = ""
     task_ref_path = None
+    intake_task_path = None
     snapshot = output_dir / "TASK.snapshot.md"
     if snapshot.exists():
         try:
@@ -152,6 +153,12 @@ def _build_report_from_artifacts(output_dir: Path, canonical, task_id: str) -> s
             task_ref_path = str(snapshot)
         except OSError:
             task_text = ""
+    # intake path（active TASK 原始路径）只作为 provenance，不是 execution authority
+    try:
+        task_json = read_status(output_dir) or {}
+        intake_task_path = task_json.get("task_path")
+    except Exception:
+        intake_task_path = None
     if not task_text:
         try:
             task_json = read_status(output_dir) or {}
@@ -193,6 +200,7 @@ def _build_report_from_artifacts(output_dir: Path, canonical, task_id: str) -> s
         task_path=task_ref_path,
         task_hash=sha256_text(task_text) if task_text else None,
         output_dir=output_dir,
+        intake_task_path=intake_task_path,
     )
 
 

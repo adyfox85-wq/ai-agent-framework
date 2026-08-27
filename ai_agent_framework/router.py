@@ -1,11 +1,49 @@
 from dataclasses import dataclass
 import re
 
+from .task_validation import parse_task_fields
+
 
 @dataclass(frozen=True)
 class Route:
     agents: list[str]
     reason: str
+
+
+# 合法 route agent（Explicit Route Authority，FIX-003 Req 1/2）
+ALLOWED_ROUTE_AGENTS = ("hermes", "workbuddy", "codex")
+
+# canonical machine Route 字段的分隔符：-> / → / > / , / 空白（容错 parse）
+_ROUTE_SPLIT_RE = re.compile(r"\s*(?:->|→|>|,)\s*|\s+")
+
+ROUTE_REASON_EXPLICIT = "explicit route (machine field)"
+
+
+def parse_explicit_route(task_text: str) -> list[str] | None:
+    """解析 TASK 的 canonical machine Route 字段（FIX-003 Req 1/2）。
+
+    ``Route: hermes -> workbuddy -> codex`` 是结构化机器字段（非人类说明文字）；
+    返回有序 agent 列表。语义：
+    - 未声明 / 字段为空 → None（legacy keyword heuristic）
+    - 可解析且全部 agent 合法 → 有序去重列表（authoritative，覆盖 heuristic）
+    - 含未知 agent → None（不采信该声明，回退 heuristic，不虚构 agent）
+
+    Route Hint 仍是纯人类补充，不参与机器路由（parse 只认 ``Route:`` 字段）。
+    """
+    field = parse_task_fields(task_text).get("Route") or ""
+    raw = field.strip().lower()
+    if not raw:
+        return None
+    parts = [p for p in _ROUTE_SPLIT_RE.split(raw) if p]
+    if not parts or any(p not in ALLOWED_ROUTE_AGENTS for p in parts):
+        return None
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            ordered.append(p)
+    return ordered
 
 
 EXECUTION_WORDS = (
@@ -74,6 +112,13 @@ def _contains_visual_word(t: str) -> bool:
 
 
 def decide_route(task_text: str) -> Route:
+    # Explicit Route Authority（FIX-003 Req 1/2）：TASK 声明 canonical Route 字段 →
+    # 以此为准，不靠全文关键词猜测；keyword heuristic 只作为 legacy fallback /
+    # 未声明 route 时的推断。TASK 不得被迫重复"代码/安全/架构"等无关词触发路由。
+    explicit = parse_explicit_route(task_text)
+    if explicit is not None:
+        return Route(explicit, ROUTE_REASON_EXPLICIT)
+
     t = task_text.lower()
 
     execution_hit = _has_execution_word(t)

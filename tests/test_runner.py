@@ -1,4 +1,8 @@
 from pathlib import Path
+import re
+
+import pytest
+
 import ai_agent_framework.runner as runner_mod
 
 # 合法极简 TASK（满足 Formal Task Validation：Task ID / Task Name / Objective / Acceptance）
@@ -10,6 +14,23 @@ T-EXEC
 
 # Objective
 实现功能并验收
+
+# Acceptance
+1. 通过
+"""
+
+# 显式 Route 字段的极简 TASK（FIX-003：canonical machine Route）
+MINIMAL_EXPLICIT_ROUTE_TASK = """# Task ID
+T-EXPLICIT
+
+# Task Name
+显式路由测试
+
+# Objective
+实现功能并验收
+
+# Route
+hermes -> workbuddy -> codex
 
 # Acceptance
 1. 通过
@@ -244,3 +265,178 @@ def test_status_success_hermes_diff_warning_review():
         {'hermes': 'review diff\na/x.ts → b/x.ts\nwarning: minor', 'workbuddy': 'PASS'},
     )
     assert status == 'SUCCESS'
+
+
+# --- FIX-003：Explicit Route Authority 集成（Req 1/3/4/6/7/11/13） ---
+
+def test_explicit_route_drives_runner_chain(tmp_path, monkeypatch):
+    """正文无代码风险词的 compact TASK + 显式 Route → 完整执行 hermes -> workbuddy -> codex，
+    route.json 记录显式来源（Anti-Bloat：不靠关键词膨胀触发 Codex）。"""
+    calls = []
+
+    def fake_run_agent(agent, prompt, workspace):
+        calls.append(agent)
+        return {'hermes': 'implemented', 'workbuddy': '**Result: PASS**\nverified', 'codex': 'APPROVE'}[agent]
+
+    monkeypatch.setattr(runner_mod, 'run_agent', fake_run_agent)
+
+    body = ("Task ID: T-EXP\nTask Name: 显式路由\n"
+            "Objective: 完成资料汇总并输出清单\n"
+            "Acceptance:\n1. 通过\n"
+            "Route: hermes -> workbuddy -> codex\n")
+    # 正文不含代码风险词（codex 中的 "code" 是子串，Router 用词边界 \b 不命中）
+    assert not any(w in body for w in ('代码', '安全', '架构'))
+    assert not re.search(r'\b(code|architecture)\b', body)
+    task_file = tmp_path / 'TASK.md'
+    task_file.write_text(body, encoding='utf-8')
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    out = tmp_path / 'out'
+    report_path = runner_mod.run(task_file, ws, out)
+
+    assert calls == ['hermes', 'workbuddy', 'codex']
+    report = report_path.read_text(encoding='utf-8')
+    assert '## Current Status\nSUCCESS' in report
+    assert '## Route\nhermes -> workbuddy -> codex' in report
+    import json
+    rj = json.loads((out / 'route.json').read_text(encoding='utf-8'))
+    assert rj['agents'] == ['hermes', 'workbuddy', 'codex']
+    assert rj['reason'] == 'explicit route (machine field)'
+
+
+def test_required_codex_missing_no_success(tmp_path, monkeypatch):
+    """required route 含 codex 但 codex 结果为空 → 不得 SUCCESS（Req 3）。"""
+    def fake_run_agent(agent, prompt, workspace):
+        if agent == 'hermes':
+            return 'implemented ok'
+        if agent == 'workbuddy':
+            return '**Result: PASS**\nverified'
+        return ''  # codex 空结果（未产生有效结果）
+
+    monkeypatch.setattr(runner_mod, 'run_agent', fake_run_agent)
+
+    task_file = tmp_path / 'TASK.md'
+    task_file.write_text(MINIMAL_EXPLICIT_ROUTE_TASK, encoding='utf-8')
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    out = tmp_path / 'out'
+    report_path = runner_mod.run(task_file, ws, out)
+    report = report_path.read_text(encoding='utf-8')
+
+    assert '## Current Status\nWAITING' in report
+    assert 'Required reviewer Codex did not run or produced no valid result' in report
+    assert 'SUCCESS' not in report.split('## Route')[0]
+
+
+def test_required_codex_framework_error_no_success(tmp_path, monkeypatch):
+    """required route 含 codex 但 codex FRAMEWORK_ERROR → 不得 SUCCESS（Req 3）。"""
+    def fake_run_agent(agent, prompt, workspace):
+        if agent == 'hermes':
+            return 'implemented ok'
+        if agent == 'workbuddy':
+            return '**Result: PASS**\nverified'
+        return 'FRAMEWORK_ERROR\nRuntimeError: boom'
+
+    monkeypatch.setattr(runner_mod, 'run_agent', fake_run_agent)
+
+    task_file = tmp_path / 'TASK.md'
+    task_file.write_text(MINIMAL_EXPLICIT_ROUTE_TASK, encoding='utf-8')
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    out = tmp_path / 'out'
+    report_path = runner_mod.run(task_file, ws, out)
+    report = report_path.read_text(encoding='utf-8')
+
+    assert '## Current Status\nWAITING' in report
+    assert 'Required reviewer Codex did not run or produced no valid result' in report
+
+
+def test_route_inconsistency_rejected_at_validation(tmp_path, monkeypatch):
+    """Req 4：TASK 显式声明含 codex 的 Route，但 Router 计算结果缺 codex →
+    Validation 阶段直接失败（Route inconsistency），不执行任何 Agent、不得误报 SUCCESS。"""
+    def fake_decide_route(task):
+        return runner_mod.Route(['hermes', 'workbuddy'], 'heuristic')  # 与声明冲突
+
+    monkeypatch.setattr(runner_mod, 'decide_route', fake_decide_route)
+    calls = []
+
+    def fake_run_agent(agent, prompt, workspace):
+        calls.append(agent)
+        return 'ok'
+
+    monkeypatch.setattr(runner_mod, 'run_agent', fake_run_agent)
+
+    task_file = tmp_path / 'TASK.md'
+    task_file.write_text(MINIMAL_EXPLICIT_ROUTE_TASK, encoding='utf-8')
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    out = tmp_path / 'out'
+    with pytest.raises(runner_mod.TaskValidationError) as exc:
+        runner_mod.run(task_file, ws, out)
+    assert 'Route inconsistency' in str(exc.value)
+    assert calls == []  # 未启动任何 Agent
+
+
+def test_snapshot_hash_in_all_stage_prompts_and_manifest(tmp_path, monkeypatch):
+    """Req 5/6/13：snapshot hash 贯穿所有 stage prompt（hermes/workbuddy/codex）、
+    manifest（task + execution_task）、REPORT；intake_task 仅 provenance 无 hash。"""
+    def fake_run_agent(agent, prompt, workspace):
+        return {'hermes': 'implemented', 'workbuddy': '**Result: PASS**\nverified', 'codex': 'APPROVE'}[agent]
+
+    monkeypatch.setattr(runner_mod, 'run_agent', fake_run_agent)
+
+    task_file = tmp_path / 'TASK.md'
+    task_file.write_text(MINIMAL_EXPLICIT_ROUTE_TASK, encoding='utf-8')
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    out = tmp_path / 'out'
+    runner_mod.run(task_file, ws, out)
+
+    from ai_agent_framework.context_packet import read_manifest, sha256_file
+    snapshot_hash = sha256_file(out / 'TASK.snapshot.md')
+    for agent in ('hermes', 'workbuddy', 'codex'):
+        prompt = (out / f'{agent}_prompt.md').read_text(encoding='utf-8')
+        assert snapshot_hash in prompt
+        assert 'TASK.snapshot.md' in prompt
+
+    manifest = read_manifest(out)
+    assert manifest['task']['hash'] == snapshot_hash
+    assert manifest['execution_task']['hash'] == snapshot_hash
+    assert manifest['execution_task']['path'] == str(out / 'TASK.snapshot.md')
+    assert manifest['intake_task']['path'] == str(task_file)
+    assert 'hash' not in manifest['intake_task']  # 单一 hash authority
+
+    report = (out / 'REPORT.md').read_text(encoding='utf-8')
+    assert snapshot_hash in report
+
+
+def test_active_task_mutation_keeps_execution_reference_stable(tmp_path, monkeypatch):
+    """Req 7：active TASK 后续变化不影响本次 execution 引用（snapshot/manifest/REPORT）。"""
+    def fake_run_agent(agent, prompt, workspace):
+        return {'hermes': 'implemented', 'workbuddy': '**Result: PASS**\nverified', 'codex': 'APPROVE'}[agent]
+
+    monkeypatch.setattr(runner_mod, 'run_agent', fake_run_agent)
+
+    task_file = tmp_path / 'TASK.md'
+    task_file.write_text(MINIMAL_EXPLICIT_ROUTE_TASK, encoding='utf-8')
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    out = tmp_path / 'out'
+    runner_mod.run(task_file, ws, out)
+
+    from ai_agent_framework.context_packet import check_references, read_manifest, sha256_file
+    snapshot_hash = sha256_file(out / 'TASK.snapshot.md')
+    report_before = (out / 'REPORT.md').read_text(encoding='utf-8')
+
+    # active 文件被修改（追加新要求）→ 本次 execution 引用不得变化
+    task_file.write_text(MINIMAL_EXPLICIT_ROUTE_TASK + "Requirements:\n99. 新增要求\n", encoding='utf-8')
+
+    report_after = (out / 'REPORT.md').read_text(encoding='utf-8')
+    assert report_after == report_before
+    assert check_references(read_manifest(out)) == []
+
+    ref_section = report_after.split('## Task Reference')[1].split('## Agent Results')[0]
+    assert 'TASK.snapshot.md' in ref_section          # Task Path = immutable snapshot
+    assert snapshot_hash in ref_section               # Task Hash = snapshot hash
+    assert 'Original Intake Path' in ref_section      # intake 仅 provenance
+    assert str(task_file) in ref_section

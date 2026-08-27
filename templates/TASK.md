@@ -36,7 +36,12 @@ Acceptance:
 1. 
 2. 
 
+Route:
+（canonical machine 字段：显式声明执行链，如 `hermes -> workbuddy -> codex`。
+声明后 Router 以此为准，不再靠全文关键词推断；可选。）
+
 Route Hint:
-（建议执行链：Hermes / WorkBuddy / Codex 分工；可选。）
+（建议执行链：Hermes / WorkBuddy / Codex 分工；人类补充说明，仅供阅读，
+不参与机器路由；可选。）
 
 AAF_TASK_END

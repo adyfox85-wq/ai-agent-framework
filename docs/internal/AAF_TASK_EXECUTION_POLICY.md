@@ -59,6 +59,7 @@ Requirements
 Scope / Out of Scope
 Validation
 Acceptance
+Route
 Route Hint
 ```
 
@@ -74,12 +75,33 @@ Route Hint
 | Scope / Out of Scope | 允许 / 禁止边界 | 边界必须完整，禁止为瘦身删除禁止项 |
 | Validation | 怎么验证 | 方法/命令/证据；与 Acceptance（满足什么）语义去重 |
 | Acceptance | 必须满足什么 | 验收语义完整保留 |
-| Route Hint | 建议执行链 | 可选 |
+| Route | canonical machine 字段：显式声明执行链（`hermes -> workbuddy -> codex`） | 机器路由 authority；与 Route Hint 去重（Hint 只供人类阅读） |
+| Route Hint | 建议执行链的人类补充 | 只读说明，不参与机器路由；可选 |
 
 Formal validator（`task_validation.py`）保持最小必填集
 （Task ID / Task Name / Objective / Acceptance）以兼容旧 TASK；
 新 TASK 按本 Schema 全字段编写。解析器支持 Compact 全部字段的
 既有格式（`Field: value` 同行式 / `# Field` 标题式），旧格式不破坏。
+
+## 2.1 Explicit Route Authority（FIX-003）
+
+- **`Route:` 是 canonical machine 字段**（非人类说明文字），由
+  `router.parse_explicit_route` 正式 parse：`Route: hermes -> workbuddy -> codex`
+  （分隔符容忍 `->` / `→` / `,` / 空白；agent 仅限 hermes / workbuddy / codex）。
+- **显式 Route 优先于全文关键词 heuristic**：TASK 声明合法 Route 时，
+  `decide_route` 直接采用声明，不再用关键词猜测；keyword Router 仅作为
+  legacy fallback / 未声明 route 时的推断。**TASK 不得被迫重复
+  "代码/安全/架构" 等无关词来触发 Codex**（Anti-Bloat 回归测试保障）。
+- **Route Hint 保持人类补充**：只读说明，不参与机器路由（parse 只认
+  `Route:` 字段）。
+- **Route Completeness Guard**：Runner 在最终 SUCCESS 前验证所有 required
+  route agents 都真正执行并产生有效结果（缺失 / FRAMEWORK_ERROR / 空结果 →
+  `_aggregate_status` = WAITING，REPORT 追加对应 integrity note，绝不误报
+  SUCCESS）。
+- **Acceptance 不可被路由绕过**：TASK 显式要求 Codex = APPROVE 但实际 route
+  不含 Codex → Validation 阶段直接发现 Route inconsistency 并拒绝执行
+  （Runner 的防御性不变量断言：declared route ≠ computed route → 失败）。
+- **旧 TASK 无 `Route:` 字段 → 保持 legacy keyword inference 不变**。
 
 ## 3. Semantic Coverage Guard（压缩不丢信息）
 
@@ -182,14 +204,18 @@ Task Remote Sync 为准。
 
 每个运行目录生成 `context_manifest.json`（`context_packet.write_manifest`），至少记录：
 
-- TASK snapshot path + hash + bytes（`TASK.snapshot.md`，immutable execution snapshot；
-  FIX-002 后不再引用可变化的 active TASK 文件）
+- `execution_task`：immutable snapshot（`TASK.snapshot.md`）的 path + hash + bytes
+  ——**所有 downstream integrity check 的默认验证对象**（FIX-003）
+- `task`：legacy key，恒等于 execution_task（向后兼容，两者 hash 必须一致）
+- `intake_task`：仅 provenance（active TASK 原始 path，**无 hash**——不出现
+  第二个 hash authority；active 文件后续变化不影响 execution integrity）
 - 每 stage result_md / result_json 的 path + hash + bytes
 - workspace；commit / HEAD（git 事实，非 git 仓库为 null，不虚构）
 - 每 stage prompt 的 size 指标（§10）
 
 引用完整性检查：`context_packet.check_references(manifest)` —— 所有引用 path 存在且
-hash 匹配；snapshot 或 stage 文件后来变化（含 tamper）→ 检测为 hash 不匹配
+hash 匹配（默认验证 execution_task；intake_task 因可能被移动/归档不参与校验）；
+snapshot 或 stage 文件后来变化（含 tamper）→ 检测为 hash 不匹配
 （可追溯性不丢失）。
 
 ## 7. REPORT De-duplication
@@ -199,6 +225,8 @@ hash 匹配；snapshot 或 stage 文件后来变化（含 tamper）→ 检测为
 - 不再复制整份 `## Original Task <full TASK>`；
   改为 `## Task Reference`：Task ID / Task Path（= immutable snapshot
   `TASK.snapshot.md`）/ Task Hash / Artifacts 目录。
+- 可额外记录 `Original Intake Path`（active TASK 原始路径）——它只能是
+  provenance，不是 execution authority（FIX-003）。
 - 提供 `sync_state` 时附加 `## Remote Sync` 段（§5.1：Commit Sync /
   Tracked Working Tree / Task Remote Sync）。
 - Agent Results：摘要 + `<agent>_result.md` 完整结果路径；不复制上游 narrative 全文。

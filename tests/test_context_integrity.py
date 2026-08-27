@@ -161,6 +161,57 @@ def test_runner_creates_snapshot_and_hash_single_source(tmp_path, monkeypatch):
     assert manifest["task"]["hash"] in report
 
 
+def test_manifest_distinguishes_intake_and_execution_task(tmp_path, monkeypatch):
+    """FIX-003 Req 9：manifest 区分 intake_task（仅 provenance、无 hash）与
+    execution_task（snapshot path + hash，downstream integrity 默认验证对象）。"""
+    def fake_run_agent(agent, prompt, workspace):
+        return {"hermes": "implemented", "workbuddy": "**Result: PASS**\nverified", "codex": "APPROVE"}[agent]
+
+    monkeypatch.setattr(runner_mod, "run_agent", fake_run_agent)
+    task_file = _task_file(tmp_path)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    out = tmp_path / "out"
+    runner_mod.run(task_file, ws, out)
+
+    manifest = read_manifest(out)
+    assert manifest["intake_task"]["path"] == str(task_file)
+    assert "hash" not in manifest["intake_task"]  # 单一 hash authority（无 intake hash）
+    assert manifest["execution_task"]["path"] == str(out / "TASK.snapshot.md")
+    assert manifest["execution_task"]["hash"] == sha256_file(out / "TASK.snapshot.md")
+    # legacy task key 恒等于 execution_task（向后兼容 + hash 单一来源）
+    assert manifest["task"] == manifest["execution_task"]
+    assert check_references(manifest) == []
+
+
+def test_report_original_intake_path_is_provenance_only(tmp_path):
+    """FIX-003 Req 8：REPORT Task Reference 的 Task Path 指向 immutable snapshot；
+    Original Intake Path 只是 provenance，不携带 hash authority。"""
+    snapshot = tmp_path / "TASK.snapshot.md"
+    snapshot.write_text(COMPACT_TASK, encoding="utf-8")
+    active = tmp_path / "active" / "T-1.md"
+    active.parent.mkdir(parents=True)
+    active.write_text(COMPACT_TASK, encoding="utf-8")
+    snapshot_hash = sha256_file(snapshot)
+
+    report = build_report(
+        COMPACT_TASK, ["hermes", "workbuddy", "codex"],
+        {"hermes": "ok", "workbuddy": "PASS", "codex": "APPROVE"}, "SUCCESS",
+        task_path=str(snapshot), task_hash=snapshot_hash,
+        output_dir=str(tmp_path / "out"), intake_task_path=str(active),
+    )
+    ref = report.split("## Task Reference")[1].split("## Agent Results")[0]
+    assert f"- Task Path: {snapshot}" in ref
+    assert f"- Task Hash: {snapshot_hash}" in ref
+    assert f"Original Intake Path: {active}" in ref
+    # legacy 调用方（不提供 intake path）→ 无该行，REPORT 仍引用 snapshot
+    report2 = build_report(
+        COMPACT_TASK, ["hermes"], {"hermes": "ok"}, "SUCCESS",
+        task_path=str(snapshot), task_hash=snapshot_hash,
+    )
+    assert "Original Intake Path" not in report2
+
+
 def test_active_task_change_does_not_break_execution(tmp_path, monkeypatch):
     """active TASK 后续变化 → snapshot/hash/manifest 不变，check_references 仍通过。"""
     def fake_run_agent(agent, prompt, workspace):

@@ -2,7 +2,7 @@
 
 > Project: AI Agent Framework\
 > Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE — 005-A + FIX-001/002/003；E-Ownership / Force Cancel 已交付 — 005-B 已执行，WorkBuddy PASS / Codex REQUEST_CHANGE → pending blocker AAF-v0.4-TASK-005-B-FIX-001；剩余 TASK-005-C Status Window Cancel UX + Real Windows Closure 未交付 → Phase E 不得标 COMPLETE）；Phase F NOT STARTED；当前唯一 Next Step = AAF-v0.4-TASK-005-B-FIX-001）**\
-> Last Updated: 2026-08-28（AAF-MAINT-CONTEXT-001-FIX-002 — Context Integrity / Structured Evidence Closure：immutable task snapshot + hash single source + Remote Sync Truth + structured summary 契约；唯一 Next Step 保持 = AAF-v0.4-TASK-005-B-FIX-001）\
+> Last Updated: 2026-08-28（AAF-MAINT-CONTEXT-001-FIX-003 — Explicit Route Authority + Snapshot Reference Closure：`Route:` canonical machine 字段优先于关键词 heuristic、Route Completeness Guard（required Codex 缺失不得 SUCCESS）、manifest 区分 intake_task（provenance）/ execution_task（authority）、REPORT 统一引用 immutable snapshot；唯一 Next Step 保持 = AAF-v0.4-TASK-005-B-FIX-001）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework

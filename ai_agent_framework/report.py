@@ -96,6 +96,7 @@ def build_report(
     task_hash: str | None = None,
     output_dir=None,
     sync_state: dict | None = None,
+    intake_task_path=None,
 ) -> str:
     """生成 REPORT.md 文本（REPORT De-duplication，Requirement 7）。
 
@@ -104,6 +105,8 @@ def build_report(
       未提供（legacy 外部调用方）→ 保留旧 ``## Original Task`` 全文嵌入（Backward Compat）。
       FIX-002 Req 1/2：Runner 传入的 task_path 是 immutable execution snapshot
       （TASK.snapshot.md），task_hash 只从 snapshot 计算一次并在整个 lifecycle 复用。
+      FIX-003 Req 8：``intake_task_path``（active TASK 原始路径）只作为
+      ``Original Intake Path`` provenance 记录，不是 execution authority。
     - Agent Results：摘要 + 完整结果 artifact 路径（output_dir 提供时）；不复制上游 narrative 全文。
     - ``sync_state``：``context_packet.remote_sync_state()`` 的 dict（FIX-002 Req 4/5）——
       提供时附加 ``## Remote Sync`` 段（Commit Sync / Tracked Working Tree /
@@ -149,6 +152,11 @@ def build_report(
             ref_lines.append(f'- Task Path: {task_path}')
         if task_hash:
             ref_lines.append(f'- Task Hash: {task_hash}')
+        if intake_task_path:
+            ref_lines.append(
+                f'- Original Intake Path: {intake_task_path}'
+                '（provenance；execution authority 为上方 immutable snapshot）'
+            )
         if output_dir is not None:
             ref_lines.append(f'- Artifacts: {output_dir}')
         task_section = '\n'.join(ref_lines)

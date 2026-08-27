@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from ai_agent_framework.router import decide_route
+from ai_agent_framework.router import (
+    decide_route,
+    parse_explicit_route,
+)
 
 
 def test_execution_routes_hermes_then_workbuddy():
@@ -185,3 +188,73 @@ def test_english_global_readonly_still_skips_hermes_case8():
     route = decide_route('review the page design, without modifying any file')
     assert 'hermes' not in route.agents
     assert route.agents[0] == 'workbuddy'
+
+
+# --- FIX-003：Explicit Route Authority（Req 1/2/4/11/12） ---
+
+def test_explicit_route_field_parsed_3_agents():
+    """canonical machine Route 字段被正式 parse（非人类说明文字）。"""
+    task = '完成资料汇总。\nRoute: hermes -> workbuddy -> codex\n'
+    assert parse_explicit_route(task) == ['hermes', 'workbuddy', 'codex']
+    route = decide_route(task)
+    assert route.agents == ['hermes', 'workbuddy', 'codex']
+    assert route.reason == 'explicit route (machine field)'
+
+
+def test_explicit_route_parsing_variants():
+    """分隔符容错：-> / → / , / 空白 / 大小写；去重保序。"""
+    assert parse_explicit_route('Route: hermes -> workbuddy -> codex') == ['hermes', 'workbuddy', 'codex']
+    assert parse_explicit_route('Route: hermes→workbuddy→codex') == ['hermes', 'workbuddy', 'codex']
+    assert parse_explicit_route('Route: hermes, workbuddy, codex') == ['hermes', 'workbuddy', 'codex']
+    assert parse_explicit_route('Route: HERMES -> WORKBUDDY') == ['hermes', 'workbuddy']
+    assert parse_explicit_route('Route: hermes -> hermes') == ['hermes']  # 去重
+    # 未声明 / 空 → None（legacy inference）
+    assert parse_explicit_route('没有 Route 字段的任务') is None
+    assert parse_explicit_route('Route:') is None
+    # Route Hint 不参与机器路由（parse 只认 Route: 字段）
+    assert parse_explicit_route('Route Hint: Hermes → WorkBuddy → Codex') is None
+    # 未知 agent → None（不采信，不虚构）
+    assert parse_explicit_route('Route: hermes -> alien') is None
+
+
+def test_explicit_route_overrides_heuristic():
+    """heuristic 判 review-only（workbuddy 起步），显式 Route 声明全链 → 以声明为准。"""
+    task = '只检查页面设计，不修改任何文件。\nRoute: hermes -> workbuddy -> codex\n'
+    route = decide_route(task)
+    assert route.agents == ['hermes', 'workbuddy', 'codex']
+
+
+def test_explicit_route_can_narrow_to_workbuddy_only():
+    """heuristic 判执行+代码风险（hermes/workbuddy/codex），显式 Route 收窄 → 以声明为准。"""
+    task = '实现并修改核心功能代码。\nRoute: workbuddy\n'
+    route = decide_route(task)
+    assert route.agents == ['workbuddy']
+
+
+def test_explicit_route_unknown_agent_falls_back_to_heuristic():
+    """声明含未知 agent → 不采信，回退 heuristic（不崩溃、不虚构 agent）。"""
+    task = '实现核心功能代码。\nRoute: hermes -> alien\n'
+    route = decide_route(task)
+    assert route.agents == ['hermes', 'workbuddy', 'codex']
+
+
+def test_compact_text_without_code_risk_words_still_runs_codex():
+    """Anti-Bloat 回归（Req 11）：正文完全不含 代码/安全/架构/code/architecture，
+    仅凭显式 Route 字段仍路由 hermes -> workbuddy -> codex。"""
+    body = '任务要求：完成资料汇总、结果核验并输出清单。'
+    assert not any(w in body for w in ('代码', '安全', '架构', 'code', 'architecture'))
+    task_with_route = body + '\nRoute: hermes -> workbuddy -> codex\n'
+    route = decide_route(task_with_route)
+    assert route.agents == ['hermes', 'workbuddy', 'codex']
+    # 对照：去掉 Route 字段 → heuristic 不含 codex（证明不是靠关键词膨胀触发）
+    route_legacy = decide_route(body)
+    assert 'codex' not in route_legacy.agents
+
+
+def test_legacy_route_inference_unchanged_without_route_field():
+    """旧 TASK 无 Route 字段 → keyword heuristic 行为不变（Req 12）。"""
+    route = decide_route('修改前端代码并运行测试')
+    assert route.agents == ['hermes', 'workbuddy', 'codex']
+    route2 = decide_route('请检查这张页面设计图的视觉效果和一致性')
+    assert route2.agents[0] == 'workbuddy'
+    assert 'hermes' not in route2.agents

@@ -262,9 +262,28 @@ def _extract_source_of_truth_paths(task: str) -> list[str]:
 
 def _hermes_prompt(task: str, workspace: Path | None, task_path, task_hash: str | None) -> tuple[str, dict]:
     """Hermes（Executor）：TASK 全文（= current delta）+ Source of Truth 引用清单 +
-    Structured Result Contract。"""
+    Structured Result Contract。
+
+    FIX-003 Req 5/6/13：Hermes prompt 也显式引用 immutable execution snapshot
+    （path + 单一 hash）——本 prompt 嵌入的 TASK 即 snapshot 内容；active TASK
+    后续变化不影响本次 execution integrity。legacy 调用方（无 task_path/hash）
+    不注入引用块，保持向后兼容。
+    """
     sources = _extract_source_of_truth_paths(task)
     blocks = ['# ORIGINAL TASK', task]
+    ref_lines = []
+    if task_path:
+        ref_lines.append(f'- Snapshot Path: {task_path}')
+    if task_hash:
+        ref_lines.append(f'- Task Hash: {task_hash}')
+    if ref_lines:
+        ref_lines = [
+            '# TASK REFERENCE（execution snapshot）',
+            *ref_lines,
+            '- 本 prompt 嵌入的 TASK 即 immutable execution snapshot（TASK.snapshot.md）内容；',
+            '  active TASK 文件的后续变化不影响本次 execution integrity。',
+        ]
+        blocks.append('\n'.join(ref_lines))
     if sources:
         src_lines = ['# SOURCE OF TRUTH（Repository 权威来源；按需读取，不重复全文）']
         src_lines += [f'- {s}' for s in sources]

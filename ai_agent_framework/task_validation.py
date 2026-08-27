@@ -38,6 +38,7 @@ OPTIONAL_FIELDS = (
     "Source of Truth",
     "Validation",
     "Files",
+    "Route",
     "Route Hint",
     "Execution Policy",
     "Planner Notes",

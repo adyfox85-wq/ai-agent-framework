@@ -565,28 +565,37 @@ def write_manifest(
     head: str | None,
     stages: dict[str, dict],
     prompts: dict[str, dict],
+    intake_task_path: Path | str | None = None,
 ) -> Path:
-    """写 ``context_manifest.json``（Requirement 6）。
+    """写 ``context_manifest.json``（Requirement 6 / FIX-003 Req 9）。
 
-    - TASK path + hash
+    - ``task``：execution snapshot 的 path + hash + bytes（= execution_task；
+      legacy key 保留，两者始终一致）
+    - ``execution_task``：immutable snapshot（TASK.snapshot.md）的 path + hash +
+      bytes——**所有 downstream integrity check 的默认验证对象**
+    - ``intake_task``：仅 provenance（active TASK 的原始 path，**无 hash**——
+      不得出现第二个 hash authority；active 文件后续变化不影响 execution）
     - 每个 stage 的 result_md / result_json path + hash
-    - workspace / HEAD
-    - 每 stage prompt 的 size 指标（Requirement 10）
+    - workspace / HEAD；每 stage prompt 的 size 指标（Requirement 10）
     """
     output_dir = Path(output_dir)
-    manifest = {
+    task_entry = {
+        "path": str(task_path),
+        "hash": task_hash,
+        "bytes": task_bytes,
+    }
+    manifest: dict = {
         "protocol": PROTOCOL_VERSION,
-        "task": {
-            "path": str(task_path),
-            "hash": task_hash,
-            "bytes": task_bytes,
-        },
+        "task": dict(task_entry),
+        "execution_task": dict(task_entry),
         "workspace": str(workspace),
         "head": head,
         "stages": stages,
         "prompts": prompts,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     }
+    if intake_task_path:
+        manifest["intake_task"] = {"path": str(intake_task_path)}
     path = output_dir / "context_manifest.json"
     path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -633,6 +642,12 @@ def check_references(manifest: dict, base_dir: Path | str | None = None) -> list
         _check(task, "task")
     else:
         problems.append("manifest 缺少 task 引用")
+    # FIX-003 Req 9：execution_task 是 downstream integrity 的默认验证对象；
+    # 两者指向同一 immutable snapshot。intake_task 仅 provenance（active 文件
+    # 可能被移动/归档），不参与完整性校验——其变化不得破坏 execution 引用。
+    execution_task = manifest.get("execution_task")
+    if isinstance(execution_task, dict):
+        _check(execution_task, "execution_task")
     for agent, entry in (manifest.get("stages") or {}).items():
         if isinstance(entry, dict):
             _check(entry.get("result_md"), f"stage {agent} result_md")

@@ -3,7 +3,7 @@
 > Project: AI Agent Framework
 > Document Type: **Living Long-Term Backlog / 长期问题与恢复登记**
 > Established: 2026-08-27（AAF-MAINT-001-FIX-002）
-> Last Updated: 2026-08-27（AAF-MAINT-003）
+> Last Updated: 2026-08-27（AAF-DESIGN-001）
 > Location: `docs/internal/AAF_MASTER_BACKLOG.md`
 
 ## Purpose
@@ -106,6 +106,7 @@ P3
 | Decision | 当前不实现（登记待办）；默认行为保持人工确认 |
 | Target | Bridge 能自动识别 TASK 指定的 workspace，并在切换前明确确认 |
 | Do Not Forget | **不静默执行陌生路径**；切换必须显式确认，安全优先 |
+| Design Reference | `docs/design/AAF-DESKTOP-SHELL-MINIMAL-DESIGN.md`（AAF-DESIGN-001：Desktop Shell 最小设计完成，实现未开始） |
 
 ---
 
@@ -124,6 +125,7 @@ P3
 | Decision | 当前不实现（登记待办） |
 | Target | Bridge 能由桌面壳层或后台机制管理，常驻可管理（Tray / 后台启动 / 状态入口）；普通使用时不依赖持续打开 PowerShell / Terminal 窗口 |
 | Do Not Forget | 与 RW-006 / RW-010 相关联；不做成大型独立应用 |
+| Design Reference | `docs/design/AAF-DESKTOP-SHELL-MINIMAL-DESIGN.md`（AAF-DESIGN-001：Desktop Shell 最小设计完成，实现未开始） |
 
 ---
 
@@ -142,6 +144,7 @@ P3
 | Decision | 先增加可观测性，再判断性能优化；**不能为了提速直接删除质量保障阶段** |
 | Target | 各阶段耗时可观测、可对比 |
 | Do Not Forget | 提速不得以牺牲质量保障阶段为代价 |
+| Design Reference | `docs/design/AAF-DESKTOP-SHELL-MINIMAL-DESIGN.md`（AAF-DESIGN-001：Desktop Shell 最小设计完成，实现未开始） |
 
 ---
 
@@ -160,6 +163,7 @@ P3
 | Decision | 建议未来与 Tray / Desktop UI 合并，而不是建设大型 Web Dashboard。<br><br>**阶段状态是可靠事实**，例如：<br>Validation ✓<br>Boundary ✓<br>Hermes ✓<br>WorkBuddy ▶<br>Codex ○<br>REPORT ○<br><br>**百分比属于 estimated progress，不能伪装成精确真实剩余时间。**<br><br>第一版允许使用静态阶段权重（仅为未来实现候选，本任务不实现算法）：<br>Validation 5<br>Boundary 5<br>Hermes 45<br>WorkBuddy 20<br>Codex 20<br>REPORT 5<br><br>长期可根据真实阶段耗时统计校准权重（与 RW-005 联动）。 |
 | Target | 单窗口可读的运行时状态：当前项目 / TASK / Agent / 阶段 / 进度 一眼可见 |
 | Do Not Forget | 核心体验目标：<br>**看得到** → 当前项目 / TASK / Agent / 阶段 / 进度<br>**看得懂** → 中文状态 / 最近活动 / 错误 / 是否疑似卡住<br>**控得住** → Stop Task / Restart Bridge / Project Switch / Open Logs<br><br>进度百分比必须明确标注为估算值。<br>拒绝大而全的 Web Dashboard；保持轻量。 |
+| Design Reference | `docs/design/AAF-DESKTOP-SHELL-MINIMAL-DESIGN.md`（AAF-DESIGN-001：Desktop Shell 最小设计完成，实现未开始） |
 
 ---
 
@@ -232,6 +236,7 @@ P3
 | Decision | 原则：**Desktop App ≠ 重写 AAF**。复用现有 Framework Core，增加小型桌面壳层。目标架构：<br><br>AAF Core<br>↓<br>Desktop Shell / Tray<br><br>核心执行逻辑保持独立，UI 只负责操作、状态和生命周期入口。<br>**明确不扩展到**：<br>- SaaS<br>- 多用户后台<br>- 云端管理平台<br>- Agent marketplace<br>- 无限自主循环 |
 | Target | 轻量桌面壳层，不改变 Framework Core 边界 |
 | Do Not Forget | 小而本地；禁止膨胀为平台 |
+| Design Reference | `docs/design/AAF-DESKTOP-SHELL-MINIMAL-DESIGN.md`（AAF-DESIGN-001：Desktop Shell 最小设计完成，实现未开始） |
 
 ---
 
@@ -268,6 +273,7 @@ P3
 | Decision | 当前不实现（登记待办）；出现时安全重启 Bridge |
 | Target | listener 可自检、可自恢复、重启 UX 顺畅 |
 | Do Not Forget | **Bridge process 存活不能单独证明 hotkey listener 健康** |
+| Design Reference | `docs/design/AAF-DESKTOP-SHELL-MINIMAL-DESIGN.md`（AAF-DESIGN-001：Desktop Shell 最小设计完成，实现未开始） |
 
 ---
 
@@ -304,6 +310,7 @@ P3
 | Decision | 当前先登记。后续与 Runtime Status / Tray / Desktop Shell 设计一起规划。不能仅做一个粗暴 kill-process 按钮 |
 | Target | 未来 Desktop Shell / Runtime UX implementation phase |
 | Do Not Forget | 用户需要的是"安全停止当前 TASK"，而不是"关闭整个 AAF"——Stop Current Task 与 Exit AAF 必须明确区分 |
+| Design Reference | `docs/design/AAF-DESKTOP-SHELL-MINIMAL-DESIGN.md`（AAF-DESIGN-001：Desktop Shell 最小设计完成，实现未开始） |
 
 ---
 
@@ -322,6 +329,7 @@ P3
 | Decision | Chinese-first。当前不因为国际化需求增加复杂语言系统。未来如确有公开用户需求，再评估中英文切换 |
 | Target | Desktop Shell / Tray UX phase |
 | Do Not Forget | 日志和内部协议可以继续英文，用户操作界面优先中文 |
+| Design Reference | `docs/design/AAF-DESKTOP-SHELL-MINIMAL-DESIGN.md`（AAF-DESIGN-001：Desktop Shell 最小设计完成，实现未开始） |
 
 ---
 
@@ -340,6 +348,7 @@ P3
 | Decision | 当前只登记。未来与 Desktop Shell / Runtime Status UI 合并设计。 |
 | Target | 用户不需要打开 .aaf 文件夹猜任务状态。 |
 | Do Not Forget | TASK_ALREADY_EXISTS 本身不是错误；真正 UX 缺口是"只告诉存在，不告诉现在是什么状态"。 |
+| Design Reference | `docs/design/AAF-DESKTOP-SHELL-MINIMAL-DESIGN.md`（AAF-DESIGN-001：Desktop Shell 最小设计完成，实现未开始） |
 
 ---
 

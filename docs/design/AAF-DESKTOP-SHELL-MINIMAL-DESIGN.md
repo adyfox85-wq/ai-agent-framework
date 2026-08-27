@@ -1,0 +1,990 @@
+# AAF-DESKTOP-SHELL-MINIMAL-DESIGN.md
+
+> 文档类型: 设计规格（Design Specification）
+> 任务: AAF-DESIGN-001 — Desktop Shell and Runtime Control Minimal Design
+> 日期: 2026-08-27
+> 状态: **DESIGN COMPLETED / IMPLEMENTATION NOT STARTED**
+> 范围: 本任务只产出可执行的设计规格与实施拆分。**不实现** Tray / GUI / progress bar / cancel / autostart / project switching / packaging / heartbeat / 新 runtime schema。
+> 关联 backlog: RW-003, RW-004, RW-005, RW-006, RW-010, RW-012, RW-014, RW-015, RW-016（见 `docs/internal/AAF_MASTER_BACKLOG.md` 中相应条目的 Design Reference 字段）
+> 版本状态: v0.3 CLOSED（不变）；v0.4 NOT STARTED（不变）
+
+---
+
+## 0. 文档地图（对应 TASK 要求索引）
+
+| TASK 要求 | 文档章节 |
+|---|---|
+| 1. 先读 backlog / PROJECT_STATE / 现有实现 | §1 现状调研 |
+| 2. 设计文件创建 | 本文件 |
+| 3. 第一版 Desktop Shell 选型 | §2 |
+| 4. 第一版 UI 信息架构 | §3 |
+| 5. Progress Bar 设计 | §4 |
+| 6. Last Activity / Stuck Detection | §5 |
+| 7. Stop / Cancel Current Task | §6 |
+| 8. Bridge Background Runtime | §7 |
+| 9. Hotkey Health（RW-012） | §8 |
+| 10. Project Switching（RW-003） | §9 |
+| 11. Duplicate Task UX（RW-016） | §10 |
+| 12. Chinese-first UI（RW-015） | §11 |
+| 13. 文字版 UI Wireframe | §12 |
+| 14. Runtime State Source | §13 |
+| 15. Core / UI 边界 | §14 |
+| 16. 实施拆分（Phase A-F） | §15 |
+| 17. 复杂度评估 | §16 |
+| 18. 推荐第一版范围（MVP） | §17 |
+| 19-22. 只设计 / 不启动 v0.4 / backlog 不标 SOLVED / PROJECT_STATE | §18 |
+| 23-24. WorkBuddy / Codex 审查指引 | §19 |
+
+---
+
+## 1. 现状调研（来源与生命周期）
+
+本设计基于对以下实现的实际检查（2026-08-27）：
+
+- `run.py` → `ai_agent_framework/runner.py`（正式入口）
+- `ai_agent_framework/`（router / adapters / task_lifecycle / task_archive / report / project_boundary）
+- `bridge/`（main / launcher / config / task_io / win32 / ui / handoff）
+- 真实运行产物：`.aaf/AAF-MAINT-003/`（task.json / run.json / route.json / REPORT.md）
+
+### 1.1 组件现状
+
+**Runner（ai_agent_framework/runner.py）** — 顺序执行链，单进程、单线程：
+
+```
+Validation（validate_task_text，失败 → exit 2，不产生任何 artifact）
+→ Boundary Check（写 boundary.json；warning-first，fail-open）
+→ Router（decide_route → route.json：agents 列表）
+→ Lifecycle CREATED（写 task.json）
+→ RUNNING（写 task.json）
+→ 对 route.agents 逐个：
+    写 <agent>_prompt.md → run_agent（阻塞 subprocess.run，timeout=3600）→ 写 <agent>_result.md
+    结果无效（FRAMEWORK_ERROR / 空）→ 中断后续节点
+→ 聚合 SUCCESS / WAITING
+→ 写 REPORT.md → 写 run.json（仅在结尾写一次）→ 终态写入 task.json
+```
+
+关键事实：
+
+- `run.json` **只在执行结束时写一次**（timestamp = 结束时间），不是活动信号源。
+- `task.json.updated_at` 在 CREATED / RUNNING / 终态时更新，**不随阶段推进更新**。
+- Agent 执行期间（可能长达数十分钟）输出目录内**没有任何文件变化**——当前不存在"进行中"的中间信号。
+- Agent CLI（hermes / codebuddy / codex）是 runner 的子进程；runner 是 Bridge launcher 的子进程。
+
+**Bridge（bridge/main.py + launcher.py）** — tkinter 隐藏主窗口 + ctypes 热键线程：
+
+```
+热键 Ctrl+Alt+A → 读剪贴板 → task_io 校验（含 workspace 与 current_workspace 匹配检查）
+→ 确认窗口（Execute / Cancel）→ save_task 落盘 .aaf/tasks/active/<id>.md（重复 → TASK_ALREADY_EXISTS）
+→ FrameworkLauncher.launch：subprocess.Popen(run.py <task> --workspace <ws> --output <dir>)
+   单任务并发保护（state=RUNNING 时拒绝新任务）
+→ 等待线程收尾：FINISHED / FAILED / REPORT_NOT_FOUND / FAILED_TO_START → last_run.json → 弹窗
+```
+
+关键事实：
+
+- Bridge 是常驻进程，但依赖一个 PowerShell / Terminal 窗口承载（python module 前台运行）；终端关闭即停止（RW-004 的根因之一）。
+- Launcher 持有 runner 的 Popen 句柄，但**不持久化 PID**。
+- Bridge 退出时，runner 子进程在 Windows 上继续运行（孤儿化），无人收尾。
+- `bridge/config.py`：`~/.aaf-bridge/config.json` 含 hotkey / current_project / current_workspace。
+
+**Lifecycle（ai_agent_framework/task_lifecycle.py）** — 唯一合法状态集合：
+
+```
+CREATED, RUNNING, WAITING, SUCCESS, FAILED
+```
+
+- task.json 字段：task_id / status / updated_at / task_path / workspace / report_path / reason（可选）。
+- 归档（task_archive.py）：仅 SUCCESS / WAITING / FAILED 可归档到 `.aaf/archive/<id>/`；CREATED / RUNNING 拒绝。
+
+**状态源清单（现状可读）：**
+
+| 来源 | 位置 | 内容 | 实时性 |
+|---|---|---|---|
+| task.json | `.aaf/<id>/task.json` | lifecycle 状态 + updated_at + 路径 | 阶段级（CREATED/RUNNING/终态） |
+| run.json | `.aaf/<id>/run.json` | 结尾时间戳 + 聚合状态 | 仅在结束时存在 |
+| route.json | `.aaf/<id>/route.json` | agents 列表 + reason | 开始时写入 |
+| boundary.json | `.aaf/<id>/boundary.json` | boundary 检查结果 | 开始时写入 |
+| `<agent>_prompt.md` | `.aaf/<id>/` | 每个 Agent 启动前写入 | Agent 粒度 |
+| `<agent>_result.md` | `.aaf/<id>/` | 每个 Agent 完成后写入 | Agent 粒度 |
+| REPORT.md | `.aaf/<id>/REPORT.md` | 最终报告 | 结束时 |
+| last_run.json | `~/.aaf-bridge/last_run.json` | 最近一次运行（Bridge 视角） | 结束时 |
+| config.json | `~/.aaf-bridge/config.json` | 当前项目 / workspace / hotkey | 静态 |
+| child process state | launcher 内存 | runner Popen / exit code | 仅 Bridge 内存 |
+
+### 1.2 生命周期现状
+
+```
+TASK.md（唯一正式输入）
+→ Runner：Validation → Boundary → Router → agents → REPORT → run.json
+→ task.json：CREATED → RUNNING → SUCCESS | WAITING | FAILED（异常路径）
+→ 终态后可归档
+```
+
+- 没有 per-stage 记录；"当前阶段"只能从产物存在性推断（prompt 已写而 result 未写 ⇒ 该 agent 正在执行）。
+- 没有用户中断通道；没有 CANCELLED 状态。
+- Validation 失败时不产生任何 artifact（仅 exit 2），外部无法从产物判断"校验失败"。
+
+### 1.3 关键观察（设计输入）
+
+1. **黑盒感的根因**：agent 执行期间无任何中间信号（§1.1），且阶段信息不落盘。
+2. **PowerShell 常驻问题的根因**：Bridge 无 GUI 宿主时只能依附控制台窗口；需要一个无控制台的常驻宿主（pythonw / Tray）。
+3. **"进程活着 ≠ 一切正常"**：Bridge 进程存活但热键线程死亡是已证实的真实场景（RW-012）。
+4. **Cancel 不能是 kill**：kill 无法留下正式状态、无法区分"用户取消"与"执行失败"、也无法安全处理进程树边界。
+5. **Desktop Shell 必须只读 Core 产物 + 调用现有入口**，不能复制 Router / Runner。
+
+---
+
+## 2. 第一版 Desktop Shell 选型
+
+### 2.1 候选比较
+
+| 维度 | A. Windows Tray + 小型状态窗口 | B. 常驻普通桌面窗口 | C. 浏览器本地页面 | D. Electron 类桌面应用 | E. 其他轻量 Python native（tkinter/pystray/ctypes） |
+|---|---|---|---|---|---|
+| 开发复杂度 | 低（复用现有 tkinter + ctypes） | 低 | 中（HTTP server + 前端页面） | 高（Node 工程 + 主进程/渲染进程） | 低（=A 的实现细节） |
+| 安装复杂度 | 极低（现有 Python 环境，1 个小依赖） | 极低 | 中（端口 + 浏览器） | 高（打包体积 100MB+） | 极低（零/极少依赖） |
+| Windows 兼容性 | 好（Win10 原生） | 好 | 好但受浏览器策略影响 | 好但重 | 好 |
+| 后台常驻能力 | 好（Tray 是标准常驻形态） | 差（窗口占屏幕，最小化仍可见） | 差（需常驻 server + 浏览器标签） | 好 | 好 |
+| Tray 支持 | 原生 | 无（需额外做） | 无 | 可 | 可（pystray / ctypes Shell_NotifyIcon） |
+| 中文 UI | 直接（tkinter 文本） | 直接 | 直接（HTML） | 直接 | 直接 |
+| 打包难度 | 低（PyInstaller 可选，第一版可不打包） | 低 | 中 | 中-高 | 低 |
+| 资源占用 | 极低（~30-60MB 常驻） | 低 | 中（server + 浏览器） | 高（常驻 200MB+） | 极低 |
+| 与当前 Python Core 集成 | 直接（同进程 / 文件契约 / subprocess） | 直接 | 需 HTTP 接口层（新边界） | 需 IPC 桥（新边界） | 直接 |
+| Stop / Restart 进程控制 | 直接（同进程持有 Popen / PID） | 直接 | 间接（API → 后端） | 间接（IPC） | 直接 |
+| 后续维护成本 | 低 | 低 | 中（前后端双维护） | 高（依赖树庞大） | 低 |
+| Scope creep 风险 | 低（形态受限） | 中（容易长成"完整窗口应用"） | 高（天然向 Web Dashboard 演化） | 高（框架即平台诱惑） | 低 |
+
+### 2.2 RECOMMENDED MINIMAL APPROACH
+
+> **方案 A：Windows Tray + 小型状态窗口；宿主进程 = 现有 Bridge 进程升级；UI 栈 = 现有 tkinter + pystray（或零依赖 ctypes Shell_NotifyIcon 备选）；Core 执行模型（run.py 子进程 + 文件产物契约）保持不变。**
+
+一句话定义：
+
+```
+第一版 Desktop Shell = 现有 Bridge 进程升级为"无控制台常驻 Tray 宿主"
+                      + 一个可随时开关的小型状态窗口（tkinter Toplevel）
+                      + 一组基于文件/进程契约的控制操作（Cancel / Restart / Switch / Duplicate UX）
+```
+
+理由：
+
+1. **不引入第二进程架构**：Tray 图标、热键、状态窗口、launcher 全部落在现有 Bridge 进程内。进程模型从"终端窗口 + Bridge"变为"pythonw + Bridge（含 Tray）"，只改变宿主的启动方式，不改变任何 Core 边界。
+2. **依赖增量最小**：tkinter 是 Python 标准库（Bridge 已在用）；pystray 是纯 Python 小包（ctypes 后端，Windows 下不依赖额外 DLL）；若坚持"零第三方依赖"原则，可用 ctypes `Shell_NotifyIcon` 手写 ~200 行等价实现（列为备选）。
+3. **与现有集成路径完全复用**：热键（ctypes）、剪贴板、确认窗（tkinter）、launcher（subprocess + last_run.json）、状态读取（task.json / route.json / result 文件）全部是现成代码。
+4. **打包不是第一版前提**：第一版以 `pythonw` + 启动快捷方式运行；PyInstaller 打包推迟（RW-010 为 P2，独立 Phase）。
+5. **Scope creep 有天然防线**：形态固定为 Tray + 小窗口，无法长成大型 Dashboard；不引入 HTTP / 前端工程 / IPC 框架。
+
+明确排除：
+
+- **C（浏览器本地页面）**：需要常驻 HTTP server + 端口 + 浏览器生命周期管理，增加攻击面与"浏览器关了就黑盒"的新失败模式，且天然向 Web Dashboard 演化，违反"拒绝大而全 Dashboard"的既定原则（RW-006 Do Not Forget）。
+- **D（Electron）**：体积、依赖树、维护成本与本项目"轻量、小而本地"原则严重冲突；为一个小状态窗口引入整个 Chromium 是过度工程。
+- **B（常驻普通窗口）**：窗口遮挡工作区，最小化后仍是任务栏常驻；"关闭状态窗口 ≠ 退出 Bridge"的需求（§7）在 B 形态下反直觉，需要额外窗口管理语义。
+
+### 2.3 Tray 实现选型（E 的细分）
+
+| 方案 | 依赖 | 优点 | 缺点 | 结论 |
+|---|---|---|---|---|
+| pystray（ctypes 后端） | +pystray（纯 Python） | 代码量小、稳定、API 清晰 | 图标通常需要 Pillow 或 .ico 文件 | **首选**（.ico 资源文件随包提供，避免 Pillow） |
+| ctypes Shell_NotifyIcon 手写 | 零 | 保持"零第三方依赖"项目传统 | ~200 行样板、气泡/菜单细节多 | 备选（若 Ady 要求零依赖） |
+| pywin32 | +pywin32 | API 全 | 依赖较大、纯 Windows 绑定 | 不推荐（pystray 已覆盖需求） |
+
+---
+
+## 3. 第一版 UI 信息架构
+
+单窗口信息架构（自上而下，全部中文；技术字段只在详情/日志保留英文）：
+
+```
+┌─ 顶部状态条（一行可读的全局事实）─────────────────────┐
+│  AAF 状态         → 正常 / 执行中 / 已停止 / 异常       │
+│  Bridge 状态      → 正常运行 / 异常 / 未运行            │
+│  当前项目         → 项目名 + workspace（可点击切换）     │
+├─ Current Task 区（当前或最近一次任务）─────────────────┤
+│  Task ID          → AAF-XXX（可点击查看详情/归档）       │
+│  Task Name        → 中文任务名                          │
+│  Current Stage    → 当前阶段名（Validation/Boundary/…） │
+│  Current Agent    → Hermes / WorkBuddy / Codex / -      │
+│  elapsed          → 已运行时长                          │
+│  last activity    → 最近活动时间（相对时间，如"3 分钟前"）│
+│  overall result   → 已完成 / 执行失败 / 等待处理 / 已取消│
+│  estimated progress → 约 XX%（明确标注"估算"）           │
+├─ Stage Progress（固定六阶段条）────────────────────────┤
+│  Validation  Boundary  Hermes  WorkBuddy  Codex  REPORT │
+│  （每格：未开始 ○ / 进行中 ▶ / 已完成 ✓ / 等待处理 ⏸    │
+│   / 失败 ✗ / 已取消 ⊘）                                 │
+├─ 最近活动（2-3 行滚动摘要，来自 §5 事件源）───────────────┤
+├─ 操作按钮 ────────────────────────────────────────────┤
+│  [查看日志]  [停止当前任务]（仅执行中可点）              │
+└─ 底部 ────────────────────────────────────────────────┘
+   [切换项目]  [重启 Bridge]  [设置]
+```
+
+阶段状态词汇表（六态）：
+
+| 状态 | 语义 | 显示 |
+|---|---|---|
+| 未开始 | 尚未到达该阶段 | ○ |
+| 进行中 | 当前正在执行 | ▶ |
+| 已完成 | 已通过 / 已产出有效结果 | ✓ |
+| 等待处理 | 该阶段结果构成阻断，任务挂起（对应 WAITING） | ⏸ |
+| 失败 | 执行出错 / FRAMEWORK_ERROR / 无有效结果 | ✗ |
+| 已取消 | 用户取消时尚未执行的阶段 | ⊘ |
+
+六阶段与现有事实的映射（第一版）：
+
+- **Validation**：完成 = 出现 boundary.json 或 route.json；失败 = launcher 记录 exit=2（Validation 失败无 artifact，见 §13.2 缺口）。
+- **Boundary**：进行中 = boundary.json 尚不存在且任务 RUNNING；完成 = boundary.json 存在。
+- **Hermes / WorkBuddy / Codex**：由 route.json 决定实际执行哪些；未在 route 中的阶段显示"未开始（本任务不含）"或折叠为"－"。进行中 = `<agent>_prompt.md` 已写而 `<agent>_result.md` 未写。
+- **REPORT**：进行中 = 全部 route agents 完成而 REPORT.md 未写；完成 = REPORT.md 存在。
+
+---
+
+## 4. Progress Bar 设计
+
+### 4.1 两个事实层次（必须分离，UI 不得混用）
+
+| 层 | 名称 | 性质 | 来源 |
+|---|---|---|---|
+| Stage State | 真实状态 | **事实**：每个阶段 未开始/进行中/已完成/等待处理/失败/已取消 | task.json + route.json + prompt/result 文件存在性（§13） |
+| Estimated Percentage | 估算百分比 | **UX estimate**：不是精确剩余进度，不承诺剩余时间 | 静态权重 × 阶段状态（§4.2） |
+
+UI 规则：
+
+1. 进度条旁必须标注"估算"（例如：`整体进度：约 64%（估算）`）。
+2. 不允许显示"预计剩余时间"或精确百分比语义（如 "64.2%"）；只显示整数约值。
+3. 百分比仅由阶段状态计算，**永远不**因等待时间流逝而增长（不做无限假进度）。
+4. 当前进行中阶段内部可做**有限平滑**：进行中阶段按该阶段权重的 0%～50% 区间内线性微调（仅基于该阶段自身已用时长与一个**固定上限**，如 60 分钟为满分），超过上限后停在 50%，不得继续增长。此平滑仅作用于"当前阶段内部"，且 UI 明确标注为估算。
+5. 收敛规则（强制性）：
+
+```
+SUCCESS → 100%（已完成，显示 ✓）
+WAITING → 停在最后一个已完成阶段权重和（等待处理，显示 ⏸，不增长）
+FAILED  → 停在失败阶段之前；失败阶段标 ✗
+CANCELLED → 停在取消时刻的权重和（已取消，显示 ⊘，不再变化）
+Validation 失败 → 0%
+```
+
+### 4.2 第一版静态权重（允许值）
+
+| 阶段 | 权重 | 说明 |
+|---|---|---|
+| Validation | 5% | 校验快 |
+| Boundary | 5% | 边界检查快 |
+| Hermes | 45% | 执行主体，最耗时 |
+| WorkBuddy | 20% | 独立复核 |
+| Codex | 20% | 架构/scope 审查 |
+| REPORT | 5% | 汇总快 |
+
+- 权重合计 100%；未出现在 route 中的阶段不占权重（按 route 归一化）。
+- 示例：route = [hermes, workbuddy, codex]，Hermes 完成、WorkBuddy 进行中 ⇒ 已完成 45 + 5（Boundary）+ 5（Validation）+ WorkBuddy 内部 0～10 ≈ 约 55%～65%。
+
+### 4.3 未来校准（RW-005 联动）
+
+- RW-005 上线（阶段耗时观测）后，用真实阶段耗时统计（中位数 + 分位数）替代静态权重：
+  `weight_i = median(duration_i) / sum(median(duration_j))`。
+- 校准只改权重配置（建议放 config 或独立常量），不改阶段状态模型。
+- 校准前**不得**声称百分比有真实时间含义。
+
+---
+
+## 5. Last Activity / Stuck Detection 设计
+
+### 5.1 第一版可行状态来源（按可靠性排序）
+
+| 来源 | 事实 | 说明 |
+|---|---|---|
+| `task.json` 的 stage / stage_started_at / last_activity_at（§13.3 提案） | 最可靠 | 需要 Phase A 写入；本任务不实现 |
+| `<agent>_result.md` 的 mtime | 上一个 Agent 完成时刻 | 现有即可用 |
+| `<agent>_prompt.md` 的 mtime | 当前 Agent 启动时刻 | 现有即可用 |
+| task.json 的 updated_at | 状态迁移时刻 | 现有即可用 |
+| run.json mtime | **不可用** | 只在结尾写入（§1.1） |
+| child process state | runner 存活 | Bridge 内存 + Phase A 持久化 pid 后可查 |
+
+第一版（在 Phase A 之前可用）的 last activity 定义：
+
+```
+last_activity = max( mtime(output_dir 内所有 .json/.md 产物), 当前阶段推断 )
+```
+
+展示为相对时间：`最近活动：3 分钟前`。
+
+### 5.2 阈值策略（设计建议，不实现）
+
+| 观测项 | 阈值建议 | 判定 |
+|---|---|---|
+| 当前阶段已用时长（stage 时长） | 超过该阶段历史中位数 3 倍 且 ≥ 15 分钟 | suspected stuck |
+| last_activity_at 距今 | ≥ 10 分钟 且 阶段未变 | suspected stuck |
+| agent 执行时长 | 超过 60 分钟（当前 adapters timeout=3600 的提醒线） | 提示"执行时间较长" |
+
+- 阈值配置化（config 或常量表），可调。
+- **suspected stuck 只是可观测提示**（黄色横幅：`疑似卡住：Hermes 已执行 25 分钟无活动`），**不是自动判定任务失败**，不触发任何自动终止。
+- 提示必须提供下一步入口：`[停止当前任务]`（走 §6 的正式 Cancel），而不是自动动作。
+
+### 5.3 与进程状态的关系
+
+- Bridge 自身进程活着 ≠ 热键健康（见 §8）；runner 进程活着 ≠ agent 有进展（agent 是 runner 的子进程，可能在等待/卡死）。
+- 因此"疑似卡住"只看**活动信号**（文件 mtime / stage 时长），不把"进程存活"当作"有进展"的证据。
+
+---
+
+## 6. Stop / Cancel Current Task 设计（重点）
+
+### 6.0 设计目标
+
+- 提供**正式取消语义**，不是简单 kill process。
+- 取消后状态可区分、可恢复、可查证：`CANCELLED` 是正式终态。
+- 与 Exit AAF 完全分离：取消当前任务后 Bridge / Tray 继续运行。
+- 不误伤其他独立 Hermes / WorkBuddy / Codex 会话。
+- 保留全部 `.aaf` 任务证据；REPORT 生成（标记取消）。
+
+### 6.1 控制权模型
+
+```
+用户（Tray 菜单 / 状态窗口按钮）
+  → Desktop Shell（Bridge 进程）＝ 控制代理：校验当前任务、写入取消请求、状态机去重
+  → Runner（run.py 子进程）＝ 取消的执行者：在检查点读取取消请求并收敛
+  → Launcher（Bridge 内）＝ 强终止执行者：仅在"请求超时未收敛"时按进程树终止
+```
+
+- **唯一合法发起人**：用户（通过 UI）。Bridge 是代理，不自动发起取消。
+- Runner 是取消语义的权威落地者（写终态）；Launcher 的强终止只是兜底。
+
+### 6.2 取消契约（文件通道，第一版不引入 IPC）
+
+新增契约文件（schema 提案，本任务不创建）：
+
+```
+<output_dir>/cancel.request    存在即表示有取消请求（内容：{requested_at, by} 可选）
+```
+
+- Desktop Shell 只做一件事：原子写入 `cancel.request`。
+- Runner 只做一件事：在**检查点**检查该文件是否存在。
+- 不引入 HTTP / socket / signal 作为第一版通道（信号在 Windows 语义弱且易误伤；文件通道零依赖、与现有产物契约一致、进程崩溃后请求仍然可见）。
+
+### 6.3 Runner 检查点（cooperative，低侵入）
+
+Runner 在每个**阶段边界**检查 cancel.request：
+
+```
+Validation 前 → 不检查（取消尚未就绪的任务直接不做）
+Boundary 后、第一个 agent 前 → 检查
+每个 agent 完成后、下一个 agent 前 → 检查
+全部 agent 完成后、REPORT 前 → 检查（此时取消会被"吸收"，见 §6.9）
+```
+
+- 检查点语义：**取消只影响尚未启动的后续阶段**；已完成阶段的结果与产物全部保留。
+- 发现请求 → 跳过剩余 agents → 生成 REPORT（Current Status = CANCELLED，注明取消原因与已完成阶段）→ 写 run.json（status=CANCELLED）→ task.json 终态 CANCELLED。
+- 该机制**不改动现有 lifecycle 主流程**（现有状态迁移代码不变），只新增一个"检查点 + 终态"路径，属增量。
+
+### 6.4 Agent 子进程如何结束（两段式）
+
+| 段 | 触发 | 行为 | 安全保证 |
+|---|---|---|---|
+| 第一段：cooperative cancel | 用户点 [停止当前任务] | 写 cancel.request；UI 立即进入"正在取消…" | 正在执行的 agent **不被打断**，在它自然结束后 runner 在检查点收敛。若该 agent 是最后一个且已出有效结果，任务正常收尾（取消被吸收）。 |
+| 第二段：强终止（仅当需要立即停止） | 用户点 [强制停止]（二次确认） | Launcher `taskkill /PID <runner_pid> /T /F`（进程树） | 只杀该 runner 及其子进程树（当前任务的 agent CLI 属于该树）→ 不误伤独立会话（§6.6）。 |
+
+- 第一段是默认与推荐路径；第二段仅在"当前 agent 明显卡死且用户要求立即终止"时使用。
+- 强终止后 task.json 无法由 runner 写终态（runner 已被杀）→ **Launcher 负责补写终态**：读取现有 task.json，写 status=CANCELLED、reason=FORCE_CANCELLED，并追加 cancel 记录。这是 Launcher 唯一允许触碰 lifecycle 的时机，且必须原子写（复用 task_lifecycle 的原子写模式）。
+
+### 6.5 如何避免杀错别的 Hermes / WorkBuddy / Codex 会话
+
+- **进程树边界**：只对"本任务 runner 进程"执行 `taskkill /T`。当前任务的 agent CLI（hermes/codebuddy/codex）是 runner 的直接子进程，属于该树；用户或其他任务独立启动的会话是**独立进程树**，不在树内。
+- **PID 来源**：Launcher 在 launch 时记录 `proc.pid` 并持久化到 `last_run.json`（或 task.json 的 pid 字段，§13.3 提案）。强终止前**重新校验**：该 PID 的进程命令行确实等于"本任务 run.py 路径 + 本任务 task 路径"（Windows 下用 `wmic`/PowerShell 查询命令行，或记录 launch 时生成的一次性 token 放入 runner 环境变量，强终止前用 token 校验）。**校验不过 → 拒绝强终止并报错**。
+- **唯一性**：Launcher 单任务并发保护已保证同一时刻只有一个本框架 runner；但仍需 PID+token 双重校验，防止 PID 被系统复用。
+
+### 6.6 任务产物与状态更新
+
+| 产物 | Cancel 后的处理 |
+|---|---|
+| `.aaf/tasks/active/<id>.md`（TASK.md） | 保留不动（与 FAILED 一致；它是证据与唯一输入） |
+| `.aaf/<id>/` 全部既有产物 | 保留不动（已完成 agent 的 prompt/result 是证据） |
+| `cancel.request` | 保留为证据（或由 runner 收敛后改名为 `cancel.done`） |
+| REPORT.md | **生成**，Current Status = `CANCELLED`，列出已完成阶段、取消请求时间、取消方式（cooperative/force） |
+| run.json | 写 `status: CANCELLED` + timestamp（与现有 schema 一致，仅多一个合法值） |
+| task.json | `status: CANCELLED`，`reason: CANCEL_REQUESTED | FORCE_CANCELLED`，updated_at=取消收敛时刻 |
+| last_run.json | Bridge 侧正常记录（result=CANCELLED 或其英文映射），保证 Copy Last Report 链路可用 |
+| 归档 | CANCELLED 是否可归档：**建议纳入可归档终态**（TERMINAL_STATUSES 增加 CANCELLED），保持"终态可归档"一致性 |
+
+### 6.7 Cancel 后最终状态叫什么
+
+正式终态名称：**`CANCELLED`**（英文技术字段，机器可读；UI 显示"已取消"）。
+
+- 状态集合变更提案：`CREATED, RUNNING, WAITING, SUCCESS, FAILED, CANCELLED`。
+- 该状态在 task.json / run.json / REPORT / 归档规则中一致使用。
+
+### 6.8 Cancel 与 FAILED / WAITING 的区别（正式语义）
+
+| 维度 | CANCELLED | FAILED | WAITING |
+|---|---|---|---|
+| 语义 | **用户主动中断** | 执行错误 / 框架错误 | 评审未通过，需返工 |
+| 发起方 | 用户（通过 UI） | Framework（异常路径） | Framework（聚合判定） |
+| 恢复建议 | 可重新提交（需先移除/重命名旧 active TASK 或走 Resume 语义） | 修问题后重跑 | 处理返工项后重跑 |
+| UI 文案 | 已取消 | 执行失败 | 等待处理 |
+| 是否可归档 | 建议是 | 是（现状） | 是（现状） |
+
+### 6.9 边界情况
+
+**重复点击 Cancel**：UI 状态机保证单任务取消请求去重。
+
+```
+任务运行中:   [停止当前任务] 可点 → 点击后变灰，文案变"正在取消…"
+取消请求已发出: 按钮禁用；Tray 图标/状态窗口显示"正在取消"
+任务已收敛:   按钮恢复禁用态（任务已结束）
+```
+
+- 第二次点击（同一次运行中）**不产生新请求**，不重复写文件；UI 只提示"取消请求已发送"。
+- "强制停止"与"停止当前任务"是两个不同按钮；强停止每次都需要二次确认。
+
+**Agent 刚好完成时的 race condition**：规则——**取消请求只影响尚未启动的后续阶段**。
+
+- 场景 1：取消请求在最后一个 agent 完成后到达 → 全部阶段已完成 → **正常 SUCCESS**（UI 提示"任务已在取消前完成"），CANCELLED 不覆盖已完成事实。
+- 场景 2：取消请求与 agent 完成同时 → 以检查点读取顺序为准：检查点读到请求 → CANCELLED；否则继续 → 完成。**状态以检查点结果为准，绝不回滚已写产物**。
+- 场景 3：取消后用户立刻再次提交相同 Task ID → active TASK.md 仍在（证据保留）→ duplicate 保护生效 → 走 §10 的 Duplicate UX 提供"查看状态/打开 REPORT"，不静默重跑。
+
+**取消请求发出后 Bridge 重启**：cancel.request 文件仍在 → 新 Bridge 的 Launcher 启动检查：若检测到残留 cancel.request 且对应任务已完成/已取消，正常忽略并提示；若任务仍在运行（孤儿 runner），提示用户选择"接管并继续"或"按取消处理"（第一版：提示 + 默认按取消处理，Launcher 补写终态）。
+
+### 6.10 生命周期最小方案（汇总图）
+
+```
+[RUNNING] --用户点停止--> [CANCEL_REQUESTED(UI/内存态)] --写 cancel.request--> runner 检查点
+   │                                                                          │
+   │ agent 完成、检查点未读到                                         检查点读到请求
+   ▼                                                                          ▼
+[继续下一阶段] <──────────────────────────────────────────────┐    [跳过剩余阶段]
+   │                                                            │            │
+   └── 全部完成 → [SUCCESS]（取消被吸收）                      │            ▼
+                                                               │   [REPORT(CANCELLED) → run.json(CANCELLED)
+                                                               │    → task.json(CANCELLED)] → 终态
+（可选）强终止：二次确认 → taskkill /T（PID+token 校验）
+        → Launcher 补写 task.json(CANCELLED, FORCE_CANCELLED)
+```
+
+- **不改变现有 lifecycle 主流程代码**：现有 CREATED→RUNNING→SUCCESS/WAITING/FAILED 路径不动；仅新增检查点、CANCELLED 终态、Launcher 补写路径（均为增量）。是否纳入 v0.4 由 Planner 决策。
+
+---
+
+## 7. Bridge Background Runtime 设计
+
+### 7.1 候选比较
+
+| 方案 | 无终端常驻 | 复杂度 | 用户可控性 | 故障恢复 | 结论 |
+|---|---|---|---|---|---|
+| pythonw background process（Bridge 以 pythonw 启动） | ✅ | 低 | 高（Tray 管理） | 进程崩溃需手动/自启重启 | **首选宿主** |
+| Windows Startup（启动文件夹/注册表 Run） | ✅（自启） | 低 | 中 | 登录时自动恢复 | **首选自启机制**（与 pythonw 组合） |
+| Scheduled Task | ✅ | 中 | 中 | 可配重启策略 | 不必要（它解决"定时"问题，不是"常驻"问题） |
+| Tray process owns Bridge | ✅ | 低 | 高 | 随 Tray 宿主 | 与 pythonw 方案等价，见 7.2 |
+| Windows Service | ✅ | 高 | 低（需服务管理） | 高 | **第一版明确排除**（7.3） |
+
+### 7.2 推荐最小方案
+
+```
+启动方式: pythonw.exe 运行 Bridge 入口脚本（无控制台窗口）
+自启:     启动文件夹（%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup）
+          放一个 run_bridge.vbs / 快捷方式（第一版）；注册表 Run 键为备选
+宿主:     Bridge 进程即 Tray 宿主（pystray/ctypes 图标 + tkinter 状态窗口 + 热键线程 + launcher）
+```
+
+- **用户启动 AAF 后不需要 Terminal 常驻**：Bridge 由 pythonw 承载，无控制台；用户平时只看到 Tray 图标。
+- **关闭状态窗口 ≠ 退出 Bridge**：状态窗口是 tkinter `Toplevel`，关闭只 `withdraw()` 隐藏；Bridge 继续常驻。退出 AAF 的唯一途径是 Tray 菜单 [退出 AAF]（带确认）。
+- **Tray 图标显示 Bridge 是否健康**：图标/气泡颜色映射 Bridge Health（§8）：正常（绿/正常图标）、异常（黄/红）、未运行（无图标——由启动器负责）。
+- Tray 提供最小三项：**打开状态 / 重启 Bridge / 退出 AAF**（重启 = 自身退出并由自启机制/守护逻辑重新拉起；第一版实现为"退出后提示用户重新运行启动脚本"，或由一个极小的 watchdog 入口负责重启——见 §8 的 Restart Bridge 语义）。
+
+### 7.3 Windows Service 是否必要：**第一版明确排除**
+
+理由：
+
+1. tkinter UI / 热键在 Session 0（服务会话）不可见——服务承载 GUI 是错误模型。
+2. 服务需管理员权限安装、需服务管理器操作，与"轻量、用户可控"目标冲突。
+3. 本场景是"单用户桌面常驻"，不是"系统级无人值守服务"；pythonw + 自启已满足。
+4. 引入服务会显著抬高运维复杂度（日志、权限、升级），无对应收益。
+
+排除记录：`NOT_IN_FIRST_VERSION: Windows Service`（§17）。
+
+### 7.4 Exit AAF 语义
+
+- [退出 AAF] → 确认窗（中文）：若当前有任务运行中，提示"当前任务将被中断（按取消处理）"→ 用户确认 → 先写 cancel.request 并（如需）强终止 runner → 退出 Bridge 进程。
+- **Stop Current Task 与 Exit AAF 明确分离**（RW-014 Do Not Forget）：取消任务不动 Bridge；退出 AAF 是整体关闭（含确认）。
+
+---
+
+## 8. Hotkey Health 设计（RW-012）
+
+核心原则（RW-012 Do Not Forget）：**process alive ≠ listener healthy**。
+
+### 8.1 最小健康模型（4 个事实）
+
+```
+Bridge Health:
+  1. process alive        — 进程存在（Tray 自身运行时恒真；对"未运行"判定由自启入口负责）
+  2. hotkey registered    — RegisterHotKey 成功（listener._ready + error()==None，现有代码已有）
+  3. listener loop alive  — GetMessageW 消息循环线程存活（listener.is_alive()，现有代码可查）
+  4. last heartbeat       — 最近一次事件/循环 tick 时间戳（第一版不实现，见下）
+```
+
+### 8.2 第一版可落地判定（不实现 heartbeat）
+
+| 组合 | 判定 | Tray 显示 |
+|---|---|---|
+| 进程存在 且 2、3 均真 | Bridge 正常 | `Bridge 正常运行`（绿） |
+| 进程存在 但 2 或 3 为假 | Bridge 异常（热键失活） | `Bridge 异常`（黄/红，气泡提示"热键可能无响应"） |
+| 进程不存在 | Bridge 未运行 | `Bridge 未运行`（灰，提供 [启动 Bridge]） |
+
+- 2/3 的检查 = 直接复用现有 `HotkeyListener.wait_ready()` / `error()` / `is_alive()`，零新机制。
+- 热键失活的**自恢复**（重注册）列为候选（RW-012 Remaining Gap 的 listener self-recovery），第一版提供 [重启 Bridge] 一键恢复，不自动重注册（避免与冲突源反复抢键）。
+
+### 8.3 heartbeat（未来，不在本任务实现）
+
+- 提案：listener 循环内每收到一条消息（或每 N 秒）更新 `last_heartbeat` 时间戳；Tray 轮询时若 `now - last_heartbeat > 阈值` 且 3 为真 → 判定"循环活着但无消息"→ 仍算正常（热键本就低频）；该值主要用于诊断日志。
+- 本任务**不实现** heartbeat（TASK 要求 19 明确排除）。
+
+---
+
+## 9. Project Switching 设计（RW-003）
+
+### 9.1 触发场景
+
+TASK Workspace ≠ Bridge `current_workspace` 时，当前实现直接报 `Workspace 不匹配` 错误。第一版改为**显式确认切换**流程：
+
+```
+检测到新项目：
+
+  当前：  AI Agent Framework
+         D:\AdyAI\ai-agent-framework
+
+  TASK：  观微记 H5
+         D:\AdyAI\guoxue-skills-lab
+
+  [切换并执行]   [取消]
+```
+
+### 9.2 设计规则
+
+1. **不静默切换**：任何 workspace 变化必须经过上面的确认窗；取消 = 不切换、不执行、不写任何文件。
+2. **切换动作**（确认后）：更新 `~/.aaf-bridge/config.json` 的 `current_project` / `current_workspace` → 更新 `recent_projects`（见下）→ 继续正常执行链。
+3. **Recent Projects**（配置 schema 提案，不实现）：
+
+```
+config.json 新增:
+  "recent_projects": [
+    {"name": "AI Agent Framework", "workspace": "D:\\AdyAI\\ai-agent-framework", "last_used": "2026-08-27T09:50:00"},
+    ...
+  ]
+```
+
+   第一版上限 5 条，按 last_used 倒序；切换确认窗中提供"从最近项目选择"下拉（可选，若实现成本低；否则仅确认窗）。
+4. **不自动扫描整个磁盘**：候选项目只来自 recent_projects + TASK 声明的 workspace。不实现目录扫描器。
+5. **current_project / current_workspace 更新位置明确**：唯一写入点 = Bridge config 模块（`bridge/config.py`），新增 `update_project()` 纯函数（写 config.json + 更新 recent_projects），UI / 流程调用它，不直接改文件。
+6. 校验层兼容：`task_io.validate_task_text` 的 workspace 不匹配目前是硬错误——设计为 Bridge 层在调用校验前**先比较** workspace，发现不一致直接进入确认切换流程（不动 parser 纯函数；或给 validate 增加 `allow_workspace_switch` 参数，实现时二选一，倾向 Bridge 层处理以保持 parser 纯净）。
+7. 防漂移：切换确认窗文案必须包含"将修改 AAF Bridge 的项目设置"说明；最近项目列表只做选择入口，不自动触发切换。
+
+---
+
+## 10. Duplicate Task UX 设计（RW-016）
+
+原则（RW-016 Do Not Forget）：`TASK_ALREADY_EXISTS` 本身不是错误；缺口是"只告诉存在，不告诉现在是什么状态"。**不得删除 duplicate protection**。
+
+### 10.1 触发与信息卡片
+
+Bridge 捕获 `TaskParseError(TASK_ALREADY_EXISTS)` 后，不再只弹一行错误，而是查询既有任务状态并显示卡片：
+
+```
+任务已存在
+
+Task ID:        AAF-MAINT-002
+当前状态:       已完成（SUCCESS）          ← 中文映射（§11）
+当前阶段:       REPORT（全部完成）
+最近活动:       2026-08-27 09:41
+结果:           SUCCESS；Codex APPROVE
+REPORT 路径:    D:\...\.aaf\AAF-MAINT-002\REPORT.md
+
+[查看状态]  [打开 REPORT]  [返回]
+```
+
+### 10.2 状态来源映射（现有即可用）
+
+| 卡片字段 | 来源 |
+|---|---|
+| Task ID | duplicate 检查时已知 |
+| Current Status | `.aaf/<id>/task.json` 的 status（缺失 → "状态未知"；损坏 → 提示） |
+| Current Stage | route.json + prompt/result 文件存在性（§3 映射） |
+| Last Activity | max(产物 mtime)（§5.1） |
+| Result | REPORT.md 存在 → 读取 Current Status 行；或 last_run.json |
+| REPORT Path | task.json.report_path → 不存在时归档兜底（task_archive.find_report_path） |
+
+### 10.3 候选操作
+
+- **[查看状态]**：打开状态窗口并聚焦该任务（第一版：直接展示同一卡片 + 阶段条）。
+- **[打开 REPORT]**：用系统默认编辑器打开 REPORT.md（`os.startfile`）；归档任务自动定位到 `.aaf/archive/<id>/REPORT.md`。
+- **[返回]**：关闭弹窗，不做任何操作。
+- **[Resume]**：仅当生命周期允许（status=WAITING 或 FAILED 且产物完整）时显示为次级操作（第一版可只显示提示"该任务需重新提交"，Resume 按钮列入 Phase F 评估；`--resume-from` 已存在，风险在于 UX 确认，不在本任务定死）。
+- 运行中任务：卡片显示当前阶段 + elapsed + [查看状态]；不提供 [打开 REPORT]（REPORT 尚未生成）。
+
+---
+
+## 11. Chinese-first UI（RW-015）
+
+原则：**所有人类主界面默认中文**；日志、内部协议、技术状态字段保留英文；第一版不建设完整国际化系统（无 i18n 框架，无语言切换）。
+
+### 11.1 核心文案映射表（第一版必须包含）
+
+| 技术字段 / 英文状态 | 中文界面显示 |
+|---|---|
+| Bridge Running | Bridge 正常运行 |
+| Bridge Error / degraded | Bridge 异常 |
+| Bridge Not Running | Bridge 未运行 |
+| Hermes Running | Hermes 执行中 |
+| WorkBuddy Running | WorkBuddy 复核中 |
+| Codex Running | Codex 审查中 |
+| CREATED | 已创建 |
+| RUNNING | 执行中 |
+| WAITING | 等待处理 |
+| SUCCESS | 已完成 |
+| FAILED | 执行失败 |
+| FRAMEWORK_ERROR | 框架错误 |
+| CANCELLED | 已取消 |
+| TASK_ALREADY_EXISTS | 任务已存在 |
+| REPORT_NOT_FOUND | 未找到报告 |
+| FAILED_TO_START | 启动失败 |
+| suspected stuck | 疑似卡住 |
+| estimated progress | 估算进度 |
+
+- 状态窗口、Tray 菜单、确认窗、错误弹窗、按钮、提示语全部中文（§12 wireframe 中的文案即第一版默认文案）。
+- 技术字段（status 值、Task ID、路径、agent 名）在详情视图/日志中保留英文原样，不翻译。
+- 现有 Bridge 弹窗（ui.py 的 Execute/Cancel 按钮等）在 Phase C 一并中文化（属 UI 文案修改，不改变逻辑）。
+
+---
+
+## 12. 文字版 UI Wireframe
+
+### 12.1 主状态窗口（第一版）
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  AI Agent Framework                                          │
+│                                                              │
+│  当前项目：AI Agent Framework                                 │
+│  Bridge：正常运行       热键：Ctrl+Alt+A                      │
+│                                                              │
+│  ── 当前任务 ──────────────────────────────────────────────  │
+│  Task ID：AAF-DESIGN-001                                     │
+│  Task Name：Desktop Shell and Runtime Control Minimal Design │
+│  当前阶段：WorkBuddy       当前 Agent：WorkBuddy              │
+│  已运行：12:34       最近活动：2 分钟前                       │
+│  整体结果：执行中                                             │
+│  整体进度：约 64%（估算）                                     │
+│                                                              │
+│  [██████████████░░░░░░░░░░░░░░]                               │
+│                                                              │
+│  Validation ✓   Boundary ✓   Hermes ✓                       │
+│  WorkBuddy ▶    Codex ○      REPORT ○                        │
+│                                                              │
+│  最近活动：                                                  │
+│   · 09:51 WorkBuddy 复核开始                                  │
+│   · 09:48 Hermes 执行完成                                     │
+│                                                              │
+│  [查看日志]            [停止当前任务]                          │
+│                                                              │
+│  ──────────────────────────────────────────────────────────  │
+│  [切换项目]      [重启 Bridge]      [设置]                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+状态标注约定：
+
+- `✓ 已完成`、`▶ 进行中`、`○ 未开始`、`⏸ 等待处理`、`✗ 失败`、`⊘ 已取消`。
+- "约 XX%（估算）"必须出现在进度条旁；禁止显示剩余时间。
+- [停止当前任务] 仅当任务 RUNNING 时可用；点击后变灰 → "正在取消…"。
+- [查看日志] 第一版 = 打开输出目录（`os.startfile`）或打开最近日志文件；不做内嵌日志查看器。
+
+### 12.2 Tray 菜单最小结构
+
+```
+[AAF 图标]
+├─ 打开状态窗口
+├─ ───────────
+├─ 当前项目：AI Agent Framework        （子菜单/灰显信息行）
+├─ 当前任务：AAF-DESIGN-001（执行中）   （灰显信息行）
+├─ ───────────
+├─ 停止当前任务                         （仅运行中可用；点击后变"正在取消…"）
+├─ ───────────
+├─ 重启 Bridge
+├─ 退出 AAF                            （确认窗：含"当前任务将被中断"提示）
+```
+
+- 信息行灰显不可点；操作用中文。
+- 图标颜色反映 Bridge Health（§8）：正常 / 异常 / 未运行。
+
+### 12.3 关键弹窗（第一版）
+
+| 弹窗 | 触发 | 按钮 |
+|---|---|---|
+| 项目切换确认（§9.1） | workspace 不一致 | [切换并执行] [取消] |
+| Duplicate 状态卡片（§10.1） | TASK_ALREADY_EXISTS | [查看状态] [打开 REPORT] [返回] |
+| 停止确认 | [停止当前任务] | [确认停止] [取消] |
+| 强制停止确认 | [强制停止] | [确认强制停止] [取消]（红色警示文案） |
+| 退出 AAF 确认 | [退出 AAF] | [确认退出] [取消] |
+
+---
+
+## 13. Runtime State Source
+
+原则：**UI 不能靠猜测**。所有显示必须可追溯到现有 artifact 或 Phase A 新增字段。
+
+### 13.1 现有可利用的真实状态源（见 §1.1 表）
+
+task.json / route.json / boundary.json / `<agent>_prompt.md` / `<agent>_result.md` / REPORT.md / run.json（仅结尾）/ last_run.json / config.json / launcher 内存中的 Popen 状态。
+
+### 13.2 识别出的缺失字段（现状无法回答的问题）
+
+| 缺失 | 现状问题 | 影响 |
+|---|---|---|
+| started_at | 只有 updated_at（每次状态迁移被覆盖），无法知道"何时开始" | elapsed 不可算 |
+| stage / current stage | 只能从产物存在性推断，Validation 失败时**无任何 artifact** | 阶段显示不可靠 |
+| stage_started_at | 无 | stage 时长 / stuck 判定不可算 |
+| last_activity_at | Agent 执行期间产物无变化（§1.1），UI 无法区分"运行中"与"卡住" | 黑盒感根因 |
+| agent（current agent） | 只能从 prompt/result 文件推断 | 当前 Agent 显示不可靠 |
+| cancel_requested | 无取消通道 | Cancel 设计（§6）依赖 |
+| pid（runner 进程） | Launcher 有句柄但不持久化 | 强终止 / 健康检查不可靠 |
+| per-stage 完成标记 | prompt/result 文件是隐式标记 | 阶段条（§3）依赖推断 |
+
+### 13.3 Schema 提案（**只提案，本任务不修改 schema**）
+
+`task.json` 扩展（向后兼容：全部新字段可选，旧产物不失效）：
+
+```jsonc
+{
+  "task_id": "AAF-XXX",
+  "status": "RUNNING",              // 现有
+  "updated_at": "...",              // 现有
+  "task_path": "...",               // 现有
+  "workspace": "...",               // 现有
+  "report_path": null,              // 现有
+  "started_at": "2026-08-27T09:50:36",       // 新增：首次进入 RUNNING 时刻（不可变）
+  "stage": "workbuddy",                      // 新增：validation|boundary|hermes|workbuddy|codex|report|done
+  "stage_started_at": "2026-08-27T10:03:12", // 新增：当前 stage 开始时刻
+  "last_activity_at": "2026-08-27T10:05:00", // 新增：最近活动（runner 每阶段/agent 边界更新）
+  "agent": "workbuddy",                      // 新增：当前 agent（或 null）
+  "pid": 12345,                              // 新增：runner 进程 PID（Launcher 注入 env 或 runner 自写）
+  "cancel_requested": false,                 // 新增：cancel 请求标记（与 cancel.request 文件互为镜像）
+  "phases": [                                // 新增（可选）：per-stage 记录，供阶段条与 RW-005 校准
+    {"name": "validation", "status": "done", "started_at": "...", "finished_at": "..."}
+  ]
+}
+```
+
+写入规则提案：
+
+- `started_at`：首次 `RUNNING` 时写入后不再变更。
+- `stage` / `stage_started_at` / `agent`：runner 每个阶段边界原子更新（与现有 update_status 同一原子写路径）。
+- `last_activity_at`：阶段边界更新 + Agent 执行期间由 runner 周期性 touch（如每 60s，轻量；仅当 last_activity_at 更新时重写 task.json——注意写入频率，建议 ≥30s 间隔，避免磁盘抖动）。
+- `pid`：runner 启动时自写（`os.getpid()`），Launcher 强终止前读取校验。
+- `cancel_requested`：与 cancel.request 文件一致；UI 优先读文件（单一事实源），task.json 字段作冗余。
+- Validation 失败仍无 artifact（现状 exit 2）：设计为 Bridge/Launcher 在 FAILED_TO_START 路径旁记录"validation failed"事件到 last_run.json（增量，不动 runner）。
+
+`run.json` 变更提案：合法 status 集合增加 `CANCELLED`（§6.7）；其余不变。
+
+`config.json` 变更提案：新增 `recent_projects`（§9.2）。
+
+---
+
+## 14. Core / UI 边界
+
+目标：**Desktop Shell → 调用 / 观察 AAF Core**；Desktop Shell **绝不**复制 Router / Runner / Lifecycle / Agent 适配逻辑。
+
+### 14.1 UI 可以做什么
+
+| 类别 | 动作 |
+|---|---|
+| 观察（只读） | 读 task.json / route.json / boundary.json / prompt / result / REPORT / last_run.json / config.json；计算 elapsed / last activity / 估算进度 / stuck 提示；检查 listener 健康（§8） |
+| 操作（经 Bridge 代理） | 触发热键等价流程（读剪贴板→确认→落盘→launch）；写 cancel.request；调用 launcher 强终止（PID+token 校验）；更新 config（project 切换 / recent_projects）；打开日志目录 / REPORT；重启 / 退出 Bridge 进程 |
+| 展示 | 中文文案、阶段条、进度条、按钮状态机 |
+
+### 14.2 Core 必须做什么（不变更职责）
+
+| 组件 | 职责（现状保持） |
+|---|---|
+| Runner | Validation / Boundary / Router 调用 / Agent 链 / 聚合 / REPORT / lifecycle 写入；新增：cancel 检查点与 CANCELLED 收敛（§6） |
+| Lifecycle | task.json 状态机（新增 CANCELLED 合法值 + §13.3 字段写入，属 Phase A/E 增量） |
+| Launcher | 启动 run.py 子进程、单任务保护、收尾判定（新增：pid 持久化、强终止与补写终态） |
+| 协议 | TASK / REPORT 格式不变；产物契约不变 |
+
+### 14.3 两者之间的最小接口
+
+第一版**只有两类接口**（不引入 RPC / HTTP / IPC / 数据库）：
+
+```
+1. 文件契约（唯一状态通道）:
+   - 读：<output_dir>/{task.json, run.json, route.json, <agent>_prompt.md,
+         <agent>_result.md, boundary.json, REPORT.md}
+   - 写：<output_dir>/cancel.request；~/.aaf-bridge/config.json
+2. 进程契约（唯一执行通道）:
+   - 启动：subprocess.run(run.py <task> --workspace <ws> --output <dir>)
+   - 终止：taskkill /T /F /PID <runner_pid>（强终止，PID+token 校验）
+   - 完成通知：launcher 等待线程 → 事件队列 → UI 弹窗（现有机制）
+```
+
+### 14.4 防侵入规则（未来实现时强制）
+
+1. Desktop Shell 代码**不得 import** `ai_agent_framework.router` / `runner` / `adapters` / `task_lifecycle` 并调用其内部函数来"替 Core 做事"；唯一允许的 Core 依赖 = 只读工具函数（如 `task_archive.find_report_path`、`git_status`）与配置模块。
+2. 状态显示**只读产物**；任何"写状态"动作必须经由：runner（正常收敛）/ launcher（强终止补写）/ config 模块（项目切换）三个既有归属者之一。
+3. 新增状态字段的**唯一写者**是 runner / lifecycle / launcher；UI 永远不直接写 task.json / run.json。
+4. Desktop Shell 不实现 Router 判定、不实现阶段逻辑、不实现 agent 调用；遇到需要这些能力的需求 → 回到 Core 加接口（如 `--watch-cancel` 参数），而不是在 Shell 侧复制。
+
+---
+
+## 15. 实施拆分（Phase A-F）
+
+按依赖排序；允许调整顺序（说明见各 Phase）。
+
+### Phase A — Runtime State Foundation
+
+- **Goal**：让运行时状态可被外部只读观测（schema 扩展 + runner 阶段标记写入），为一切 UI 提供事实底座。
+- **Files likely affected**：`ai_agent_framework/task_lifecycle.py`（update_status 增加可选字段与 CANCELLED 合法值）、`ai_agent_framework/runner.py`（阶段/agent/last_activity 写入、pid 自写、started_at 一次性写入）、`tests/test_task_lifecycle.py`、`tests/test_runner.py`。
+- **Dependencies**：无（纯 Core 侧；不依赖 Bridge）。
+- **Risk**：低（新字段全部可选，向后兼容；原子写路径复用现有实现）。
+- **Acceptance**：task.json 在真实运行中包含 started_at / stage / stage_started_at / last_activity_at / agent / pid；Validation 失败场景有 Bridge 侧记录；206 tests 保持通过 + 新增字段单测。
+- **可单独发布 / 测试**：是（对现有行为零影响，可独立验证）。
+
+### Phase B — Bridge Background / Tray Skeleton
+
+- **Goal**：Bridge 以 pythonw 无控制台常驻；Tray 图标 + 最小菜单（打开状态 / 重启 / 退出）；Hotkey Health 判定（§8）。
+- **Files likely affected**：`bridge/main.py`、`bridge/tray.py`（新）、`bridge/launcher.py`（pid 持久化）、`scripts/start_bridge.pyw`（新，pythonw 入口）、`docs/QUICKSTART.md` / `TROUBLESHOOTING.md`。
+- **Dependencies**：Phase A 可选（Tray 健康显示可先显示进程级状态）；建议 A 先行以显示 stage。
+- **Risk**：中（进程模型变化：需验证 pythonw 下 tkinter 主循环 / ctypes 热键 / 剪贴板行为不变；自启项行为需人工验证）。
+- **Acceptance**：无控制台窗口运行；热键仍可用；Tray 菜单三项可用；关闭状态窗口不影响 Bridge；[重启 Bridge] 生效。
+- **可单独发布 / 测试**：是（骨架 + 菜单可独立验收）。
+
+### Phase C — Status Window + Chinese UI
+
+- **Goal**：§3 信息架构 + §12 wireframe 的状态窗口；全部人机界面中文（§11）；现有 ui.py 弹窗文案中文化。
+- **Files likely affected**：`bridge/status_window.py`（新）、`bridge/ui.py`、`bridge/main.py`（窗口开关）、`bridge/handoff.py`（文案，如有）。
+- **Dependencies**：A（状态读取）、B（宿主）。
+- **Risk**：低（纯 UI，无 Core 改动）。
+- **Acceptance**：主窗口按 §12.1 呈现全部字段；阶段条映射正确（§3 表格）；中文文案表（§11.1）全部落实；关闭窗口不退出 Bridge。
+- **可单独发布 / 测试**：是。
+
+### Phase D — Progress Visualization
+
+- **Goal**：估算进度条 + 权重表（§4.2）+ 收敛规则（§4.1.5）+ last activity（§5.1）+ suspected stuck 提示（§5.2）。
+- **Files likely affected**：`bridge/status_window.py`（进度条渲染）、`bridge/progress.py`（新：权重/估算/收敛纯函数，可单测）、`bridge/stuck.py`（新：阈值判定纯函数，可单测）。
+- **Dependencies**：A、C。
+- **Risk**：低-中（风险在"估算语义被误读"，靠文案约束与收敛规则控制）。
+- **Acceptance**：估算值与阶段状态计算一致；SUCCESS/WAITING/FAILED/CANCELLED 均按收敛规则定格；所有百分比旁有"估算"标注；stuck 提示只提示不动作。
+- **可单独发布 / 测试**：是（纯函数单测 + UI 集成验收）。
+
+### Phase E — Safe Cancel Lifecycle
+
+- **Goal**：§6 完整落地：cancel.request 契约、runner 检查点、CANCELLED 终态、Launcher pid+token 强终止与补写、UI 按钮状态机、race 规则。
+- **Files likely affected**：`ai_agent_framework/task_lifecycle.py`（CANCELLED）、`ai_agent_framework/runner.py`（`--watch-cancel <path>` 参数 + 检查点）、`bridge/launcher.py`（pid 持久化、token、taskkill、补写终态）、`bridge/status_window.py` + `bridge/tray.py`（按钮/状态机）、`tests/test_runner.py`、`tests/test_bridge_launcher.py`。
+- **Dependencies**：A（字段）、B（宿主）；与 C/D 解耦（Core 部分可独立先行）。
+- **Risk**：**高**（进程终止安全、race condition、误杀防护）——本 Phase 必须经过 Codex 专项 audit 与真实任务演练。
+- **Acceptance**：单测覆盖检查点/终态/重复点击/race（§6.9 场景 1-3）；真实任务 Cancel 后 task.json= CANCELLED、REPORT 生成、产物保留、独立会话存活；强终止 PID+token 校验拒绝错误目标。
+- **可单独发布 / 测试**：是（Core 侧先于 UI 发布，可用 CLI 演练）。
+
+### Phase F — Project Switching / Duplicate UX
+
+- **Goal**：§9 项目切换确认 + recent_projects；§10 Duplicate 状态卡片。
+- **Files likely affected**：`bridge/config.py`（update_project / recent_projects）、`bridge/task_io.py`（如需 workspace 切换兼容参数）、`bridge/main.py`（切换流程接入）、`bridge/ui.py`（确认窗 / 卡片）、`tests/test_bridge_config.py`、`tests/test_bridge_task_io.py`。
+- **Dependencies**：B、C（UI 宿主与中文窗）。
+- **Risk**：低-中（切换确认涉及 config 写，但流程简单；duplicate 卡片只读产物）。
+- **Acceptance**：workspace 不一致时出现确认窗；确认后 config 正确更新且 recent_projects 更新；拒绝时不写任何文件；duplicate 提示显示 §10.1 卡片全部字段；[打开 REPORT] 对归档任务生效。
+- **可单独发布 / 测试**：是。
+
+### 顺序结论
+
+推荐执行顺序：**A → B → C → D → E → F**（依赖驱动）。
+可选调整：若 Cancel 安全优先级高于可视化，可将 E 的 Core 部分（runner 检查点 + CANCELLED + launcher 强终止）提前到 B 之后、C 之前独立发布（E-core 不依赖 C/D）；UI 按钮在 C 后接入。本设计按依赖排序，最终顺序由 Planner 决定。
+
+---
+
+## 16. 复杂度评估
+
+| 项 | 复杂度 | 说明 |
+|---|---|---|
+| Tray | MEDIUM | pystray/ctypes + 图标 + 菜单 + 健康颜色；代码量小但 Windows 细节多 |
+| background Bridge | LOW | pythonw 入口 + 启动快捷方式；无需服务 |
+| status window | LOW | 纯 tkinter 只读展示 |
+| progress bar | LOW | 静态权重 + 状态映射；逻辑简单，约束在文案 |
+| last activity | MEDIUM | 多源 mtime 聚合 + 阈值调参；依赖 Phase A 字段才可靠 |
+| Cancel lifecycle | **HIGH** | 进程树终止、race、误杀防护、补写终态；唯一高风险项 |
+| project switching | LOW | 确认窗 + config 更新 |
+| packaging | MEDIUM | PyInstaller 单目录；**第一版可不做**（pythonw + 快捷方式先行） |
+| autostart | LOW | 启动文件夹快捷方式；注册表 Run 为备选 |
+
+### 总体评估
+
+| 维度 | 评级 | 理由 |
+|---|---|---|
+| Feasibility | **HIGH** | 全部能力基于现有 tkinter/ctypes/subprocess 与产物契约；无新框架 |
+| Engineering Complexity | **MEDIUM** | 总体轻量；唯一 HIGH 项是 Cancel（集中在 Phase E） |
+| Core Intrusion Risk | **LOW** | Core 改动仅：可选字段写入（A）、检查点 + CANCELLED 终态（E）、pid/token（E）；主流程不动 |
+| Maintenance Cost | **LOW** | 单进程、文件契约、无前端/无服务/无 IPC 框架 |
+
+---
+
+## 17. 推荐的第一版范围（MVP）
+
+### MVP Desktop Shell MUST HAVE
+
+1. Bridge 以 pythonw 常驻（无终端依赖），启动文件夹自启。
+2. Tray 图标 + 最小菜单：打开状态窗口 / 重启 Bridge / 退出 AAF；图标反映 Bridge Health（正常/异常/未运行）。
+3. 状态窗口（§3 IA / §12.1 wireframe）：当前项目 / Bridge 状态 / 当前任务（ID/Name/Stage/Agent/elapsed/last activity/result）/ 六阶段条。
+4. 估算进度条（§4）：事实与估算分离、收敛规则、中文"估算"标注。
+5. Last activity + 疑似卡住提示（§5）：只提示、不自动终止。
+6. Stop Current Task（§6 完整生命周期）：cooperative cancel + 强终止兜底 + CANCELLED 终态 + 防误杀。
+7. Chinese-first 全 UI（§11 文案表）。
+8. Duplicate Task 状态卡片 + 打开 REPORT（§10）。
+9. Project Switching 显式确认 + recent_projects（§9）。
+10. Phase A 状态字段（started_at / stage / stage_started_at / last_activity_at / agent / pid / cancel_requested）。
+
+### NOT IN FIRST VERSION（明确排除）
+
+- 安装包 / 分发打包（PyInstaller / installer）→ 独立后续（RW-010 的 packaging 部分）。
+- Windows Service（§7.3 已论证排除）。
+- heartbeat 机制（§8.3；第一版用 is_alive/error 判定健康）。
+- 真实时间预测 / 动态权重校准（等 RW-005 数据）。
+- 内嵌日志查看器（用"打开日志目录"替代）。
+- 设置中心（设置项并入 Tray/状态窗口；不单独建页）。
+- 多语言切换 / i18n 系统。
+- Resume 按钮（第一版仅提示；Resume 走既有 `--resume-from` CLI，UX 按钮列入后续评估）。
+- 任何 Web / SaaS / 多用户 / 云同步 / marketplace / 远程协作能力（RW-010 防漂移边界，自动扩展禁止项）。
+
+---
+
+## 18. 设计边界确认
+
+1. **本任务只设计**，未实现：Tray / GUI / progress bar / cancel / autostart / project switching / packaging / heartbeat / 新 runtime schema。本仓库**无任何产品功能代码改动**（唯一变更 = docs 设计文档 + backlog/PROJECT_STATE 登记）。
+2. **不启动 v0.4**：v0.3 CLOSED、v0.4 NOT STARTED 保持不变（见 PROJECT_STATE）。是否将 Desktop Shell 纳入 v0.4 由 Planner 单独决策。
+3. **Backlog 未标 SOLVED**：RW-003/004/005/006/010/012/014/015/016 状态不变；仅新增 Design Reference 指向本文档。
+4. **PROJECT_STATE 仅增加**："Desktop Shell design completed / implementation not started"，版本状态不变。
+5. 现有 lifecycle（task_lifecycle 状态机、runner 主流程、归档规则）**未被修改**；§6/§13 均为实现阶段的增量提案。
+
+---
+
+## 19. 审查指引（WorkBuddy / Codex）
+
+### WorkBuddy（可用性与完整性重点）
+
+1. 方案是否真的轻量（§2/§16/§17：无前端、无服务、无新进程架构、依赖增量极小）。
+2. 是否解决 PowerShell / Terminal 常驻问题（§7：pythonw + Tray + 自启；明确排除 Service）。
+3. 是否有 Runtime 状态来源（§13：现有 artifact + Phase A 字段提案；UI 不靠猜测）。
+4. progress 是否区分事实与估算（§4.1：Stage State 与 Estimated Percentage 分离；收敛规则）。
+5. Cancel 是否有正式 lifecycle 设计（§6：CANCELLED 终态、检查点、race/重复点击规则、产物保留）。
+6. Bridge 与 Task Cancel 是否分离（§6.1/§7.4：Cancel 不动 Bridge；Exit AAF 单独语义）。
+7. 项目切换是否保持显式确认（§9：确认窗、不静默、不扫描磁盘）。
+8. Chinese-first 是否明确（§11 文案表）。
+9. 是否避免大型 Dashboard（§2.2 排除 C/D；§17 Not-in-v1）。
+10. 是否没有提前实现（§18.1：零功能代码改动）。
+
+### Codex（架构 / scope 审计重点）
+
+1. UI / Core 边界（§14：文件契约 + 进程契约；Shell 不 import Core 执行逻辑）。
+2. Cancel lifecycle 安全性（§6：进程树边界、PID+token 校验、强终止补写终态、race 规则、重复点击状态机）。
+3. process ownership（§6.4/§7：runner 子进程归属 Bridge；孤儿 runner 场景 §6.9；Launcher 是唯一进程控制者）。
+4. stale / duplicate state（§6.9 场景 3、§13.2：cancel.request 残留、task.json 冗余字段一致性、TASK_ALREADY_EXISTS 不删除）。
+5. state source consistency（§13：task.json 单一权威 + cancel.request 文件镜像；写入者归属 §14.4）。
+6. scope creep（§2.2/§17：明确排除项清单；防漂移边界）。
+7. implementation sequencing（§15：A→B→C→D→E→F，E 风险最高需专项 audit）。
+
+---
+
+*文档结束。设计范围：仅设计规格与实施拆分；实现与否、何时实现、是否纳入 v0.4 由 Planner 决策。*

@@ -2,7 +2,7 @@
 
 > Project: AI Agent Framework\
 > Current Version: **v0.3（CLOSED，当前为维护/观察期）**\
-> Last Updated: 2026-08-27（AAF-MAINT-003）\
+> Last Updated: 2026-08-27（AAF-DESIGN-001）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**\
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -42,6 +42,7 @@ v0.3 已 CLOSED，当前为维护 / 观察期。此期间只做：
 
 - 文档、登记、恢复资产维护（如本任务）；
 - 已确认真实问题的 hotfix（须独立记录，不重开 v0.3 Scope）。
+- AAF-DESIGN-001（2026-08-27）：**Desktop Shell design completed / implementation not started**。设计规格见 `docs/design/AAF-DESKTOP-SHELL-MINIMAL-DESIGN.md`（仅设计，无产品功能实现；是否纳入 v0.4 由 Planner 决策）。
 
 **不**做：新功能实现；v0.4 规划以外的工作；自动进入下一 TASK。
 

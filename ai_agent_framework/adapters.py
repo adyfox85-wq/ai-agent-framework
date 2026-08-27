@@ -6,6 +6,8 @@ import subprocess
 import winreg
 from pathlib import Path
 
+from .subprocess_utils import no_console_kwargs
+
 
 ROLE_INSTRUCTIONS = {
     'hermes': '你是 Executor。严格执行 TASK，不扩大范围。完成后报告实际修改、测试、产物、问题和未完成项。',
@@ -109,6 +111,7 @@ def run_agent(agent: str, prompt: str, workspace: Path, timeout: int = 3600) -> 
         capture_output=True,
         timeout=timeout,
         env=env,
+        **no_console_kwargs(),  # Windows: CREATE_NO_WINDOW，抑制 Agent CLI 新建黑色 console 窗口
     )
     if proc.returncode != 0:
         raise RuntimeError(f'{agent} failed (exit={proc.returncode})\nSTDERR:\n{proc.stderr[-4000:]}')

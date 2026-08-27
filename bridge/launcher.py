@@ -21,6 +21,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 
 from . import config as cfg_mod
+from ai_agent_framework.subprocess_utils import no_console_kwargs
 
 IDLE = "IDLE"
 RUNNING = "RUNNING"
@@ -109,6 +110,7 @@ class FrameworkLauncher:
                     text=True,
                     encoding="utf-8",
                     errors="replace",
+                    **no_console_kwargs(),  # Windows: CREATE_NO_WINDOW，run.py 不新建 console 窗口
                 )
             except OSError as e:
                 self.state = FAILED_TO_START

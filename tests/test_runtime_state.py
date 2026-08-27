@@ -127,7 +127,7 @@ def test_runner_integration_writes_stage_phases(tmp_path, monkeypatch):
     ws = tmp_path / "ws"
     out = tmp_path / "out"
 
-    def fake_run(args, cwd, input, text, encoding, errors, capture_output, timeout, env):
+    def fake_run(args, cwd, input, text, encoding, errors, capture_output, timeout, env, **kwargs):
         class P:
             returncode = 0
             stdout = "PASS fake"

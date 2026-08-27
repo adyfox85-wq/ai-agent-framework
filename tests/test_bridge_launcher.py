@@ -1,8 +1,11 @@
 """AAF Bridge — FrameworkLauncher 测试（mock subprocess，不真实调用 Framework）。"""
 import io
+import os
 import threading
 from pathlib import Path
 import pytest
+
+from ai_agent_framework import subprocess_utils
 
 from bridge import launcher
 from bridge.launcher import (
@@ -34,12 +37,14 @@ class FakeProc:
 def make_launcher(monkeypatch, tmp_path):
     def _make(exit_code=0, stdout_text="", popen_raises=None):
         calls = []
+        kwarg_calls = []
         if popen_raises is not None:
             def fake_popen(args, **kwargs):
                 raise popen_raises
         else:
             def fake_popen(args, **kwargs):
                 calls.append(args)
+                kwarg_calls.append(kwargs)
                 return FakeProc(exit_code=exit_code, stdout_text=stdout_text)
         monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
         done = threading.Event()
@@ -52,6 +57,7 @@ def make_launcher(monkeypatch, tmp_path):
 
         l = FrameworkLauncher(run_py=tmp_path / "run.py", on_finished=on_finished)
         l._fake_calls = calls
+        l._fake_kwargs = kwarg_calls
         l._done = done
         l._captured = captured
         return l
@@ -116,6 +122,41 @@ def test_startup_failure_keeps_task_and_state(make_launcher, tmp_path):
     # TASK.md 保留
     assert task_file.exists()
     assert task_file.read_text(encoding="utf-8") == "content"
+
+
+# ---------- Windows no-console（AAF-v0.4-TASK-002-FIX-003） ----------
+
+@pytest.mark.skipif(os.name != "nt", reason="CREATE_NO_WINDOW 是 Windows-only flag")
+def test_launcher_popen_uses_create_no_window_on_windows(make_launcher, tmp_path):
+    """Windows：launcher 启动 run.py 的 Popen 必须传 CREATE_NO_WINDOW（不新建 console 窗口）。"""
+    l = make_launcher(exit_code=0)
+    out = tmp_path / "out"
+    out.mkdir(parents=True)
+    (out / "REPORT.md").write_text("# R", encoding="utf-8")
+    assert l.launch(tmp_path / "T.md", str(tmp_path), out, "AAF-T1") is True
+    assert _wait_done(l)
+    kwargs = l._fake_kwargs[0]
+    assert kwargs.get("creationflags", 0) & launcher.subprocess.CREATE_NO_WINDOW, (
+        f"launcher Popen 未传 CREATE_NO_WINDOW (kwargs={kwargs})"
+    )
+    # 原有 Popen 参数保持完整
+    assert kwargs.get("stdout") == launcher.subprocess.PIPE
+    assert kwargs.get("stderr") == launcher.subprocess.STDOUT
+    assert kwargs.get("text") is True
+    assert kwargs.get("encoding") == "utf-8"
+    assert kwargs.get("errors") == "replace"
+
+
+def test_launcher_popen_non_windows_no_creationflags(make_launcher, tmp_path, monkeypatch):
+    """非 Windows：launcher 不得传 Windows-only creationflags（platform-safe）。"""
+    monkeypatch.setattr(subprocess_utils, "_IS_WINDOWS", False)
+    l = make_launcher(exit_code=0)
+    out = tmp_path / "out"
+    out.mkdir(parents=True)
+    (out / "REPORT.md").write_text("# R", encoding="utf-8")
+    assert l.launch(tmp_path / "T.md", str(tmp_path), out, "AAF-T1") is True
+    assert _wait_done(l)
+    assert "creationflags" not in l._fake_kwargs[0]
 
 
 # ---------- REPORT 定位 ----------

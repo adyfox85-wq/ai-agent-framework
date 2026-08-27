@@ -406,6 +406,28 @@ P3
 
 ---
 
+## RW-020 — Dead Runner / Orphaned RUNNING State Detection
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-020 |
+| Title | Dead Runner / Orphaned RUNNING State Detection |
+| Category | Runtime Reliability / Runtime Observability |
+| Status | OPEN |
+| Priority | P1 |
+| Evidence / Origin | AAF-v0.4-TASK-001-FIX-003 real incident, 2026-08-27。任务进入 WORKBUDDY 阶段后（Hermes 已完成）：task.status=RUNNING、stage=WORKBUDDY、agent=workbuddy、last_activity_at 停止更新、workbuddy_result.md 从未生成、WorkBuddy 进程已不存在、Framework runner 进程已不存在、Bridge 进程已不存在、REPORT.md 未生成；task.json 长时间保持 RUNNING / WORKBUDDY，用户无任何提示只能继续等待。<br><br>后续通过 Framework resume 恢复：复用 Hermes result → WorkBuddy PASS → Codex APPROVE → REPORT → SUCCESS / COMPLETED。恢复机制有效，但 **Dead Runner Detection 缺失**。 |
+| Problem | RUNNING 目前只表达 lifecycle state，不能证明 execution owner / runner / 当前 agent 仍存活。 |
+| Desired Behavior | 未来 AAF Runtime Health / Desktop Shell 应区分 **Lifecycle State** 与 **Runtime Health**。至少检测可疑组合：task.status=RUNNING + runner ownership/process missing + 当前 agent process missing + last_activity_at stale + expected result artifact missing，并提示「任务可能已异常中断」。潜在用户动作：Resume Task / View Diagnostics / Resolve or Mark Failed（通过权威 lifecycle 路径）。 |
+| Important Boundary | Runtime Health detection **不得**允许 Desktop Shell / UI 独立写入权威 terminal task state。例：canonical lifecycle=RUNNING、runtime health=PROCESS_MISSING / STALE、UI=warning only；Terminal authority 保持 Core / Lifecycle（遵循既有 Safe Cancel / recovery 架构）。 |
+| Current Implementation | 无 runtime health 检测；RUNNING 无 liveness 语义。 |
+| Remaining Gap | - runner ownership / process liveness tracking<br>- agent process liveness<br>- last_activity_at staleness threshold<br>- expected artifact expectation (result file) check<br>- 「任务可能已异常中断」warning 呈现<br>- Resume / Diagnostics / Resolve UX（warning only，不改 terminal authority） |
+| Decision | 当前只登记（本维护任务不实现）。近期待办 P1。 |
+| Target | Desktop Shell（或等价 Runtime Health 层）能区分 lifecycle 与 health；stale / dead runner 能预警；恢复走既有 resume / authoritative lifecycle。 |
+| Related | RW-005（阶段耗时）、RW-006（Runtime 状态可视化）、RW-012（hotkey listener runtime reliability）、RW-014（Task Stop / Cancel） |
+| Do Not Forget | **RUNNING ≠ alive**。运行时健康与生命周期终态权威必须分离；UI 只能 warning，不能写终态。 |
+
+---
+
 ## 1.1 Desktop Shell Principle（桌面壳层设计原则）
 
 > 本原则**不是新的产品功能条目**，

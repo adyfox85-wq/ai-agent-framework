@@ -3,7 +3,7 @@
 > Project: AI Agent Framework
 > Document Type: **Living Long-Term Backlog / 长期问题与恢复登记**
 > Established: 2026-08-27（AAF-MAINT-001-FIX-002）
-> Last Updated: 2026-08-27（AAF-DESIGN-001）
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-002-FIX-002 — Phase B closure sync + RW-021 登记）
 > Location: `docs/internal/AAF_MASTER_BACKLOG.md`
 
 ## Purpose
@@ -120,8 +120,8 @@ P3
 | Status | OPEN |
 | Priority | P1 |
 | Evidence / Origin | 真实使用观察：电脑重启后 Bridge 当前不会自动恢复运行，Ctrl+Alt+A 因 Bridge 尚未启动而没有响应，用户需要重新启动 Bridge（曾需手工启动 python module；Terminal 关闭后 Bridge 停止） |
-| Current Implementation | 当前电脑重启后 Bridge 不会自动启动；用户需要手工启动 python module；Terminal 关闭后 Bridge 停止 |
-| Remaining Gap | 候选方向：<br>- Windows Tray<br>- 无终端后台启动<br>- Start / Restart / Exit<br>- Current Project<br>- Open Status / Logs |
+| Current Implementation | Phase B（AAF-v0.4-TASK-002，commit 6a9814d，2026-08-27 真实 Windows 验收 PASS）已交付：pythonw 无控制台后台启动（scripts/start_bridge.pyw）+ Tray skeleton（打开状态 / 重启 Bridge / 退出 AAF，ctypes Shell_NotifyIconW 零第三方依赖）+ 单实例 mutex + restart 交接。普通使用不再依赖持续打开 PowerShell / Terminal。仍无开机自动启动。 |
+| Remaining Gap | 候选方向（Phase B 已覆盖项不再列为缺口）：<br>- 开机自动启动（autostart，未实现）<br>- Current Project 切换 / Open Status 增强 / Open Logs 文件级运行日志（未实现）<br>- 健康自恢复（见 RW-012，未实现） |
 | Decision | 当前不实现（登记待办） |
 | Target | Bridge 能由桌面壳层或后台机制管理，常驻可管理（Tray / 后台启动 / 状态入口）；普通使用时不依赖持续打开 PowerShell / Terminal 窗口 |
 | Do Not Forget | 与 RW-006 / RW-010 相关联；不做成大型独立应用 |
@@ -268,8 +268,8 @@ P3
 | Status | OPEN |
 | Priority | P1 |
 | Evidence / Origin | 真实使用至少两次出现：<br>- Bridge 进程看似仍存在<br>- Ctrl+Alt+A 无响应<br>- 重启 Bridge 后恢复<br><br>另一次电脑重启后无响应属于 Bridge 尚未配置自动启动（见 RW-004），是**不同场景**，应分别说明 |
-| Current Implementation | 无 listener 健康检测；无自恢复；README Known Limitations 已登记该 issue |
-| Remaining Gap | - hotkey health<br>- listener self-recovery<br>- restart UX<br>- singleton awareness |
+| Current Implementation | Phase B（AAF-v0.4-TASK-002，commit 6a9814d）已新增 hotkey health 判定：`classify_bridge_health()`（listener registered + loop alive → OK / DEGRADED），每 5s 轮询，Tray 图标 / Tooltip 反映健康（IDI_APPLICATION ↔ IDI_WARNING）；FIX-001 真实 GUI 验收中健康显示正常（含 1409 冲突路径行为正确）。仍无 listener 自恢复；README Known Limitations 已登记该 issue。 |
+| Remaining Gap | - listener self-recovery（自恢复，未实现）<br>- hotkey health（已部分覆盖：OK / DEGRADED 检测 + Tray 反映，无自动修复）<br>- restart UX（已有 Tray 重启入口，Phase B 已提供）<br>- singleton awareness（已有单实例 mutex，Phase B 已提供） |
 | Decision | 当前不实现（登记待办）；出现时安全重启 Bridge |
 | Target | listener 可自检、可自恢复、重启 UX 顺畅 |
 | Do Not Forget | **Bridge process 存活不能单独证明 hotkey listener 健康** |
@@ -425,6 +425,29 @@ P3
 | Target | Desktop Shell（或等价 Runtime Health 层）能区分 lifecycle 与 health；stale / dead runner 能预警；恢复走既有 resume / authoritative lifecycle。 |
 | Related | RW-005（阶段耗时）、RW-006（Runtime 状态可视化）、RW-012（hotkey listener runtime reliability）、RW-014（Task Stop / Cancel） |
 | Do Not Forget | **RUNNING ≠ alive**。运行时健康与生命周期终态权威必须分离；UI 只能 warning，不能写终态。 |
+
+---
+
+## RW-021 — Bridge Restart / Exit Completion Notification Continuity
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-021 |
+| Title | Bridge Restart / Exit Completion Notification Continuity |
+| Category | Bridge lifecycle / Runtime UX / Completion notification |
+| Status | OPEN |
+| Priority | P2 |
+| Evidence / Origin | AAF-v0.4-TASK-002-FIX-001 real Windows validation, 2026-08-27。真实验收中主动执行了 Bridge Restart / Exit / restart：Framework runner / validation task 可以继续运行并最终生成 SUCCESS REPORT，但启动该 task 的原 Bridge instance 被 Restart / Exit 后，新 Bridge instance 不会自动恢复原 launcher wait-thread / completion callback，用户没有收到原有「任务完成」提示 / Planner Handoff copy action，只能手工发现 REPORT.md。 |
+| Scenario | Bridge instance A 启动 Framework task → Framework runner 独立继续运行 → Bridge A 被 Restart / Exit → Bridge instance B 启动 → runner 最终正常完成并生成 REPORT → Bridge B 不持有原 launcher completion callback → 用户没有收到完成通知 / Planner Handoff copy action |
+| Current Implementation | Launcher completion callback / wait-thread 属原 Bridge process 内存；Bridge restart 后新 instance 不会重新关联旧 in-flight runner。 |
+| Problem | Framework execution success 和用户 completion notification 是两个不同事实：REPORT 已成功生成 ≠ 用户一定收到完成提示。任务产物完整（canonical task / REPORT 最终 SUCCESS），但用户侧 notification continuity 丢失。 |
+| Not RW-020 | RW-020 = RUNNING 状态残留，但 runner / agent 已死亡（Dead Runner / Orphaned RUNNING）。本问题 = runner 仍然存活并成功完成，但 Bridge 换代后 completion notification continuity 丢失。两者是不同的失败模式，不合并、不互相覆盖。 |
+| Important Boundary | 这不是 task lifecycle corruption：canonical task / REPORT 可以最终 SUCCESS，缺失的是 Bridge-side observation / reattachment / notification continuity。不允许 UI 自行修改 canonical terminal state。 |
+| Remaining Gap | - Bridge restart 后发现 in-flight task<br>- 完成后恢复 notification<br>- Planner Handoff / REPORT availability 提示<br>- 与未来 launch ownership / persistent registry 架构保持一致（设计 §6B.11–§6B.16 Bridge launch registry / §15 Phase E）<br>- 不重复实现 Core lifecycle |
+| Decision | 当前只登记。不重开 Phase B。不得在本任务实现 reattachment。 |
+| Target | Bridge 换代（Restart / Exit / relaunch）后仍能发现 in-flight task，并在其完成后恢复 completion notification / Planner Handoff / REPORT availability 提示。 |
+| Related | RW-020（明确区分，见上）、RW-014（Task Stop / Cancel）、RW-016（Duplicate Task Status UX）；设计文档 `docs/design/AAF-DESKTOP-SHELL-MINIMAL-DESIGN.md` §6B（launch registry / ownership 恢复协议）、§7（Bridge Background Runtime）、§15（Phase E Safe Cancel Lifecycle）——仅引用未来架构关系，不提前实现 Phase E |
+| Do Not Forget | Framework execution success 和用户 completion notification 是两个不同事实。REPORT 已成功生成 ≠ 用户一定收到完成提示。 |
 
 ---
 
@@ -669,6 +692,8 @@ Framework 仍能恢复到可继续升级的状态（见 RW-009）。
 | RW-017 | .aaf Runtime Artifact Git Ignore Consistency | OBSERVATION | P3 |
 | RW-018 | GitHub Push / Proxy Environment Reliability | OBSERVATION | P3 |
 | RW-019 | Agent Review Execution Evidence Consistency | OBSERVATION | P2 |
+| RW-020 | Dead Runner / Orphaned RUNNING State Detection | OPEN | P1 |
+| RW-021 | Bridge Restart / Exit Completion Notification Continuity | OPEN | P2 |
 | BND-001 | Planner-layer Anti-Drift Validation | PARTIAL | P2 |
 | CTX-001 | Context Length / Conversation Rollover UX | PARTIAL | P1 |
 | HIST-001 | Historical Framework Optimization Set Recovery | RECOVERY_PENDING | P2 |

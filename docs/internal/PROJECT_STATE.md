@@ -1,8 +1,8 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.4（IN PROGRESS — Phase A COMPLETE）**\
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-001-FIX-003）\
+> Current Version: **v0.4（IN PROGRESS — Phase A/B COMPLETE）**\
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-002-FIX-002）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -18,17 +18,18 @@
 Version: v0.4
 Status: IN PROGRESS
 Phase: A — Runtime State Foundation: COMPLETE
+       B — Bridge Background / Tray Skeleton: COMPLETE
 Direction: Desktop Shell MVP / Runtime Observability & Control
 
 v0.4 主线（Phase 顺序）：
 A. Runtime State Foundation（COMPLETE）
-B. Bridge Background / Tray Skeleton（NOT STARTED）
+B. Bridge Background / Tray Skeleton（COMPLETE）
 C. Status Window + Chinese-first UI（NOT STARTED）
 D. Progress Visualization（NOT STARTED）
 E. Safe Cancel Lifecycle（NOT STARTED）
 F. Project Switching / Duplicate Task UX（NOT STARTED）
 
-Phase A 已 COMPLETE；Phase B-F 不得提前实现 / 不得自动启动。
+Phase A/B 已 COMPLETE；Phase C-F 不得提前实现 / 不得自动启动。
 
 Phase A 目标：task.json = live canonical runtime view
 （started_at / stage / stage_started_at / last_activity_at / agent / phases），
@@ -51,7 +52,33 @@ Phase A Closure（AAF-v0.4-TASK-001-FIX-001 + FIX-002 + FIX-003，2026-08-27）�
   documentation sync attempt）；FIX-003（docs-only closure consistency fix，
   仅作历史 reference，不写为“永久 Current HEAD”）
 
-Next Phase Candidate: Phase B — Bridge Background / Tray Skeleton（不得自动启动）
+Phase B 目标：Bridge 以 pythonw 无控制台常驻（scripts/start_bridge.pyw）+ Tray skeleton
+（打开状态 / 重启 Bridge / 退出 AAF）+ 单实例 mutex + hotkey health 判定；
+Core / UI 边界：Desktop Shell 只读产物，不复制 Router / Runner / Lifecycle。
+
+Phase B Closure（AAF-v0.4-TASK-002 + AAF-v0.4-TASK-002-FIX-001，2026-08-27）：
+- TASK: AAF-v0.4-TASK-002（Bridge Background / Tray Skeleton）
+- Closure validation: AAF-v0.4-TASK-002-FIX-001（Phase B Hotkey End-to-End Closure Validation）
+- Implementation commit: 6a9814d
+- Tests: 233 passed（216 baseline + 17 新增，零下降）
+- Background pythonw Bridge: PASS（无控制台常驻，真实 Windows 验收）
+- Tray: PASS（Shell_NotifyIconW 真实创建；状态窗口可打开，关闭不退出 Bridge）
+- Single instance: PASS（命名 mutex；restart 交接 WAIT_ABANDONED 路径实测通过）
+- Ctrl+Alt+A real GUI E2E: PASS（Hotkey → Clipboard → TASK validation → Confirmation
+  → Launcher → Framework → REPORT 全链路；原 error 1409 来源确认为旧 Bridge 自身遗留）
+- Restart regression: PASS（重启后单实例 / Tray / Hotkey 全部恢复）
+- Exit regression: PASS（Exit 不修改 canonical task terminal state；状态快照 diff 0/0/0）
+- WorkBuddy: PASS_WITH_WARNING（唯一 warning = Codex closure review 延迟，后已由 Codex 独立执行）
+- Codex: APPROVE
+- Remote Sync: SYNCED
+- Blocking: NONE
+- 新发现缺口（非 Phase B blocker，仅长期登记，不在 Phase B 实现）：
+  Bridge Restart / Exit 后 completion notification continuity 丢失
+  → 已登记 RW-021（见 AAF_MASTER_BACKLOG.md），与 RW-020 明确区分
+- Durable closure 报告：docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-B-CLOSURE-2026-08-27.md
+
+Next Phase Candidate: Phase C — Status Window + Chinese-first UI
+（仅标记候选；Phase C 不得标记 STARTED，必须由 Planner 后续正式生成 TASK 才算启动）
 
 v0.3: CLOSED（见下方历史块，不重开）
 v0.4 启动决定：Planner / User 已批准（见
@@ -67,6 +94,25 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
 - 禁止（Phase A 不实现）：Tray / status window / pystray / autostart / progress bar / stuck 算法 /
   Safe Cancel（CANCELLED / control.json / state.lock / launch registry / force kill）/
   project switching UI / Duplicate dialog / Desktop Shell packaging
+
+### 0.2 Phase B — Bridge Background / Tray Skeleton（COMPLETE）
+
+- TASK: AAF-v0.4-TASK-002（2026-08-27）；closure: AAF-v0.4-TASK-002-FIX-001（Phase B Hotkey
+  End-to-End Closure Validation，2026-08-27，真实 Windows GUI 验收）
+- 状态：COMPLETE（WorkBuddy PASS_WITH_WARNING + Codex APPROVE；233 passed；
+  Remote Sync SYNCED；实时 HEAD 属执行时状态，用 Git 查询，不在此处硬编码为永久当前值）
+- 范围：pythonw 无控制台后台宿主（scripts/start_bridge.pyw）/ Tray skeleton（打开状态 /
+  重启 Bridge / 退出 AAF，ctypes Shell_NotifyIconW 零第三方依赖）/ 单实例 mutex /
+  hotkey health 判定（OK / DEGRADED）/ restart 交接 / exit 语义（不改 canonical state）/
+  Core / UI 边界只读
+- 验收证据：.aaf/AAF-v0.4-TASK-002-FIX-001/（EVIDENCE.md、status_window.png、
+  s1–s6 步骤脚本、REPORT.md）；正式 closure 报告见
+  docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-B-CLOSURE-2026-08-27.md
+- 新发现缺口：Bridge Restart / Exit 后 completion notification continuity 丢失
+  → 已登记 RW-021（非 Phase B blocker，不重开 Phase B，不在本阶段实现）
+- 禁止（Phase B 不实现）：Phase C-F 全部内容 / autostart / Safe Cancel（CANCELLED /
+  cancel.request / control.json / state.lock / launch registry / force kill）/
+  RW-020 / completion reattachment
 
 ### 0.2 v0.3 历史状态（CLOSED，保留）
 
@@ -116,7 +162,7 @@ v0.3 已 CLOSED，当前为维护 / 观察期。此期间只做：
 
 详见 `docs/internal/AAF_MASTER_BACKLOG.md`（完整登记），摘要：
 
-- Bridge 不自动开机启动、无 Tray（RW-004）；
+- Bridge 无开机自动启动（RW-004；Phase B 已提供 pythonw 后台 + Tray skeleton，autostart 仍未实现）；
 - 项目切换需人工改 config（RW-003）；
 - hotkey listener 偶发失活，重启恢复（RW-012）；
 - TASK parser 对换行格式兼容性有限（RW-008）；
@@ -164,7 +210,7 @@ docs/internal/AAF_MASTER_BACKLOG.md
 以后任何被正式确认"稍后处理"的问题，**必须进入 Master Backlog 才算
 长期登记完成**。
 
-v0.4 IN PROGRESS — Phase A COMPLETE；Phase B 保持 NOT STARTED；启动 Phase B 必须由 Planner / User 显式决定。
+v0.4 IN PROGRESS — Phase A/B COMPLETE；Phase C-F 保持 NOT STARTED；启动 Phase C 必须由 Planner / User 显式决定（Phase C 尚未生成正式 TASK）。
 
 ------------------------------------------------------------------------
 

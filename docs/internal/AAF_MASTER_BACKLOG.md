@@ -3,7 +3,7 @@
 > Project: AI Agent Framework
 > Document Type: **Living Long-Term Backlog / 长期问题与恢复登记**
 > Established: 2026-08-27（AAF-MAINT-001-FIX-002）
-> Last Updated: 2026-08-27（AAF-MAINT-002）
+> Last Updated: 2026-08-27（AAF-MAINT-003）
 > Location: `docs/internal/AAF_MASTER_BACKLOG.md`
 
 ## Purpose
@@ -154,12 +154,12 @@ P3
 | Category | Observation / Tooling |
 | Status | OPEN |
 | Priority | P1 |
-| Evidence / Origin | 真实使用中无法直观看到任务当前处于哪个阶段 |
+| Evidence / Origin | 真实使用中无法直观看到任务当前处于哪个阶段，运行时存在明显"黑盒感"：<br>- 当前到底执行到哪一步<br>- 当前 Agent 是谁<br>- 还要多久<br>- 是否仍有活动<br>- 是否卡住<br><br>用户明确希望：可视化阶段流程、小进度条、百分比、最近活动、当前状态、停止按钮。<br>目标体验：**"看得到 → 看得懂 → 控得住"**。 |
 | Current Implementation | 无统一可视化；状态分散在 task.json / run.json / REPORT |
-| Remaining Gap | 未来状态页至少应能看到：<br>- 当前项目<br>- 当前 TASK<br>- 当前阶段（Validation / Boundary / Hermes / WorkBuddy / Codex / REPORT）<br>- Hermes / WorkBuddy / Codex 状态<br>- elapsed<br>- last activity<br>- 当前结果状态（SUCCESS / WAITING / FAILED / FRAMEWORK_ERROR）<br>- error<br>- suspected stuck<br>- Stop Current Task |
-| Decision | 建议未来与 Tray / Desktop UI 合并，而不是建设大型 Web Dashboard |
-| Target | 单窗口可读的运行时状态 |
-| Do Not Forget | 拒绝大而全的 Web Dashboard；保持轻量 |
+| Remaining Gap | 未来 Runtime Status UI 应包含：<br>- 当前项目<br>- 当前 TASK<br>- 当前阶段（Validation / Boundary / Hermes / WorkBuddy / Codex / REPORT）<br>- 当前 Agent<br>- elapsed time<br>- last activity<br>- error / suspected stuck<br>- Stop Current Task<br>- overall progress indicator<br>- small progress bar<br>- estimated percentage<br><br>当前结果状态（SUCCESS / WAITING / FAILED / FRAMEWORK_ERROR）继续保持。 |
+| Decision | 建议未来与 Tray / Desktop UI 合并，而不是建设大型 Web Dashboard。<br><br>**阶段状态是可靠事实**，例如：<br>Validation ✓<br>Boundary ✓<br>Hermes ✓<br>WorkBuddy ▶<br>Codex ○<br>REPORT ○<br><br>**百分比属于 estimated progress，不能伪装成精确真实剩余时间。**<br><br>第一版允许使用静态阶段权重（仅为未来实现候选，本任务不实现算法）：<br>Validation 5<br>Boundary 5<br>Hermes 45<br>WorkBuddy 20<br>Codex 20<br>REPORT 5<br><br>长期可根据真实阶段耗时统计校准权重（与 RW-005 联动）。 |
+| Target | 单窗口可读的运行时状态：当前项目 / TASK / Agent / 阶段 / 进度 一眼可见 |
+| Do Not Forget | 核心体验目标：<br>**看得到** → 当前项目 / TASK / Agent / 阶段 / 进度<br>**看得懂** → 中文状态 / 最近活动 / 错误 / 是否疑似卡住<br>**控得住** → Stop Task / Restart Bridge / Project Switch / Open Logs<br><br>进度百分比必须明确标注为估算值。<br>拒绝大而全的 Web Dashboard；保持轻量。 |
 
 ---
 
@@ -325,10 +325,82 @@ P3
 
 ---
 
+## RW-016 — Duplicate Task Status UX
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-016 |
+| Title | Duplicate Task Status UX |
+| Category | Runtime UX / Bridge |
+| Status | OPEN |
+| Priority | P1 |
+| Evidence / Origin | 真实使用：AAF-MAINT-002 实际已经执行完成，用户再次按 Ctrl+Alt+A 提交相同 Task ID 时只收到 TASK_ALREADY_EXISTS。用户无法从弹窗判断任务到底是 RUNNING / WAITING / SUCCESS / FAILED / stale；也没有查看任务 / 查看状态 / 打开 REPORT 的入口。 |
+| Current Implementation | Bridge duplicate protection 能阻止相同 Task ID 重复登记，但提示仅说明"任务已存在"。 |
+| Remaining Gap | 未来 duplicate 提示应尽量显示：<br>- Task ID<br>- Current Status<br>- Current Stage<br>- Last Run Time<br>- Result<br>- REPORT 是否存在<br><br>并提供候选入口：<br>- 查看任务<br>- 查看状态<br>- 打开 REPORT<br>- 关闭提示<br><br>如任务仍在运行：显示当前阶段和 elapsed。<br>如任务已完成：明确 SUCCESS / WAITING / FAILED。 |
+| Decision | 当前只登记。未来与 Desktop Shell / Runtime Status UI 合并设计。 |
+| Target | 用户不需要打开 .aaf 文件夹猜任务状态。 |
+| Do Not Forget | TASK_ALREADY_EXISTS 本身不是错误；真正 UX 缺口是"只告诉存在，不告诉现在是什么状态"。 |
+
+---
+
+## RW-017 — .aaf Runtime Artifact Git Ignore Consistency
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-017 |
+| Title | .aaf Runtime Artifact Git Ignore Consistency |
+| Category | Repository hygiene / Runtime artifacts |
+| Status | OBSERVATION |
+| Priority | P3 |
+| Evidence / Origin | 真实执行中 git status 长期显示 .aaf/ 为 untracked。 |
+| Current Implementation | 当前 .gitignore 存在 .aaf-*/ 模式，但该模式不覆盖实际 runtime 目录 .aaf/。 |
+| Remaining Gap | 评估是否应明确忽略 .aaf/，同时确认是否有任何 .aaf artifact 需要长期保留在 repo。 |
+| Decision | 当前只登记，不修改 .gitignore。 |
+| Target | 未来明确 runtime artifact 与 repository history 的边界。 |
+| Do Not Forget | .aaf 中包含真实运行证据，不能在未确认 archive / recovery 策略前直接清理或删除。 |
+
+---
+
+## RW-018 — GitHub Push / Proxy Environment Reliability
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-018 |
+| Title | GitHub Push / Proxy Environment Reliability |
+| Category | Environment / Git Operations |
+| Status | OBSERVATION |
+| Priority | P3 |
+| Evidence / Origin | 真实维护任务中 git push 曾出现直连 GitHub TLS EOF；使用本机 Clash SOCKS5 临时代理（socks5h://127.0.0.1:7897）后 push 成功。 |
+| Current Implementation | AAF Core 不管理 Git 网络代理。Git push 由执行环境完成。 |
+| Remaining Gap | 观察该问题是否重复发生。 |
+| Decision | 当前不把代理配置写入 Framework Core。如未来频繁复现，再考虑：documentation / environment preflight / clearer push failure guidance。 |
+| Target | Git push 失败时能明确区分 Framework 故障与外部网络环境故障。 |
+| Do Not Forget | 网络代理属于环境层，不要因为单次 TLS 问题扩大 AAF Core scope。 |
+
+---
+
+## RW-019 — Agent Review Execution Evidence Consistency
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-019 |
+| Title | Agent Review Execution Evidence Consistency |
+| Category | Agent execution / Observability |
+| Status | OBSERVATION |
+| Priority | P2 |
+| Evidence / Origin | AAF-MAINT-002 Hermes 报告曾描述"本机未安装 Codex CLI"，但 Framework 最终 REPORT / Agent Results 中存在真实 Codex Reviewer APPROVE。两种表述并存，环境描述不一致。 |
+| Current Implementation | 最终 Framework REPORT 能保存各 Agent 结果，但不同执行者的环境描述可能不一致。 |
+| Remaining Gap | 未来需要更清楚地区分：<br>- Agent CLI discovered<br>- Agent actually launched<br>- fallback / inline audit<br>- independent reviewer result<br>- environment where the check occurred |
+| Decision | 当前只登记。不要据此开发 universal executable manager。 |
+| Target | 用户和 Planner 能从 REPORT 判断："哪个 Agent 真正独立执行过，在哪个环境执行，是否使用 fallback。" |
+| Do Not Forget | "报告里有 Codex 内容"和"本机 Codex CLI 独立执行成功"不是完全相同的事实，未来应避免模糊表述。 |
+
+---
+
 ## 1.1 Desktop Shell Principle（桌面壳层设计原则）
 
 > 本原则**不是新的产品功能条目**，
-> 用于约束 RW-004、RW-006、RW-010、RW-012、RW-014、RW-015 的未来实现。
+> 用于约束 RW-004、RW-006、RW-010、RW-012、RW-014、RW-015、RW-016 的未来实现。
 
 Future AAF Desktop Shell 的定位是：
 
@@ -405,6 +477,7 @@ Desktop App ≠ 重写 AAF。
 - RW-012 — Hotkey listener runtime reliability
 - RW-014 — Task Stop / Cancel Capability
 - RW-015 — Chinese-first Desktop UI
+- RW-016 — Duplicate Task Status UX
 
 各条目**保留各自独立 ID**。
 Cluster 只是帮助未来统一设计，
@@ -561,6 +634,10 @@ Framework 仍能恢复到可继续升级的状态（见 RW-009）。
 | RW-013 | Router self-triggering reference trap | OPEN | P1 |
 | RW-014 | Task Stop / Cancel Capability | OPEN | P1 |
 | RW-015 | Chinese-first Desktop / Tray User Interface | OPEN | P2 |
+| RW-016 | Duplicate Task Status UX | OPEN | P1 |
+| RW-017 | .aaf Runtime Artifact Git Ignore Consistency | OBSERVATION | P3 |
+| RW-018 | GitHub Push / Proxy Environment Reliability | OBSERVATION | P3 |
+| RW-019 | Agent Review Execution Evidence Consistency | OBSERVATION | P2 |
 | BND-001 | Planner-layer Anti-Drift Validation | PARTIAL | P2 |
 | CTX-001 | Context Length / Conversation Rollover UX | PARTIAL | P1 |
 | HIST-001 | Historical Framework Optimization Set Recovery | RECOVERY_PENDING | P2 |

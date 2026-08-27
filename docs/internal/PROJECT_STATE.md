@@ -2,7 +2,7 @@
 
 > Project: AI Agent Framework\
 > Current Version: **v0.3（CLOSED，当前为维护/观察期）**\
-> Last Updated: 2026-08-27\
+> Last Updated: 2026-08-27（AAF-MAINT-003）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**\
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -71,10 +71,12 @@ v0.3 已 CLOSED，当前为维护 / 观察期。此期间只做：
 - 项目切换需人工改 config（RW-003）；
 - hotkey listener 偶发失活，重启恢复（RW-012）；
 - TASK parser 对换行格式兼容性有限（RW-008）；
-- 无运行时状态可视化（RW-006）；
+- 无运行时状态可视化（RW-006）；含明确 UX 要求：当前项目 / TASK / Agent / 阶段 / 进度条 / 估算百分比 / 停止（RW-006）；
+- 重复提交 Task 仅提示 TASK_ALREADY_EXISTS，无状态 / 查看 / REPORT 入口（RW-016）；
 - 无当前任务 Stop / Cancel 入口（RW-014）；
 - 无统一桌面 UI；未来 Chinese-first（RW-015）；
-- 无会话过长提醒/承接 UX（CTX-001）。
+- 无会话过长提醒/承接 UX（CTX-001）；
+- 环境 / 仓库观察项：.aaf ignore 一致性、Git push 代理可靠性、Agent review 证据一致性（RW-017～RW-019，详见 Master Backlog，仅登记不实现）。
 
 ### 0.4 Source / Mirror / Recovery Policy（长期政策）
 

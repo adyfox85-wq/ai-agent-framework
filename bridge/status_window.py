@@ -3,18 +3,24 @@
 信息架构（冻结设计 §3 / §12.1 wireframe）：
 - Bridge / Project 区：当前项目 / Bridge 状态 / 热键 / Workspace
 - Current Task 区：Task ID / Task Name / 当前阶段 / 当前 Agent /
-  已运行（elapsed）/ 最近活动 / 整体结果
+  已运行（elapsed）/ 最近活动 / 整体结果 / 整体进度（估算百分比 + 进度条）/
+  当前阶段占比 / suspected-stuck 提示
 - Stage Strip：Validation / Boundary / Hermes / WorkBuddy / Codex / Report
-  （✓ 已完成 / ▶ 进行中 / ○ 未开始 / ⏸ 等待处理 / ✗ 失败）
-- 操作：查看日志 / 关闭 / 重启 Bridge / 退出 AAF
+  （✓ 已完成 / ▶ 进行中 / ○ 未开始 / ⏸ 等待处理 / ✗ 失败；进行中阶段高亮）
+- 操作：查看日志 / 查看任务目录 / 关闭 / 重启 Bridge / 退出 AAF
+
+Phase D（进度可视化）：
+- 进度估算纯函数在 bridge/progress.py（权重表集中定义，设计 §4.2）
+- suspected-stuck 观察纯函数在 bridge/stuck.py（设计 §5.2，只提示不改状态）
+- 进度条为只读估算展示，不写任何 canonical artifact
 
 Core / UI 边界（设计 §14）：
 - 只读观察：读 task.json（经 runtime_state reader）/ route.json / boundary.json /
   REPORT.md / last_run.json / config.json / launcher 内存状态；
   绝不写 task.json / run.json / route.json / boundary.json / REPORT.md
 - 不复制 Router / Runner / Lifecycle / Agent 逻辑
-- 不实现 Phase D（进度估算 / stuck 判定）、Phase E（cancel / CANCELLED）、
-  Phase F（项目切换 / Duplicate UX）
+- 不实现 Phase E（cancel / CANCELLED）、Phase F（项目切换 / Duplicate UX）；
+  stuck 仅提示，不做 definitive dead-runner 判定（RW-020 边界）
 
 本模块可脱离 tkinter 主循环单测（纯函数部分）；窗口与控制器在主线程使用。
 """
@@ -29,11 +35,19 @@ from pathlib import Path
 
 from . import config as cfg_mod
 from . import task_io
+from . import progress as progress_mod
+from . import stuck as stuck_mod
 from ai_agent_framework import runtime_state as runtime_state_mod
 
 REFRESH_INTERVAL_MS = 1000  # 刷新频率：约 1 秒（只读轻量刷新，TASK req 16）
 
 UNKNOWN = "—"
+
+# 进度条宽度（Phase D；仅展示，不写任何 artifact）
+PROGRESS_BAR_WIDTH = 200
+
+# 当前进行中阶段高亮底色（Phase D req 6：允许附加当前阶段高亮）
+STAGE_RUNNING_BG = "#dce9ff"
 
 # 六阶段条（设计 §3；COMPLETED 是终态标记，不属于阶段条）
 STAGE_ORDER = ("VALIDATION", "BOUNDARY", "HERMES", "WORKBUDDY", "CODEX", "REPORT")
@@ -373,7 +387,16 @@ class StatusSnapshot:
     overall_raw: str
     # Stage Strip
     stage_strip: dict = field(default_factory=dict)
-    # 查看日志 / REPORT
+    # Phase D：整体进度（只读估算；不写任何 artifact）
+    progress_percent: int = 0
+    progress_text: str = ""
+    stage_share_text: str = ""
+    # Phase D：suspected-stuck 提示（仅观察；不改 canonical state）
+    stuck: bool = False
+    stuck_warning: str = ""
+    stuck_detail: str = ""
+    # 查看日志 / 查看任务目录 / REPORT
+    task_dir: str | None = None
     log_dir: str | None = None
     report_path: str | None = None
     empty_hint: str | None = None
@@ -401,6 +424,13 @@ def unknown_snapshot() -> StatusSnapshot:
         overall="",
         overall_raw="",
         stage_strip=_empty_stage_strip(),
+        progress_percent=0,
+        progress_text=progress_mod.NO_INFO_TEXT,
+        stage_share_text="",
+        stuck=False,
+        stuck_warning="",
+        stuck_detail="",
+        task_dir=None,
         log_dir=None,
         report_path=None,
         empty_hint="状态读取失败，请稍后重试。",
@@ -449,6 +479,13 @@ def collect_status(cfg: dict, health: tuple, launcher) -> StatusSnapshot:
             overall="",
             overall_raw="",
             stage_strip=_empty_stage_strip(),
+            progress_percent=0,
+            progress_text=progress_mod.NO_INFO_TEXT,
+            stage_share_text="",
+            stuck=False,
+            stuck_warning="",
+            stuck_detail="",
+            task_dir=None,
             log_dir=None,
             report_path=None,
             empty_hint="当前没有任务。\n使用 Ctrl+Alt+A 粘贴 TASK 后开始执行。",
@@ -458,6 +495,14 @@ def collect_status(cfg: dict, health: tuple, launcher) -> StatusSnapshot:
     route = read_route_agents(ref.output_dir) if ref.output_dir is not None else None
     strip = stage_states(runtime, ref.output_dir, route)
     log_dir = _log_target(runtime, ref)
+    task_dir = str(ref.output_dir) if ref.output_dir is not None else None
+
+    # --- Phase D：进度估算 + suspected-stuck 提示（只读；确定性；不写任何 artifact） ---
+    status = runtime.status if runtime is not None else None
+    est = progress_mod.estimate_progress(strip, status, progress_mod.stage_elapsed_map(runtime))
+    stuck, stuck_warning, stuck_detail = stuck_mod.suspected_stuck(runtime)
+    progress_text = progress_mod.progress_text(est.percent, status=status, has_info=runtime is not None)
+    share_text = progress_mod.stage_share_text(strip)
 
     if runtime is not None:
         elapsed = format_elapsed(runtime.elapsed_seconds())
@@ -494,6 +539,13 @@ def collect_status(cfg: dict, health: tuple, launcher) -> StatusSnapshot:
         overall=overall,
         overall_raw=overall_raw,
         stage_strip=strip,
+        progress_percent=est.percent,
+        progress_text=progress_text,
+        stage_share_text=share_text,
+        stuck=stuck,
+        stuck_warning=stuck_warning,
+        stuck_detail=stuck_detail,
+        task_dir=task_dir,
         log_dir=str(log_dir) if log_dir else None,
         report_path=report_path,
         empty_hint=None,
@@ -537,6 +589,7 @@ class StatusWindow(tk.Toplevel):
         self._closed = False
         self._empty_shown = True
         self._log_dir = None
+        self._task_dir = None
 
         self.title("AAF 状态窗口 — AI Agent Framework")
         self.resizable(False, False)
@@ -583,12 +636,47 @@ class StatusWindow(tk.Toplevel):
         self._lbl_activity = self._field_in_frame(self._task_frame, 6, "最近活动：")
         self._lbl_overall = self._field_in_frame(self._task_frame, 7, "整体结果：")
 
+        # 整体进度（Phase D：只读估算；设计 §12.1 文案 + 进度条）
+        self._lbl_progress = tk.Label(
+            self._task_frame, text=progress_mod.NO_INFO_TEXT, font=("Segoe UI", 9, "bold")
+        )
+        self._lbl_progress.grid(row=8, column=0, columnspan=2, sticky="w", padx=8, pady=(4, 1))
+        self._progress_canvas = tk.Canvas(
+            self._task_frame,
+            width=PROGRESS_BAR_WIDTH,
+            height=14,
+            bg="#e8e8e8",
+            highlightthickness=1,
+            highlightbackground="#bbbbbb",
+        )
+        self._progress_canvas.grid(row=8, column=2, columnspan=2, sticky="ew", padx=8, pady=(4, 1))
+        self._progress_fill = None
+
+        # 当前阶段占比（Phase D req 6：允许附加；仅进行中阶段显示）
+        self._lbl_stage_share = tk.Label(
+            self._task_frame, text="", font=("Segoe UI", 8), fg="#666666"
+        )
+        self._lbl_stage_share.grid(row=9, column=0, columnspan=4, sticky="w", padx=8, pady=0)
+
+        # suspected-stuck 提示横幅（Phase D：只观察、不改 canonical state；默认隐藏）
+        self._lbl_stuck = tk.Label(
+            self._task_frame,
+            text="",
+            font=("Segoe UI", 9, "bold"),
+            fg="#7a5c00",
+            bg="#fff8dc",
+            anchor="w",
+            justify="left",
+        )
+        self._lbl_stuck.grid_remove()
+
         tk.Frame(self._task_frame, height=1, bg="#cccccc").grid(
-            row=8, column=0, columnspan=4, sticky="ew", padx=4, pady=4
+            row=10, column=0, columnspan=4, sticky="ew", padx=4, pady=4
         )
 
-        # 阶段条（六阶段：Validation … Report）
+        # 阶段条（六阶段：Validation … Report；进行中阶段高亮）
         self._cells: dict[str, tk.Label] = {}
+        self._cell_default_bg: dict[str, str] = {}
         for i, stage in enumerate(STAGE_ORDER):
             cell = tk.Label(
                 self._task_frame,
@@ -600,8 +688,9 @@ class StatusWindow(tk.Toplevel):
                 padx=4,
                 pady=4,
             )
-            cell.grid(row=9, column=i, padx=3, pady=4)
+            cell.grid(row=11, column=i, padx=3, pady=4)
             self._cells[stage] = cell
+            self._cell_default_bg[stage] = str(cell.cget("bg"))
 
         # --- 空状态区（无任务时显示） ---
         self._empty_frame = tk.Frame(self)
@@ -620,6 +709,8 @@ class StatusWindow(tk.Toplevel):
         btns.grid(row=task_row + 1, column=0, columnspan=4, pady=(8, 2))
         self.btn_log = tk.Button(btns, text="查看日志", width=10, command=self._on_open_log)
         self.btn_log.pack(side="left", padx=5)
+        self.btn_task_dir = tk.Button(btns, text="查看任务目录", width=12, command=self._on_open_task_dir)
+        self.btn_task_dir.pack(side="left", padx=5)
         tk.Button(btns, text="关闭", width=10, command=self.close).pack(side="left", padx=5)
         tk.Button(btns, text="重启 Bridge", width=12, command=self._on_restart).pack(side="left", padx=5)
         tk.Button(btns, text="退出 AAF", width=12, command=self._on_exit).pack(side="left", padx=5)
@@ -686,6 +777,8 @@ class StatusWindow(tk.Toplevel):
 
         self._log_dir = snap.log_dir
         self.btn_log.config(state="normal" if snap.log_dir else "disabled")
+        self._task_dir = getattr(snap, "task_dir", None)
+        self.btn_task_dir.config(state="normal" if self._task_dir else "disabled")
 
         if not snap.has_task:
             self._empty_shown = True
@@ -705,18 +798,58 @@ class StatusWindow(tk.Toplevel):
         self._lbl_activity.config(text=snap.last_activity)
         self._lbl_overall.config(text=f"{snap.overall}（{snap.overall_raw}）" if snap.overall_raw else snap.overall)
 
+        # Phase D：整体进度（只读估算；防御性读取兼容旧 provider 快照）
+        self._lbl_progress.config(
+            text=getattr(snap, "progress_text", "") or progress_mod.NO_INFO_TEXT
+        )
+        self._lbl_stage_share.config(text=getattr(snap, "stage_share_text", "") or "")
+        self._draw_progress_bar(getattr(snap, "progress_percent", 0) or 0)
+
+        # Phase D：suspected-stuck 提示（只观察；不改 canonical state）
+        if getattr(snap, "stuck", False):
+            warning = getattr(snap, "stuck_warning", "") or stuck_mod.STUCK_WARNING_TEXT
+            detail = getattr(snap, "stuck_detail", "") or ""
+            self._lbl_stuck.config(text=f"{warning}（{detail}）" if detail else warning)
+            self._lbl_stuck.grid()
+        else:
+            self._lbl_stuck.grid_remove()
+
         for stage, state in snap.stage_strip.items():
             cell = self._cells.get(stage)
             if cell is None:
                 continue
             symbol, label = stage_state_label(state)
             cell.config(text=f"{STAGE_DISPLAY.get(stage, stage)}\n{symbol} {label}")
+            cell.config(bg=STAGE_RUNNING_BG if state == "RUNNING" else self._cell_default_bg.get(stage, ""))
+
+    def _draw_progress_bar(self, percent: int) -> None:
+        """重绘进度条填充（0% → 空；100% → 全宽）。"""
+        try:
+            percent = min(100, max(0, int(percent)))
+        except (TypeError, ValueError):
+            percent = 0
+        if self._progress_fill is not None:
+            try:
+                self._progress_canvas.delete(self._progress_fill)
+            except tk.TclError:
+                pass
+            self._progress_fill = None
+        if percent <= 0:
+            return
+        width = max(2, int(PROGRESS_BAR_WIDTH * percent / 100.0))
+        self._progress_fill = self._progress_canvas.create_rectangle(
+            0, 0, width, 14, fill="#4caf50", outline=""
+        )
 
     # ---------- 操作 ----------
 
     def _on_open_log(self) -> None:
         if self._log_dir:
             open_directory(self._log_dir)
+
+    def _on_open_task_dir(self) -> None:
+        if getattr(self, "_task_dir", None):
+            open_directory(self._task_dir)
 
     def _on_restart(self) -> None:
         if self._on_restart_cb is not None:

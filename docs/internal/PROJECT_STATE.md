@@ -1,8 +1,8 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.4（IN PROGRESS — Phase A/B/C COMPLETE；Phase D-F NOT STARTED）**\
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-003-FIX-001 Phase C closure sync）\
+> Current Version: **v0.4（IN PROGRESS — Phase A/B/C COMPLETE；Phase D IMPLEMENTATION COMPLETE（待验证）；Phase E/F NOT STARTED）**\
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-004 Phase D implementation sync）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -27,11 +27,12 @@ A. Runtime State Foundation（COMPLETE）
 B. Bridge Background / Tray Skeleton（COMPLETE）
 C. Status Window + Chinese-first UI（COMPLETE — 2026-08-27 closure：AAF-v0.4-TASK-003-FIX-001 正式同步；
    实现 + WorkBuddy 独立验证 + Codex 审查全部通过，见下方 Phase C 段落）
-D. Progress Visualization（NOT STARTED）
+D. Progress Visualization（IMPLEMENTATION COMPLETE — 2026-08-27 AAF-v0.4-TASK-004 实现完成；
+   待 WorkBuddy 独立验证 + Codex 审查通过后由 Planner 正式标 COMPLETE，见下方 Phase D 段落）
 E. Safe Cancel Lifecycle（NOT STARTED）
 F. Project Switching / Duplicate Task UX（NOT STARTED）
 
-Phase D-F 不得提前实现 / 不得自动启动；Phase D 仅为 Next Phase Candidate（见下），不得标记 STARTED。
+Phase E/F 不得提前实现 / 不得自动启动；Phase E 仅为下一个候选（见下），不得标记 STARTED。
 
 Phase C 目标：正式状态窗口（bridge/status_window.py）—— 只读观察 + 中文优先 +
 六阶段条事实映射；Tray 接入（打开状态窗口复用/聚焦，关闭不退出 Bridge）；
@@ -112,8 +113,8 @@ Phase B Closure（AAF-v0.4-TASK-002 + AAF-v0.4-TASK-002-FIX-001，2026-08-27）�
 - Durable closure 报告：docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-B-CLOSURE-2026-08-27.md
 
 Next Phase Candidate: Phase D — Progress Visualization
-（仅标记候选；Phase D 不得标记 STARTED，不得自动启动，
-必须由 Planner 在 Phase C 正式 COMPLETE 后生成 TASK 才算启动）
+（历史记录：Phase C 完成时的候选标记；Phase D 已由 Planner 正式启动为 AAF-v0.4-TASK-004，
+现为 IMPLEMENTATION COMPLETE 待验证——见上方 Phase D 段落）
 
 v0.3: CLOSED（见下方历史块，不重开）
 v0.4 启动决定：Planner / User 已批准（见
@@ -188,6 +189,39 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
 - 禁止（Phase C 不实现）：Phase D-F 全部内容（progress bar / percentage / phase weights /
   stuck detection / Safe Cancel / launch registry / completion reattachment / project switching /
   Duplicate UX）/ RW-020 / RW-021 / final-status aggregation fix
+
+### 0.2 Phase D — Progress Visualization（IMPLEMENTATION COMPLETE — 待 WorkBuddy + Codex 验证）
+
+- TASK: AAF-v0.4-TASK-004（2026-08-27）
+- 状态：IMPLEMENTATION COMPLETE（实现 + 测试 + 真实 Windows E2E 全部通过；
+  **不标 COMPLETE**——按 TASK req 25，须在 WorkBuddy 独立验证 + Codex 审查通过后由 Planner 正式确认）
+- 范围：bridge/progress.py（集中权重表 §4.2 + 确定性估算纯函数 §4.1 + 中文文案 §12.1）/
+  bridge/stuck.py（suspected-stuck 最小观察 §5.2：RUNNING + last_activity ≥ 10 分钟，
+  只提示不改 canonical state，RW-020 边界）/ bridge/status_window.py（整体进度条 Canvas +
+  「整体进度：约 N%（估算）」+ 当前阶段占比 + stuck 黄色横幅 + 进行中阶段高亮 +
+  查看任务目录按钮；约 1s after 只读刷新；Tk 主线程更新）
+- 进度规则（确定性）：已完成阶段全权重；进行中阶段内部 0%–50% 线性（60 分钟封顶）；
+  SUCCESS→100%；WAITING/FAILED 冻结在已完成阶段权重和（不自动推进、不显示 100%）；
+  无任务/无 task.json → 0（暂无进度信息）；legacy 缺失 phases 不崩溃
+- 只读边界：进度/停滞全部由 runtime_state reader + task.json phases + timestamps 计算；
+  零写 task.json / run.json / route.json / boundary.json / REPORT.md / cancel.request
+- 回归：284 基线不降，全量 334 passed（+50 tests/test_progress.py，覆盖 TASK req 22 A–T 全项：
+  0% / 各阶段 running / SUCCESS 100 / FAILED <100 / WAITING 冻结 / legacy / no-task /
+  monotonic / stuck 阈值上下 / SUCCESS·FAILED 不显示 stuck / last_activity·stage_started_at 缺失 /
+  中文文案 / 权重表集中 / GUI 进度条·横幅·高亮·任务目录按钮）
+- 真实 Windows E2E（.aaf/AAF-v0.4-TASK-004/：EVIDENCE.md、evidence.jsonl、9 张截图、e2e_phase_d.py）：
+  Tray 打开状态窗口（空状态）→ stuck fixture 独立验证（真实 Tk 断言 + live 窗口截图）→
+  真实 Ctrl+Alt+A 全路由任务（Hermes→WorkBuddy→Codex→REPORT）→ 进度采样 [10, 55, 75, 100]
+  单调推进 → SUCCESS = 100%（全绿进度条 + 「整体进度：100%（已完成）」）→ 关闭窗口 Bridge 存活 →
+  重开进度仍正确 → 三 Agent 进程树 console_windows 全空（无 console 黑窗）→ 无 Tk callback 异常 →
+  Tray Exit 正常退出；像素级验证进度条绿色随百分比单调递增、stuck 横幅仅 stuck 态出现
+- 环境观察（非 blocking，登记不实现）：E2E 期间复现 RW-012 场景（Bridge 进程存活但 hotkey
+  listener 失活，探测无 1409 冲突）——按既有登记处理（重启 Bridge 恢复），未新建 issue
+- 禁止（Phase D 不实现）：Phase E/F 全部内容（Safe Cancel / CANCELLED / cancel.request /
+  control.json / state.lock / launch registry / force kill / project switching / Duplicate UX）/
+  RW-020 完整 dead-runner protocol / RW-021 / RW-022 aggregation fix
+- Next Phase Candidate: Phase E — Safe Cancel Lifecycle（仅标记候选，不自动启动，
+  必须由 Planner 在 Phase D 正式 COMPLETE 后生成 TASK 才算启动）
 
 ### 0.2 v0.3 历史状态（CLOSED，保留）
 
@@ -287,7 +321,7 @@ docs/internal/AAF_MASTER_BACKLOG.md
 以后任何被正式确认"稍后处理"的问题，**必须进入 Master Backlog 才算
 长期登记完成**。
 
-v0.4 IN PROGRESS — Phase A/B/C COMPLETE；Phase D-F 保持 NOT STARTED，不得自动启动；Next Phase Candidate = Phase D — Progress Visualization（仅标记候选，不启动，须由 Planner 正式生成 TASK 才算启动）。
+v0.4 IN PROGRESS — Phase A/B/C COMPLETE；Phase D IMPLEMENTATION COMPLETE（待 WorkBuddy + Codex 验证后由 Planner 正式标 COMPLETE）；Phase E/F 保持 NOT STARTED，不得自动启动；Next Phase Candidate = Phase E — Safe Cancel Lifecycle（仅标记候选，不启动，须由 Planner 在 Phase D 正式 COMPLETE 后生成 TASK 才算启动）。
 
 ------------------------------------------------------------------------
 

@@ -104,8 +104,34 @@ pythonw 无控制台，启动异常（如导入错误）会：
 
 状态窗口是**只读观察界面**，每约 1 秒自动刷新，显示：当前项目 / Bridge 状态 / 热键 / Workspace、
 当前任务（Task ID / Task Name / 当前阶段 / 当前 Agent / 已运行 / 最近活动 / 整体结果）、
+整体进度（估算百分比 + 进度条）、当前阶段占比，
 以及 Validation → Boundary → Hermes → WorkBuddy → Codex → Report 六阶段条
-（✓ 已完成 / ▶ 进行中 / ○ 未开始 / ⏸ 等待处理 / ✗ 失败）。
+（✓ 已完成 / ▶ 进行中 / ○ 未开始 / ⏸ 等待处理 / ✗ 失败；进行中阶段高亮）。
+
+**整体进度（估算）是什么意思？**
+
+- **进度是估算值，不是精确剩余进度**：由固定阶段权重（Validation 5% / Boundary 5% /
+  Hermes 45% / WorkBuddy 20% / Codex 20% / Report 5%）与阶段完成事实确定性计算，
+  进度条旁标注「估算」。它不承诺剩余时间，不会随时间流逝自动增长
+  （只有进行中阶段内部按 0%–50% 线性微调，60 分钟封顶）。
+- **进度不是 canonical lifecycle**：任务的权威状态始终是 `task.json`
+  （由 Framework runner 写入）。进度条只读展示，永不回写 task.json / run.json /
+  route.json / boundary.json / REPORT.md / cancel.request 等任何状态文件。
+- **100% 只在任务 SUCCESS 时保证**：SUCCESS → 100%（已完成）。
+  FAILED 停在失败阶段之前（< 100%）；WAITING 停在已完成事实（不自动推进）；
+  没有任务或 task.json 缺失时显示「暂无进度信息」（0%）。
+
+**「⚠ 任务可能已停滞」是什么意思？**
+
+- 触发条件：任务 status = RUNNING **且** last_activity_at 距今 ≥ 10 分钟
+  （runner 每个阶段 / Agent 边界都会刷新 last_activity_at，停滞即代表无可观察活动）。
+- **这只是"可疑"提示，不等于确定进程已死**：它只基于可观察活动信号，
+  不做进程级判定（进程存活 ≠ 有进展，RUNNING ≠ alive）。
+- **提示不会自动终止 / 修改任何任务状态**：不会自动 Resume / Cancel / Force Kill。
+  请点 [查看日志] / [查看任务目录] 打开任务输出目录，检查
+  `task.json` / `<agent>_prompt.md` / `<agent>_result.md` 等产物，
+  判断是 Agent 仍在工作、等待外部输入，还是确实异常中断。
+  如确认中断，可参考本文件 G（Framework WAITING）用 resume 恢复。
 
 **状态窗口会不会改任务状态？**
 

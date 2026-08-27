@@ -131,16 +131,26 @@ Bridge 校验通过后点击「执行」，Framework 开始后台运行。
 
 - **Bridge / 项目区**：当前项目、Bridge 状态（正常运行/异常）、热键、Workspace
 - **当前任务区**：Task ID、Task Name、当前阶段、当前 Agent（Hermes / WorkBuddy / Codex）、
-  已运行时长、最近活动、整体结果（执行中 / 已完成 / 等待处理 / 执行失败）
+  已运行时长、最近活动、整体结果（执行中 / 已完成 / 等待处理 / 执行失败）、
+  整体进度（估算百分比 + 进度条）、当前阶段占比
 - **六阶段条**：Validation / Boundary / Hermes / WorkBuddy / Codex / Report，
-  每个阶段显示 ✓ 已完成 / ▶ 进行中 / ○ 未开始 / ⏸ 等待处理 / ✗ 失败
-- **操作**：查看日志（打开任务输出目录）、关闭、重启 Bridge、退出 AAF
+  每个阶段显示 ✓ 已完成 / ▶ 进行中 / ○ 未开始 / ⏸ 等待处理 / ✗ 失败；进行中阶段高亮
+- **疑似停滞提示**：任务 RUNNING 且最近 10 分钟无活动时显示黄色提示
+  「⚠ 任务可能已停滞（最近 N 分钟没有活动）」——这只是可观测提示，不会自动
+  终止或修改任务状态
+- **操作**：查看日志、查看任务目录（打开任务输出目录）、关闭、重启 Bridge、退出 AAF
 
 要点：
 
 - 状态窗口是**只读观察界面**，不会修改任何任务文件（task.json / run.json 由 Framework 自己写）。
 - **关闭状态窗口不会退出 Bridge** —— 需要时随时从 Tray 再次打开。
 - 没有任务时窗口显示"当前没有任务"，不会报错；Task ID / 状态等英文技术字段保留原值。
+- **整体进度是估算值，不是精确剩余进度**：由固定阶段权重（Validation 5% / Boundary 5% /
+  Hermes 45% / WorkBuddy 20% / Codex 20% / Report 5%）与阶段完成事实计算；
+  进度条旁标注「估算」。**100% 只在任务 SUCCESS 时保证**；FAILED / WAITING 时
+  进度定格在已完成事实，不会显示 100%。
+- **进度不是 canonical lifecycle**：任务的权威状态始终是 `task.json`（由 Framework 写入）；
+  进度条只读展示、永不回写任何状态文件。
 
 > 注意：重启 / 退出 Bridge 不会修改正在执行 Task 的状态文件（task.json / run.json 由 Framework 自己写）。
 

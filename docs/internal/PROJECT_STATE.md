@@ -72,6 +72,8 @@ v0.3 已 CLOSED，当前为维护 / 观察期。此期间只做：
 - hotkey listener 偶发失活，重启恢复（RW-012）；
 - TASK parser 对换行格式兼容性有限（RW-008）；
 - 无运行时状态可视化（RW-006）；
+- 无当前任务 Stop / Cancel 入口（RW-014）；
+- 无统一桌面 UI；未来 Chinese-first（RW-015）；
 - 无会话过长提醒/承接 UX（CTX-001）。
 
 ### 0.4 Source / Mirror / Recovery Policy（长期政策）

@@ -3,7 +3,7 @@
 > Project: AI Agent Framework
 > Document Type: **Living Long-Term Backlog / 长期问题与恢复登记**
 > Established: 2026-08-27（AAF-MAINT-001-FIX-002）
-> Last Updated: 2026-08-27
+> Last Updated: 2026-08-27（AAF-MAINT-002）
 > Location: `docs/internal/AAF_MASTER_BACKLOG.md`
 
 ## Purpose
@@ -118,11 +118,11 @@ P3
 | Category | Real-world usage / Bridge lifecycle |
 | Status | OPEN |
 | Priority | P1 |
-| Evidence / Origin | 真实使用观察（电脑重启后需手工启动） |
+| Evidence / Origin | 真实使用观察：电脑重启后 Bridge 当前不会自动恢复运行，Ctrl+Alt+A 因 Bridge 尚未启动而没有响应，用户需要重新启动 Bridge（曾需手工启动 python module；Terminal 关闭后 Bridge 停止） |
 | Current Implementation | 当前电脑重启后 Bridge 不会自动启动；用户需要手工启动 python module；Terminal 关闭后 Bridge 停止 |
 | Remaining Gap | 候选方向：<br>- Windows Tray<br>- 无终端后台启动<br>- Start / Restart / Exit<br>- Current Project<br>- Open Status / Logs |
 | Decision | 当前不实现（登记待办） |
-| Target | Bridge 常驻可管理（Tray / 后台启动 / 状态入口） |
+| Target | Bridge 能由桌面壳层或后台机制管理，常驻可管理（Tray / 后台启动 / 状态入口）；普通使用时不依赖持续打开 PowerShell / Terminal 窗口 |
 | Do Not Forget | 与 RW-006 / RW-010 相关联；不做成大型独立应用 |
 
 ---
@@ -156,7 +156,7 @@ P3
 | Priority | P1 |
 | Evidence / Origin | 真实使用中无法直观看到任务当前处于哪个阶段 |
 | Current Implementation | 无统一可视化；状态分散在 task.json / run.json / REPORT |
-| Remaining Gap | 未来可看到：<br>- Current Project<br>- Current Task<br>- Validation<br>- Boundary<br>- Hermes<br>- WorkBuddy<br>- Codex<br>- REPORT<br>- elapsed<br>- last activity<br>- WAITING / SUCCESS / FAILED<br>- FRAMEWORK_ERROR<br>- suspected stuck |
+| Remaining Gap | 未来状态页至少应能看到：<br>- 当前项目<br>- 当前 TASK<br>- 当前阶段（Validation / Boundary / Hermes / WorkBuddy / Codex / REPORT）<br>- Hermes / WorkBuddy / Codex 状态<br>- elapsed<br>- last activity<br>- 当前结果状态（SUCCESS / WAITING / FAILED / FRAMEWORK_ERROR）<br>- error<br>- suspected stuck<br>- Stop Current Task |
 | Decision | 建议未来与 Tray / Desktop UI 合并，而不是建设大型 Web Dashboard |
 | Target | 单窗口可读的运行时状态 |
 | Do Not Forget | 拒绝大而全的 Web Dashboard；保持轻量 |
@@ -226,10 +226,10 @@ P3
 | Category | Future capability / Packaging |
 | Status | OPEN |
 | Priority | P2 |
-| Evidence / Origin | 长期候选方向（与 RW-004 / RW-006 相关联） |
+| Evidence / Origin | 长期候选方向（与 RW-004 / RW-006 / RW-014 / RW-015 相关联，见 Desktop / Runtime UX Cluster） |
 | Current Implementation | 无桌面壳层；Bridge 以 python module 运行 |
 | Remaining Gap | 长期候选：<br>- Tray<br>- Status Window<br>- Project selector<br>- Settings<br>- Start / Stop / Restart Bridge |
-| Decision | 原则：复用现有 Framework Core，增加小型桌面壳层。<br>**明确不扩展到**：<br>- SaaS<br>- 多用户后台<br>- 云端管理平台<br>- Agent marketplace<br>- 无限自主循环 |
+| Decision | 原则：**Desktop App ≠ 重写 AAF**。复用现有 Framework Core，增加小型桌面壳层。目标架构：<br><br>AAF Core<br>↓<br>Desktop Shell / Tray<br><br>核心执行逻辑保持独立，UI 只负责操作、状态和生命周期入口。<br>**明确不扩展到**：<br>- SaaS<br>- 多用户后台<br>- 云端管理平台<br>- Agent marketplace<br>- 无限自主循环 |
 | Target | 轻量桌面壳层，不改变 Framework Core 边界 |
 | Do Not Forget | 小而本地；禁止膨胀为平台 |
 
@@ -286,6 +286,129 @@ P3
 | Decision | **本任务只登记，不修改 Router**（Framework runtime implementation 保持现状） |
 | Target | Future candidate：评估结构化字段优先、section-aware routing、或其他不会被引用文本自触发的方案 |
 | Do Not Forget | - 本任务及后续登记文档**不原样引用任何 Router 触发短语**，防止再次自我触发<br>- `.aaf/AAF-MAINT-001-FIX-001/` 保留为真实事故证据 |
+
+---
+
+## RW-014 — Task Stop / Cancel Capability
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-014 |
+| Title | Task Stop / Cancel Capability |
+| Category | Runtime UX / Lifecycle Control |
+| Status | OPEN |
+| Priority | P1 |
+| Evidence / Origin | 真实执行 AAF 任务过程中，用户发现 Execute 后若需要中断当前任务，现有产品没有明确的 Stop / Cancel 操作入口。当前只能借助外部进程管理方式处理，这对日常用户不友好，也容易造成状态与实际进程不一致 |
+| Current Implementation | 当前 Bridge / Framework 具备任务启动与运行链，但没有正式面向用户的 Current Task Cancel 控制 |
+| Remaining Gap | 未来需要设计正式取消语义，至少考虑：<br>- 停止当前 Framework runner<br>- 停止与当前 TASK 对应的 agent chain<br>- 不影响 Bridge 本身继续工作<br>- 不误伤其他独立 Hermes / WorkBuddy / Codex 会话<br>- 保留已有 .aaf 任务证据<br>- 明确记录取消后的 task lifecycle 状态<br>- UI 中提供明确的"停止当前任务"操作<br>- 防止重复点击和状态竞争<br>- 必要时提供确认步骤<br>- 能区分正常取消、执行失败和外部进程异常终止 |
+| Decision | 当前先登记。后续与 Runtime Status / Tray / Desktop Shell 设计一起规划。不能仅做一个粗暴 kill-process 按钮 |
+| Target | 未来 Desktop Shell / Runtime UX implementation phase |
+| Do Not Forget | 用户需要的是"安全停止当前 TASK"，而不是"关闭整个 AAF"——Stop Current Task 与 Exit AAF 必须明确区分 |
+
+---
+
+## RW-015 — Chinese-first Desktop / Tray User Interface
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-015 |
+| Title | Chinese-first Desktop / Tray User Interface |
+| Category | Desktop UX |
+| Status | OPEN |
+| Priority | P2 |
+| Evidence / Origin | 用户明确提出：未来 AAF 如果形成桌面小程序、Tray 或 Status Window，面向人的界面最好默认使用中文 |
+| Current Implementation | AAF 当前仍以 CLI、Bridge 弹窗、Markdown 报告和技术状态字段为主，尚未形成统一桌面 UI |
+| Remaining Gap | 未来用户界面需要定义：<br>- 中文按钮<br>- 中文状态描述<br>- 中文错误提示<br>- 中文设置项<br>- 中文项目切换<br>- 中文任务控制<br>- 中文运行进度<br><br>底层技术字段允许继续保留：<br>SUCCESS / WAITING / FAILED / FRAMEWORK_ERROR / Hermes / WorkBuddy / Codex<br>但面向用户时应提供清晰中文表达 |
+| Decision | Chinese-first。当前不因为国际化需求增加复杂语言系统。未来如确有公开用户需求，再评估中英文切换 |
+| Target | Desktop Shell / Tray UX phase |
+| Do Not Forget | 日志和内部协议可以继续英文，用户操作界面优先中文 |
+
+---
+
+## 1.1 Desktop Shell Principle（桌面壳层设计原则）
+
+> 本原则**不是新的产品功能条目**，
+> 用于约束 RW-004、RW-006、RW-010、RW-012、RW-014、RW-015 的未来实现。
+
+Future AAF Desktop Shell 的定位是：
+
+```
+现有 AAF Core
++
+轻量 Windows 操作与状态外壳
+```
+
+它未来可以承担：
+
+- Bridge 后台运行入口
+- Current Project
+- Current Task
+- 当前执行阶段
+- elapsed time
+- last activity
+- agent 状态
+- error / stuck 状态
+- Stop / Cancel Current Task
+- Restart Bridge
+- Project switch
+- Open Logs
+- Settings
+- Exit AAF
+
+但 Desktop Shell 不替代：
+
+- Router
+- Runner
+- Lifecycle
+- Boundary
+- Session
+- Agent adapters
+- TASK / REPORT protocol
+
+### 1.1.1 防漂移边界（Anti-Drift Boundary）
+
+未来桌面化**不能自动扩展**为：
+
+- SaaS
+- Web management platform
+- multi-user backend
+- account system
+- cloud synchronization platform
+- Agent marketplace
+- plugin marketplace
+- remote team control center
+- autonomous infinite Agent loop
+
+除非未来出现独立、明确的新决策。
+
+### 1.1.2 目标架构（Target Architecture）
+
+```
+AAF Core
+↓
+Desktop Shell / Tray
+```
+
+核心执行逻辑保持独立，
+UI 只负责操作、状态和生命周期入口。
+Desktop App ≠ 重写 AAF。
+
+---
+
+## 1.2 Desktop / Runtime UX Cluster（问题簇）
+
+包含以下独立条目：
+
+- RW-004 — Bridge 后台启动 / Tray
+- RW-006 — Runtime 状态可视化
+- RW-010 — Desktop App / Windows Program Packaging
+- RW-012 — Hotkey listener runtime reliability
+- RW-014 — Task Stop / Cancel Capability
+- RW-015 — Chinese-first Desktop UI
+
+各条目**保留各自独立 ID**。
+Cluster 只是帮助未来统一设计，
+**不能把各问题合并**后丢失原有 Evidence / Status / Priority。
 
 ---
 
@@ -436,6 +559,8 @@ Framework 仍能恢复到可继续升级的状态（见 RW-009）。
 | RW-011 | Router local constraint classification incident | SOLVED | P1 |
 | RW-012 | Bridge hotkey listener runtime reliability | OPEN | P1 |
 | RW-013 | Router self-triggering reference trap | OPEN | P1 |
+| RW-014 | Task Stop / Cancel Capability | OPEN | P1 |
+| RW-015 | Chinese-first Desktop / Tray User Interface | OPEN | P2 |
 | BND-001 | Planner-layer Anti-Drift Validation | PARTIAL | P2 |
 | CTX-001 | Context Length / Conversation Rollover UX | PARTIAL | P1 |
 | HIST-001 | Historical Framework Optimization Set Recovery | RECOVERY_PENDING | P2 |

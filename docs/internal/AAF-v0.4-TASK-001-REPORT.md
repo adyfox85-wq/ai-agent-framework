@@ -3,8 +3,8 @@
 - Task: AAF-v0.4-TASK-001 (v0.4 Phase A — Runtime State Foundation)
 - Date: 2026-08-27
 - Type: v0.4 Phase A 实施（不实现 B-F；不启动 Desktop Shell 功能）
-- Status: **COMPLETE — WorkBuddy APPROVE**
-- Executor: Hermes / Reviewer: WorkBuddy
+- Status: **COMPLETE — WorkBuddy APPROVE + Codex APPROVE**
+- Executor: Hermes / Reviewer: WorkBuddy + Codex
 
 ---
 
@@ -27,6 +27,20 @@
 
 ## Review Status ✅ **WorkBuddy APPROVE**（7 项 VERIFIED；2 non-blocking 观察：COMPLETED 是阶段非 agent 阶段——展示层注意；极旧无 task_id 文件会抛错——不在 legacy 范围）
 
+## Phase A Audit ✅ **Codex APPROVE**（AAF-v0.4-TASK-001-FIX-001 正式 Phase A architecture / regression audit，无 blocking）
+
+核查项（全部通过，证据见 commit 5a8b76a 代码与 216 项测试）：
+
+| 核查项 | 结果 | 证据 |
+|---|---|---|
+| task.json live runtime authority | ✅ | started_at/stage/stage_started_at/last_activity_at/agent/phases；run.json 仍为结尾摘要（边界不变） |
+| runtime_state reader | ✅ | 只读；task.json 缺失→None；损坏→LifecycleError；legacy 兼容（缺失字段 None/{}） |
+| lifecycle compatibility | ✅ | VALID_STATUSES 不变；旧字段/原子写保留；无 CANCELLED |
+| route / phase transition | ✅ | stage 按 route.agents 写入（VALID_STAGES）；REPORT 阶段 + COMPLETED 终态；dry-run 不写 stage |
+| backward compatibility | ✅ | 老 task.json 可读；resume 语义不变；执行链保护保留 |
+| report/run boundary | ✅ | REPORT.md / run.json 写入逻辑未改 |
+| 未提前实现 Phase A 禁止项 | ✅ | 无 CANCELLED / control.json / state.lock / launch registry / force kill / Tray / progress 百分比 |
+
 ## Core Files Changed
 
 | 文件 | 变更 |
@@ -46,8 +60,14 @@
 
 ## Git / Remote Sync
 
-见 commit 后状态（push 若网络失败记录 REMOTE_SYNC_PENDING）。
+- Commit: `5a8b76a8662ea675cdfff8f4d33c5bb6f3517d7f`（feat(v0.4-phase-a): runtime state foundation — task.json live state + reader）
+- Push: SUCCESS（origin/main 已同步至 5a8b76a）
+- Phase Start Handoff: 已纳入版本控制，保留启动时原样（历史快照，未因 Phase A 完成而改写）
 
 ## Unresolved Issues
 
 None blocking。非阻断观察：COMPLETED 阶段展示语义（Desktop Shell 未来注意）；极旧无 task_id 文件抛错（非本次范围）。
+
+## Next Phase Candidate
+
+Phase B — Bridge Background / Tray Skeleton（不得自动启动；由 Planner / User 显式决定）

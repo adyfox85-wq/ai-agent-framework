@@ -4,11 +4,12 @@
 > 任务: AAF-DESIGN-001 — Desktop Shell and Runtime Control Minimal Design
 > 修订: AAF-DESIGN-001-FIX-001（2026-08-27）— 关闭 Codex 两个 blocking findings（Force Cancel 终态双写竞态、PID/token 防误杀协议未闭合）。权威修订见 §6A；§6/§8.3/§13.3/§14/§15/§16/§19 已同步修正。仅修订设计文档，不实现。
 > 修订: AAF-DESIGN-001-FIX-002（2026-08-27）— 关闭 Codex 三个 blocking findings（①terminal commit 缺真正跨进程互斥；②terminal commit 后中断缺派生产物 reconciliation；③Launcher restart 缺独立可信的 ownership 恢复依据）。权威修订见 §6B；§6A/§15/§16/§19 已同步修正。仅修订设计文档，不实现。
+> 修订: AAF-v0.4-TASK-001-FIX-001（2026-08-27）— 仅更新实现状态：Phase A（Runtime State Foundation）IMPLEMENTATION COMPLETE（commit 5a8b76a）；Design 规格不变；Phase B-F NOT STARTED。
 > 日期: 2026-08-27
-> 状态: **DESIGN COMPLETED / IMPLEMENTATION NOT STARTED**
+> 状态: **DESIGN COMPLETED / PHASE A IMPLEMENTATION COMPLETE / PHASE B-F NOT STARTED**
 > 范围: 本任务只产出可执行的设计规格与实施拆分。**不实现** Tray / GUI / progress bar / cancel / autostart / project switching / packaging / heartbeat / 新 runtime schema。
 > 关联 backlog: RW-003, RW-004, RW-005, RW-006, RW-010, RW-012, RW-014, RW-015, RW-016（见 `docs/internal/AAF_MASTER_BACKLOG.md` 中相应条目的 Design Reference 字段）
-> 版本状态: v0.3 CLOSED（不变）；v0.4 NOT STARTED（不变）
+> 版本状态: v0.3 CLOSED（不变）；v0.4 IN PROGRESS — Phase A COMPLETE；Phase B-F NOT STARTED
 
 ---
 

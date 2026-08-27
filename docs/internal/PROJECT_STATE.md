@@ -1,8 +1,8 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.4（IN PROGRESS — Phase A Runtime State Foundation）**\
-> Last Updated: 2026-08-27（AAF-v0.4-TASK-001）\
+> Current Version: **v0.4（IN PROGRESS — Phase A COMPLETE）**\
+> Last Updated: 2026-08-27（AAF-v0.4-TASK-001-FIX-001）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
@@ -17,36 +17,41 @@
 ``` text
 Version: v0.4
 Status: IN PROGRESS
-Phase: A — Runtime State Foundation
+Phase: A — Runtime State Foundation: COMPLETE
 Direction: Desktop Shell MVP / Runtime Observability & Control
 
 v0.4 主线（Phase 顺序）：
-A. Runtime State Foundation（当前）
-B. Bridge Background / Tray Skeleton
-C. Status Window + Chinese-first UI
-D. Progress Visualization
-E. Safe Cancel Lifecycle
-F. Project Switching / Duplicate Task UX
+A. Runtime State Foundation（COMPLETE）
+B. Bridge Background / Tray Skeleton（NOT STARTED）
+C. Status Window + Chinese-first UI（NOT STARTED）
+D. Progress Visualization（NOT STARTED）
+E. Safe Cancel Lifecycle（NOT STARTED）
+F. Project Switching / Duplicate Task UX（NOT STARTED）
 
-当前只进入 Phase A；B-F 不得提前实现。
+Phase A 已 COMPLETE；Phase B-F 不得提前实现 / 不得自动启动。
 
 Phase A 目标：task.json = live canonical runtime view
 （started_at / stage / stage_started_at / last_activity_at / agent / phases），
 统一 Runtime State reader（legacy 兼容），runner EXTEND ONLY 阶段写入。
 
-Regression Baseline: 216 passed（AAF-v0.4-TASK-001 起）
-Review: 进行中
-Remote Sync: 进行中
+Phase A Closure（AAF-v0.4-TASK-001-FIX-001，2026-08-27）：
+- Tests: 216 passed
+- Review: COMPLETE（WorkBuddy APPROVE + Codex APPROVE）
+- Remote Sync: SYNCED
+- Unresolved: None blocking
+- Commit: 5a8b76a8662ea675cdfff8f4d33c5bb6f3517d7f
+
+Next Phase Candidate: Phase B — Bridge Background / Tray Skeleton（不得自动启动）
 
 v0.3: CLOSED（见下方历史块，不重开）
 v0.4 启动决定：Planner / User 已批准（见
 docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.md）
 ```
 
-### 0.1 Phase A — Runtime State Foundation（当前）
+### 0.1 Phase A — Runtime State Foundation（COMPLETE）
 
-- TASK: AAF-v0.4-TASK-001（2026-08-27）
-- 状态：实施中
+- TASK: AAF-v0.4-TASK-001（2026-08-27）；closure: AAF-v0.4-TASK-001-FIX-001（2026-08-27）
+- 状态：COMPLETE（WorkBuddy APPROVE + Codex APPROVE；216 passed；commit 5a8b76a；Remote Sync SYNCED）
 - 范围：task.json live runtime state / Runtime State reader / runner 阶段写入 / PROJECT_STATE 同步
 - 禁止（Phase A 不实现）：Tray / status window / pystray / autostart / progress bar / stuck 算法 /
   Safe Cancel（CANCELLED / control.json / state.lock / launch registry / force kill）/
@@ -148,7 +153,7 @@ docs/internal/AAF_MASTER_BACKLOG.md
 以后任何被正式确认"稍后处理"的问题，**必须进入 Master Backlog 才算
 长期登记完成**。
 
-v0.4 保持 NOT STARTED；必须由 Planner / User 显式决定启动。
+v0.4 IN PROGRESS — Phase A COMPLETE；Phase B 保持 NOT STARTED；启动 Phase B 必须由 Planner / User 显式决定。
 
 ------------------------------------------------------------------------
 

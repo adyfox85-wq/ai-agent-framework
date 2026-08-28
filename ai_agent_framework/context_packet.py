@@ -64,6 +64,25 @@ _STRUCTURED_TAIL_RE = re.compile(
     re.DOTALL,
 )
 
+
+def _strip_structured_tail(text: str) -> str:
+    """移除答复末尾的机器可读结构化块（BEGIN..END），返回纯 narrative。
+
+    FIX-003（RW-022）：verdict 派生 / 一致性 guard 只应考察 prose——结构化块
+    JSON 中的结论词（如 ``{"verdict": "PASS"}``）不是 narrative 证据，不得掩盖
+    narrative 中的显式 FAILED（"Result: FAILED" + tail 声称 PASS 不得 fail-open）。
+    BEGIN 存在但 END 缺失（malformed 块）→ 从 BEGIN 起截断（块内容不可信）。
+    """
+    if not text:
+        return text
+    begin = text.find(STRUCTURED_RESULT_BEGIN)
+    if begin == -1:
+        return text
+    end = text.find(STRUCTURED_RESULT_END, begin)
+    if end == -1:
+        return text[:begin]
+    return text[:begin] + text[end + len(STRUCTURED_RESULT_END):]
+
 # 每 agent 的结构化块 schema（必填 / 可选 / 类型约束）
 _STRUCTURED_SCHEMAS: dict[str, dict] = {
     "hermes": {
@@ -200,15 +219,31 @@ def _derive_verdict(agent: str, body: str) -> str | None:
 
     只认官方结论词（WorkBuddy: PASS / PASS_WITH_WARNING / FAIL；
     Codex: APPROVE / REQUEST_CHANGE）；Hermes 是 Executor，无 verdict。
+
+    FIX-003（RW-022 fail-open 缺口）：
+    - 只考察纯 narrative（结构化块 JSON 中的结论词不是 narrative 证据）；
+    - FAILED 必须识别（\bFAIL\b 词边界会漏掉 FAILED），并归一化为 FAIL；
+      显式 FAILED 结论（如 "Result: FAILED"）不得派生成 PASS / PASS_WITH_WARNING。
+    - 显式通过结论（PASS / PASS_WITH_WARNING / APPROVE / SUCCESS）优先：
+      narrative 中历史 / 技术性 FAIL / FAILED / REQUEST_CHANGE 引用
+      （如 "previously FAILED test now passes"）不覆盖整体通过结论；
+      SUCCESS 归一化为该 agent 的官方通过词（PASS / APPROVE）。
     """
-    if not body.strip() or body.lstrip().startswith("FRAMEWORK_ERROR"):
+    body = _strip_structured_tail(body or "").strip()
+    if not body or body.lstrip().startswith("FRAMEWORK_ERROR"):
         return None
     if agent == "workbuddy":
-        m = re.search(r"\b(PASS_WITH_WARNING|PASS|FAIL)\b", body)
-        return m.group(1) if m else None
+        m = re.search(r"\b(PASS_WITH_WARNING|PASS|SUCCESS)\b", body)
+        if m:
+            return "PASS" if m.group(1) == "SUCCESS" else m.group(1)
+        m = re.search(r"\b(FAILED|FAIL)\b", body)
+        return "FAIL" if m else None
     if agent == "codex":
-        m = re.search(r"\b(APPROVE|REQUEST_CHANGE)\b", body)
-        return m.group(1) if m else None
+        m = re.search(r"\b(APPROVE|SUCCESS)\b", body)
+        if m:
+            return "APPROVE" if m.group(1) == "SUCCESS" else m.group(1)
+        m = re.search(r"\bREQUEST_CHANGE\b", body)
+        return "REQUEST_CHANGE" if m else None
     return None
 
 
@@ -278,6 +313,13 @@ def build_stage_result(
             summary_complete = False
             # 一致性违规：structured 值不再可信为权威事实（fail-safe 交叉验证语义）
             blocking_provenance = BLOCKING_PROVENANCE_NARRATIVE
+            # FIX-003（RW-022）：structured verdict 与 narrative 冲突时不得保持权威——
+            # narrative 派生 verdict 存在（显式结论词）→ 采用框架派生值
+            # （如 narrative "Result: FAILED" + structured verdict PASS → verdict=FAIL，
+            #   JSON 不再自称 PASS），保证 stage 结果与 narrative 语义自洽。
+            derived_verdict = _derive_verdict(agent, result_text)
+            if derived_verdict:
+                verdict = derived_verdict
         else:
             status = SUMMARY_STATUS_COMPLETE
             summary_complete = True
@@ -409,7 +451,9 @@ def extract_and_validate_structured(agent: str, text: str) -> tuple[dict | None,
 _NARRATIVE_WARNING_RE = re.compile(
     r"(?im)^[ \t]*(?:W\d+[ \t]*[:：]|WARNING[ \t]*[:：]|⚠|warning[ \t]*[:：])"
 )
-_NARRATIVE_FAIL_RE = re.compile(r"\b(REQUEST_CHANGE|FAIL)\b")
+# FIX-003（RW-022）：guard 必须识别全部显式失败语义——FAIL / FAILED / REQUEST_CHANGE /
+# FRAMEWORK_ERROR；\bFAIL\b 词边界会漏掉 FAILED，故 FAILED 必须显式列出。
+_NARRATIVE_FAIL_RE = re.compile(r"\b(REQUEST_CHANGE|FAILED|FAIL|FRAMEWORK_ERROR)\b")
 
 
 def narrative_warning_count(text: str) -> int:
@@ -427,7 +471,9 @@ def check_narrative_json_consistency(agent: str, narrative: str, structured: dic
     violations: list[str] = []
     if not isinstance(structured, dict):
         return violations
-    narrative = narrative or ""
+    # FIX-003：guard 只考察纯 narrative——结构化块 JSON 中的结论词
+    # （{"verdict": "PASS"}）不是 narrative 证据，不得掩盖 prose 中的 FAILED。
+    narrative = _strip_structured_tail(narrative or "")
 
     # 1) warnings：narrative 显式 warning 标记不得在 structured warnings 消失
     n_warn = narrative_warning_count(narrative)
@@ -461,12 +507,16 @@ def check_narrative_json_consistency(agent: str, narrative: str, structured: dic
 
 
 def _narrative_has_positive_verdict(agent: str, narrative: str) -> bool:
-    """narrative 是否有明确通过结论（PASS/PASS_WITH_WARNING/APPROVE）——
-    此时 narrative 中的历史 FAIL/REQUEST_CHANGE 引用不视为当前阻断。"""
+    """narrative 是否有明确通过结论（PASS/PASS_WITH_WARNING/APPROVE/SUCCESS）——
+    此时 narrative 中的历史 FAIL/FAILED/REQUEST_CHANGE 引用不视为当前阻断。
+
+    FIX-003：SUCCESS 与 PASS/APPROVE 同属显式整体通过结论（与 report.verdict_ok
+    语义对齐）——技术性 FAILED 字样 + 明确 overall result SUCCESS 不得误判阻断。
+    """
     if agent == "workbuddy":
-        return bool(re.search(r"\bPASS_WITH_WARNING\b|\bPASS\b", narrative))
+        return bool(re.search(r"\bPASS_WITH_WARNING\b|\bPASS\b|\bSUCCESS\b", narrative))
     if agent == "codex":
-        return bool(re.search(r"\bAPPROVE\b", narrative))
+        return bool(re.search(r"\bAPPROVE\b|\bSUCCESS\b", narrative))
     return False
 
 

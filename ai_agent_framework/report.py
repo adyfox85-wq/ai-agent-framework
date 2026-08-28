@@ -37,15 +37,16 @@ def _summarize(text: str, limit: int = 6000) -> str:
 
 
 def verdict_ok(agent: str, body: str) -> bool:
-    """该 Agent 是否有明确通过结论（WorkBuddy PASS/PASS_WITH_WARNING、Codex APPROVE）。
+    """该 Agent 是否有明确通过结论（WorkBuddy PASS/PASS_WITH_WARNING/SUCCESS、
+    Codex APPROVE/SUCCESS）。
 
     有通过结论时，报告内对历史 FAIL / REQUEST_CHANGE 的引用（如"原 REQUEST_CHANGE 已关闭"）
     不视为当前阻断。Hermes 正常完成即视为通过。
     """
     if agent == 'workbuddy':
-        return bool(re.search(r'\bPASS_WITH_WARNING\b|\bPASS\b', body, re.IGNORECASE))
+        return bool(re.search(r'\bPASS_WITH_WARNING\b|\bPASS\b|\bSUCCESS\b', body, re.IGNORECASE))
     if agent == 'codex':
-        return bool(re.search(r'\bAPPROVE\b', body, re.IGNORECASE))
+        return bool(re.search(r'\bAPPROVE\b|\bSUCCESS\b', body, re.IGNORECASE))
     return True
 
 
@@ -64,7 +65,7 @@ def verdict_blocked(agent: str, body: str) -> bool:
     （如"previously FAILED test now passes"、"fixed the error"）不是 execution failure
     / blocking verdict，不得仅凭文本关键词把最终任务变成 WAITING。
     """
-    body = body.strip()
+    body = _strip_structured_block(body or '').strip()
     if not body:
         return True
     if body.startswith('FRAMEWORK_ERROR'):
@@ -95,6 +96,27 @@ _RESULT_VERDICT_LINE_RE = re.compile(
 # 行首 FAILED:/FAIL:/REQUEST_CHANGE:（显式判定前缀；区分 "FAILED: 实现不完整" 与
 # 句中 "the previously FAILED test now passes"）
 _PREFIX_FAIL_RE = re.compile(r'(?im)^[ \t]*(FAILED|FAIL|REQUEST_CHANGE)[ \t]*[:：]')
+
+_STRUCTURED_BEGIN_MARKER = 'AAF_STRUCTURED_RESULT_BEGIN'
+_STRUCTURED_END_MARKER = 'AAF_STRUCTURED_RESULT_END'
+
+
+def _strip_structured_block(text: str) -> str:
+    """移除答复末尾的机器可读结构化块，返回纯 narrative（FIX-003）。
+
+    verdict 判定只应考察 prose：结构化块 JSON 中的结论词（{"verdict": "PASS"}）
+    不是 narrative 证据——narrative "Result: FAILED" + tail 声称 PASS 时，
+    fail-safe 路径不得因 JSON 中的 PASS 而放行（RW-022 fail-open）。
+    """
+    if not text:
+        return text
+    begin = text.find(_STRUCTURED_BEGIN_MARKER)
+    if begin == -1:
+        return text
+    end = text.find(_STRUCTURED_END_MARKER, begin)
+    if end == -1:
+        return text[:begin]
+    return text[:begin] + text[end + len(_STRUCTURED_END_MARKER):]
 
 
 def _explicit_failure_marker(body: str) -> bool:

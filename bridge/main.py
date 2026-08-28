@@ -55,6 +55,10 @@ CONFIG_CHECK_INTERVAL = 2.0  # 秒：热键触发时检查配置变化（无需�
 CONFIG_RELOAD_INTERVAL = 2.0  # 秒：后台轮询配置 mtime
 HEALTH_POLL_INTERVAL = 5.0  # 秒：health 轮询 → Tray 图标/Tooltip
 
+# RW-012：hotkey listener 自恢复（有界 backoff；唯一 owner = Bridge 实例）
+RECOVERY_MAX_FAILURES = 3  # 连续恢复失败上限 → 停止自动恢复（不 tight loop）
+RECOVERY_BACKOFF_SECONDS = (15.0, 30.0, 60.0)  # 第 1/2/3 次失败后的等待秒数
+
 # 单实例 mutex（Restart 交接 / 防双开）
 _SINGLE_INSTANCE_MUTEX = "Local\\AAF_Bridge_SingleInstance_v0_4"
 _RESTART_RETRIES = 10  # 重启时旧实例退出后新实例获取 mutex 的重试次数
@@ -155,6 +159,93 @@ def classify_bridge_health(listener) -> tuple[str, str]:
     return HEALTH_OK, "正常运行"
 
 
+class HotkeyRecovery:
+    """RW-012：hotkey listener 自恢复策略（纯逻辑，可单测）。
+
+    - 唯一 lifecycle owner：Bridge 实例——本策略只回答「何时允许尝试恢复」，
+      实际恢复动作（重建 listener）由 Bridge._try_recover_hotkey 执行；
+      不允许其他组件各自重启 listener。
+    - 有界：连续失败 >= max_failures 后停止自动恢复（不 tight loop）
+    - backoff：失败后按递增间隔再尝试（默认 15s / 30s / 60s）
+    - 合并：恢复进行中（begin_attempt 后）重复触发被拒绝 → 不会产生多个 listener
+    - 主动退出：shutting_down=True 时任何尝试都被拒绝（退出期间不复活）
+    """
+
+    def __init__(
+        self,
+        max_failures: int = RECOVERY_MAX_FAILURES,
+        backoff: tuple[float, ...] = RECOVERY_BACKOFF_SECONDS,
+    ):
+        self.max_failures = max(1, int(max_failures))
+        self.backoff = tuple(max(0.0, float(b)) for b in backoff)
+        self.consecutive_failures = 0
+        self._next_attempt_at = 0.0
+        self._recovering = False
+        self._stopped = False
+
+    # ---------- 只读状态 ----------
+
+    @property
+    def stopped(self) -> bool:
+        """连续失败已达上限 → 自动恢复已停止（失败仍可见，不再重试）。"""
+        return self._stopped
+
+    @property
+    def recovering(self) -> bool:
+        """一次恢复正在进行（用于合并重复触发）。"""
+        return self._recovering
+
+    # ---------- 状态转换 ----------
+
+    def reset(self) -> None:
+        """热键成功应用（启动 / 配置热键变更 / 恢复成功）→ 允许重新自恢复。"""
+        self.consecutive_failures = 0
+        self._next_attempt_at = 0.0
+        self._recovering = False
+        self._stopped = False
+
+    def should_attempt(self, now: float, shutting_down: bool = False) -> bool:
+        """是否允许发起一次恢复尝试（四重门：主动退出 / 已停止 / 恢复中 / backoff）。"""
+        if shutting_down or self._stopped or self._recovering:
+            return False
+        return now >= self._next_attempt_at
+
+    def begin_attempt(self) -> None:
+        """标记恢复进行中；后续触发 coalesce（不重复发起）。"""
+        self._recovering = True
+
+    def record_success(self) -> None:
+        """恢复成功：清零失败计数，解除进行中标记。"""
+        self.consecutive_failures = 0
+        self._next_attempt_at = 0.0
+        self._recovering = False
+
+    def record_failure(self, now: float) -> None:
+        """记录一次失败；达到上限 → 停止自动恢复（有界）。"""
+        self.consecutive_failures += 1
+        self._recovering = False
+        if self.consecutive_failures >= self.max_failures:
+            self._stopped = True
+            return
+        idx = min(self.consecutive_failures - 1, len(self.backoff) - 1)
+        self._next_attempt_at = now + self.backoff[idx]
+
+    def note(self) -> str:
+        """面向用户的可观察说明（失败必须可见：状态窗口 / Tray Tooltip / 日志）。"""
+        if self._recovering:
+            return "正在自动恢复热键…"
+        if self._stopped:
+            return (
+                f"自动恢复已停止（连续 {self.max_failures} 次失败），"
+                "请检查热键占用或重启 Bridge"
+            )
+        if self.consecutive_failures > 0:
+            idx = min(self.consecutive_failures - 1, len(self.backoff) - 1)
+            wait = int(self.backoff[idx])
+            return f"第 {self.consecutive_failures} 次自动恢复失败，{wait} 秒后重试"
+        return ""
+
+
 def build_restart_argv() -> list[str]:
     """构造重启命令：pythonw + scripts/start_bridge.pyw（无控制台）。
 
@@ -208,7 +299,7 @@ class Bridge:
         self.status_ctl = StatusWindowController(
             root,
             provider=lambda: collect_status(
-                self.cfg, classify_bridge_health(self.listener), self.launcher
+                self.cfg, self._current_health(), self.launcher
             ),
             on_restart=self._restart_bridge,
             on_exit=self._exit_aaf,
@@ -220,6 +311,9 @@ class Bridge:
         )
         self._last_health: str | None = None
         self._cfg_mtime = self._config_mtime()
+        # RW-012：listener 自恢复策略 + 主动退出标志（生命周期 owner = 本 Bridge 实例）
+        self._recovery = HotkeyRecovery()
+        self._shutting_down = False
         self._apply_hotkey()
         self._start_tray()
         self.root.after(100, self._poll_events)
@@ -234,10 +328,11 @@ class Bridge:
         except OSError:
             return 0.0
 
-    def _apply_hotkey(self) -> None:
+    def _apply_hotkey(self, show_error: bool = True) -> None:
         parsed = cfg_mod.parse_hotkey(self.cfg.get("hotkey", "ctrl+alt+a"))
         if parsed is None:
-            ui.show_error("AAF Bridge", f"热键配置无效: {self.cfg.get('hotkey')!r}（示例: ctrl+alt+a）")
+            if show_error:
+                ui.show_error("AAF Bridge", f"热键配置无效: {self.cfg.get('hotkey')!r}（示例: ctrl+alt+a）")
             return
         mods, vk = parsed
         # 先注销旧热键，避免热加载后旧热键残留（改回原热键时冲突）
@@ -252,10 +347,32 @@ class Bridge:
         self.listener.wait_ready(3.0)
         err = self.listener.error()
         if err is not None:
-            ui.show_error(
-                "AAF Bridge — 热键冲突",
-                f"{err}\n请在 ~/.aaf-bridge/config.json 修改 hotkey 后等待配置热加载。",
-            )
+            if show_error:
+                ui.show_error(
+                    "AAF Bridge — 热键冲突",
+                    f"{err}\n请在 ~/.aaf-bridge/config.json 修改 hotkey 后等待配置热加载。",
+                )
+            return
+        # RW-012：成功应用（启动 / 热键变更 / 自动恢复）→ 恢复策略归零（允许重新自恢复）
+        self._recovery.reset()
+
+    def _current_health(self) -> tuple[str, str]:
+        """健康判定 + 恢复状态说明（供 Tray / 状态窗口观察；失败必须可见）。"""
+        status, detail = classify_bridge_health(self.listener)
+        note = self._recovery.note()
+        if note and status == HEALTH_DEGRADED:
+            detail = f"{detail}；{note}" if detail else note
+        return status, detail
+
+    def _try_recover_hotkey(self) -> bool:
+        """RW-012：仅重建 listener（不重启 Bridge）；失败不弹窗（状态可见即可）。"""
+        try:
+            self._apply_hotkey(show_error=False)
+        except Exception:
+            self.listener = None
+            return False
+        status, _ = classify_bridge_health(self.listener)
+        return status == HEALTH_OK
 
     def _poll_config(self) -> None:
         try:
@@ -297,16 +414,46 @@ class Bridge:
     def _apply_health_to_tray(self) -> None:
         if self.tray is None:
             return
-        status, detail = classify_bridge_health(self.listener)
+        status, detail = self._current_health()
         self._last_health = status
         self.tray.set_health(status == HEALTH_OK, _HEALTH_LABELS.get(status, status), detail)
 
     def _poll_health(self) -> None:
+        """每 5s 健康轮询：DEGRADED → RW-012 有界自恢复（只重建 listener，不重启 Bridge）。
+
+        - 主动退出（shutting_down）期间不触发恢复（退出不复活）
+        - 恢复进行中/已停止/backoff 期内重复触发被策略拒绝（无重复 listener / 无 tight loop）
+        - 失败保持在 Tray 图标 / Tooltip / 状态窗口可见（note 并入 detail）
+        """
         try:
-            status, detail = classify_bridge_health(self.listener)
-            if status != self._last_health and self.tray is not None:
+            if not self._shutting_down:
+                status, detail = classify_bridge_health(self.listener)
+                if status == HEALTH_DEGRADED:
+                    if self._recovery.should_attempt(time.monotonic()):
+                        self._recovery.begin_attempt()
+                        try:
+                            recovered = self._try_recover_hotkey()
+                        except Exception:
+                            recovered = False
+                        if recovered:
+                            self._recovery.record_success()
+                            _log("AAF Bridge: hotkey listener 自动恢复成功。")
+                        else:
+                            self._recovery.record_failure(time.monotonic())
+                            _log(
+                                "AAF Bridge: hotkey listener 自动恢复失败"
+                                f"（第 {self._recovery.consecutive_failures} 次）。"
+                                f"{self._recovery.note()}"
+                            )
+                        status, detail = classify_bridge_health(self.listener)
+                    note = self._recovery.note()
+                    if note:
+                        detail = f"{detail}；{note}" if detail else note
                 self._last_health = status
-                self.tray.set_health(status == HEALTH_OK, _HEALTH_LABELS.get(status, status), detail)
+                if self.tray is not None:
+                    self.tray.set_health(
+                        status == HEALTH_OK, _HEALTH_LABELS.get(status, status), detail
+                    )
         except Exception:
             pass
         self.root.after(int(HEALTH_POLL_INTERVAL * 1000), self._poll_health)
@@ -356,6 +503,8 @@ class Bridge:
             ui.show_error("AAF Bridge — 重启失败", f"无法启动新 Bridge 进程: {e}\n当前实例继续运行。")
             self._apply_hotkey()  # 恢复热键
             return
+        # RW-012：重启是主动退出——禁止任何自恢复/复活（新实例由 mutex 交接接管）
+        self._shutting_down = True
         os._exit(0)  # 立即退出：kernel 释放 mutex，新实例接管
 
     def _exit_aaf(self) -> None:
@@ -363,10 +512,16 @@ class Bridge:
 
         不写 cancel.request / control.json，不写 task.json / run.json，
         不产生 CANCELLED / FAILED 终态（acceptance 8 / Do Not Do D）。
+
+        RW-012：确认退出期间置 shutting_down——禁止触发 listener 自恢复
+        （退出不复活）；用户取消 → 恢复常规运行（自恢复重新允许）。
         """
+        self._shutting_down = True
         confirm = ui.ask_exit_aaf(self.root)
         if confirm:
             self.root.quit()
+        else:
+            self._shutting_down = False
 
     # ---------- Phase E / TASK-005-C：Stop / Force 动作（req 3/4/5/7） ----------
 

@@ -289,7 +289,7 @@ python -m ai_agent_framework.project_boundary_cli check <TASK.md> --workspace D:
 | `MISSING_COMMAND: codex` | `codex --version`；Framework 支持 hash 目录 fallback |
 | `TASK_ALREADY_EXISTS` | 同 Task ID 已提交过，不静默覆盖 |
 | Framework WAITING | 看 REPORT / Planner Handoff 的 Unresolved Issues |
-| Bridge 进程在但热键没反应 | 已知 runtime issue，安全重启 Bridge |
+| Bridge 进程在但热键没反应 | 已启用自动自恢复（数秒内自动重建监听，有界重试）；持续异常可重启 Bridge |
 | 看到两个 python.exe | uv venv 下可能是 shim + real 两层，不等于多开 |
 
 ## Known Limitations
@@ -297,7 +297,7 @@ python -m ai_agent_framework.project_boundary_cli check <TASK.md> --workspace D:
 - Bridge 当前主要按 Windows 实现
 - Bridge **不自动开机启动**
 - Project switching 当前需要修改 Bridge config（无自动切换）
-- hotkey listener 偶发失活已有真实观察，重启可恢复（**已知非阻断 runtime issue，不是正常预期行为**）
+- hotkey listener 偶发失活已有自动自恢复（RW-012 SOLVED）：健康轮询检测异常后自动重建监听（有界重试，不重启 Bridge）；恢复失败保持 Tray / 状态窗口可见
 - Planner TASK parser 当前对部分换行格式较严格（推荐单行字段）
 - 尚无一键 installer / pip package
 - 不自动写回 ChatGPT（Copy Report 后仍需用户粘贴到 Planner）
@@ -317,7 +317,7 @@ Planner → Bridge → Hermes → WorkBuddy → Codex → REPORT
 
 期间发现并修复的真实问题（均已解决或记录）：
 1. Codex 自动升级更换 hash 目录 → `MISSING_COMMAND: codex` → 已支持 fallback 发现（hotfix `7cbf594`）
-2. hotkey listener 偶发失效 → 重启恢复（已知 issue，见 Known Limitations）
+2. hotkey listener 偶发失效 → 已实现自动自恢复（RW-012 SOLVED）
 3. Bridge 必须先启动才能响应热键（已写进 Quick Start）
 
 ## 版本

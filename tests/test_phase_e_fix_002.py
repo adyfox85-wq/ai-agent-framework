@@ -287,12 +287,13 @@ import ai_agent_framework.finalize_cancelled as fc_mod
 out, tid, ws = sys.argv[1], sys.argv[2], sys.argv[3]
 orig = fc_mod._validate_recovery_evidence
 
-def adversarial(output_dir, task_id, cancel_mode, reason, force_evidence=None):
+def adversarial(output_dir, task_id, cancel_mode, reason, force_evidence=None, workspace=None):
     # 锁内验证当前证据（有效）→ 验证后、commit 前：rogue 外部 writer 替换 cancel.request。
     # FIX-003：官方 write_cancel_request 现在遵守同一 state.lock（锁内调用 = nested
     # reentry）且拒绝 mismatched task_id —— 对抗写入只能来自不守协议的 rogue 写者，
     # 故用 raw write 模拟（协议不拦截手工文件操作）。
-    orig(output_dir, task_id, cancel_mode, reason, force_evidence=force_evidence)
+    orig(output_dir, task_id, cancel_mode, reason, force_evidence=force_evidence,
+         workspace=workspace)
     Path(output_dir, "cancel.request").write_text(
         json.dumps({"task_id": "OTHER-TASK", "requested_at": "2026-08-27T10:00:00",
                     "request": "soft_cancel"}), encoding="utf-8")
@@ -387,9 +388,10 @@ import ai_agent_framework.finalize_cancelled as fc_mod
 out, tid, ws = sys.argv[1], sys.argv[2], sys.argv[3]
 orig = fc_mod._validate_recovery_evidence
 
-def adversarial(output_dir, task_id, cancel_mode, reason, force_evidence=None):
+def adversarial(output_dir, task_id, cancel_mode, reason, force_evidence=None, workspace=None):
     # identity 验证完成后、commit 前：B 试图改写 canonical identity（raw write）
-    orig(output_dir, task_id, cancel_mode, reason, force_evidence=force_evidence)
+    orig(output_dir, task_id, cancel_mode, reason, force_evidence=force_evidence,
+         workspace=workspace)
     Path(output_dir, "task.json").write_text(
         json.dumps({"task_id": "B-ROGUE", "status": "RUNNING"}), encoding="utf-8")
 

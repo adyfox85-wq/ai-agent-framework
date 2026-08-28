@@ -73,6 +73,15 @@ def _old_iso(seconds: float = 60.0) -> str:
     return (datetime.now() - timedelta(seconds=seconds)).isoformat(timespec="seconds")
 
 
+@pytest.fixture(autouse=True)
+def _bridge_root_env(tmp_path, monkeypatch):
+    """FIX-001：Core finalizer CLI 子进程从 canonical Bridge registry root
+    （AAF_BRIDGE_DIR 环境变量，子进程继承）推导 registry/evidence 路径——
+    必须指向与 launcher 注入的 registry_dir 相同的 tmp 根。"""
+    monkeypatch.setenv("AAF_BRIDGE_DIR", str(tmp_path / "aaf-bridge"))
+    yield tmp_path / "aaf-bridge" / "launches"
+
+
 def _wait_until(fn, timeout: float = 20.0, interval: float = 0.1):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -213,14 +222,24 @@ def test_e2e_positive_verified_force_cancel_full_chain(tmp_path, monkeypatch):
         # unrelated sibling 存活（req 18/33：不误杀无关进程）
         assert psutil.pid_exists(sibling.pid), "无关 sibling 被误杀！"
 
-        # force evidence（AA）：结构化 + 字段完整
+        # force evidence（AA）：结构化 + 字段完整 + 成功终止证明（FIX-001 req 5）
         ev, err = fe_mod.read_force_evidence(res.evidence_path)
         assert err is None
         assert ev["launch_id"] == lid
         assert ev["task_id"] == TID
         assert ev["verification_result"] == own_mod.VERIFIED
         assert all(ev["verification_checks"].values())
-        assert ev["termination_exit_status"] == 0 or ev["termination_exit_status"] == 128
+        assert ev["termination_exit_status"] == fe_mod.SUCCESSFUL_TERMINATION_EXIT_STATUS
+
+        # durable bridge evidence（FIX-001 req 6）：registry 独立记录并一致
+        assert res.evidence_path == str(reg_mod.force_evidence_path_for(lid, launcher._registry_dir))
+        entry_ev, _ = reg_mod.read_registry(lid, root=launcher._registry_dir)
+        assert entry_ev["force_terminate_requested_at"] == ev["termination_requested_at"]
+        assert entry_ev["force_termination_observed_at"] == ev["termination_observed_at"]
+        assert entry_ev["force_termination_exit_status"] == ev["termination_exit_status"]
+        assert entry_ev["force_evidence_path"] == res.evidence_path
+        assert entry_ev["force_termination_verification_result"] == ev["verification_result"]
+        assert entry_ev["force_termination_verification_checks"] == ev["verification_checks"]
 
         # Core recovery finalizer → canonical CANCELLED 全套产物
         assert res.canonical_status == "CANCELLED"
@@ -243,7 +262,7 @@ def test_e2e_positive_verified_force_cancel_full_chain(tmp_path, monkeypatch):
         entry, _ = reg_mod.read_registry(lid, root=launcher._registry_dir)
         assert entry["state"] == reg_mod.REGISTRY_STATE_EXITED
         assert entry["force_terminate_requested_at"]
-        assert entry["force_termination_exit_status"] in (0, 128)
+        assert entry["force_termination_exit_status"] == fe_mod.SUCCESSFUL_TERMINATION_EXIT_STATUS
         assert entry["exit_result"] in ("FORCE_TERMINATED", RESULT_CANCELLED)
     finally:
         _taskkill(sibling.pid)
@@ -269,6 +288,50 @@ def _child_pid(launcher: FrameworkLauncher, out: Path) -> int | None:
 # ---------------------------------------------------------------------------
 # E2E 2. negative：wrong/stale ownership evidence → force refused（req 34）
 # ---------------------------------------------------------------------------
+
+
+def test_e2e_negative_failed_taskkill_fails_closed_no_cancelled(tmp_path, monkeypatch):
+    """FIX-001 req 5/7/10 反向：taskkill 返回 nonzero（终止未验证成功）→
+    request_force_cancel fail closed——不调 finalizer、不写 CANCELLED、
+    目标进程存活、registry 记录 force_termination_failed。"""
+    from bridge import launcher as launcher_mod
+
+    launcher, task_file, ws, out, done, captured = _launch_dummy(tmp_path)
+    assert launcher.launch(task_file, str(ws), out, TID) is True
+    lid, runner_pid = _wait_handshake(launcher, out)
+    cancel_mod.write_cancel_request(out, TID, requested_at=_old_iso(60))
+
+    # 模拟 taskkill 失败（nonzero exit；真实进程不被杀）
+    def _fake_kill(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd, 1, stdout="", stderr="ERROR: The process could not be terminated."
+        )
+
+    monkeypatch.setattr(launcher_mod.subprocess, "run", _fake_kill)
+    res = launcher.request_force_cancel(TID, lid, require_eligibility=False)
+    assert not res.ok
+    assert res.refusal_reason.startswith("TERMINATION_FAILED"), res.refusal_reason
+    assert res.termination_exit_status == 1
+    # 目标进程未被杀（fake 失败）；canonical 未变（无 CANCELLED）
+    assert psutil.pid_exists(runner_pid)
+    data = read_status(out)
+    assert data.get("status") in (None, "RUNNING")
+    assert "terminal_generation" not in data
+    # registry 记录失败事实；无 canonical evidence 授权路径
+    entry, _ = reg_mod.read_registry(lid, root=launcher._registry_dir)
+    assert entry.get("force_termination_failed") is True
+    assert entry.get("force_termination_exit_status") == 1
+    # 失败 evidence 落在 canonical 位置但 status != 0 → finalizer 仍拒绝
+    ev_path = reg_mod.force_evidence_path_for(lid, launcher._registry_dir)
+    assert ev_path.exists()
+    ev, err = fe_mod.read_force_evidence(ev_path)
+    assert err is None and ev["termination_exit_status"] == 1
+    from ai_agent_framework import finalize_cancelled as fc_mod
+
+    with pytest.raises(fc_mod.ForceEvidenceError, match="termination_exit_status"):
+        fc_mod.finalize_cancelled_task(TID, ws, out, cancel_mode="force",
+                                       force_evidence=ev_path)
+    _taskkill(runner_pid)
 
 
 def test_e2e_negative_wrong_ownership_force_refused_target_alive(tmp_path):

@@ -79,6 +79,15 @@ def _old_iso(**kwargs) -> str:
     return (datetime.now() - timedelta(**kwargs)).isoformat(timespec="seconds")
 
 
+@pytest.fixture(autouse=True)
+def _bridge_root_env(tmp_path, monkeypatch):
+    """FIX-001：Core finalizer 从 canonical Bridge registry root（AAF_BRIDGE_DIR）
+    推导 registry/evidence 路径——本模块所有 registry 操作必须落在同一 tmp 根，
+    不得污染真实 ~/.aaf-bridge，也不得依赖 evidence.registry_path 作 locator。"""
+    monkeypatch.setenv("AAF_BRIDGE_DIR", str(tmp_path / "aaf-bridge"))
+    yield tmp_path / "aaf-bridge" / "launches"
+
+
 # ---------------------------------------------------------------------------
 # launch 上下文构造（registry + control + canonical RUNNING 一致三元组）
 # ---------------------------------------------------------------------------
@@ -564,7 +573,12 @@ print("DONE", c.status, c.terminal_generation, c.preserved)
 
 def _force_evidence_bundle(tmp_path: Path, lid: str, out: Path, ws: Path, runner_pid: int,
                            reg_dir: Path) -> Path:
-    """构造与 registry/control 一致的合法 force evidence（finalizer 层测试用）。"""
+    """构造与 registry/control 一致的合法 force evidence（finalizer 层测试用）。
+
+    FIX-001：evidence 位于 canonical Bridge location（registry root + launch_id
+    推导）、termination_exit_status == 0，且 registry 独立记录 durable force
+    termination 事实（req 6）并与 evidence 逐项一致——模拟 Launcher step 7。
+    """
     ctrl, _ = control_mod.read_control(out)
     entry, _ = reg_mod.read_registry(lid, root=reg_dir)
     ev = fe_mod.build_force_evidence(
@@ -577,13 +591,26 @@ def _force_evidence_bundle(tmp_path: Path, lid: str, out: Path, ws: Path, runner
         verification_checks={name: True for name in own_mod.CHECK_NAMES},
         termination_requested_at=_old_iso(seconds=30),
         termination_observed_at=_iso(),
-        termination_exit_status=1,
+        termination_exit_status=fe_mod.SUCCESSFUL_TERMINATION_EXIT_STATUS,
         termination_command=["taskkill", "/T", "/F", "/PID", str(runner_pid)],
         registry_path=str(reg_mod.registry_path(lid, reg_dir)),
         control_path=str(control_mod.control_path(out)),
     )
     ev_path = reg_mod.force_evidence_path_for(lid, reg_dir)
     fe_mod.write_force_evidence(ev_path, ev)
+    # durable bridge evidence（FIX-001 req 6）：registry 独立记录 termination 事实
+    reg_mod.update_registry(
+        lid,
+        {
+            "force_terminate_requested_at": ev["termination_requested_at"],
+            "force_termination_observed_at": ev["termination_observed_at"],
+            "force_termination_exit_status": ev["termination_exit_status"],
+            "force_evidence_path": str(ev_path),
+            "force_termination_verification_result": ev["verification_result"],
+            "force_termination_verification_checks": ev["verification_checks"],
+        },
+        root=reg_dir,
+    )
     return ev_path
 
 
@@ -659,7 +686,8 @@ def test_ac_fake_force_evidence_rejected(tmp_path):
         verification_result="VERIFIED",
         verification_checks={"process_exists": False},
         termination_requested_at=_old_iso(seconds=30), termination_observed_at=_iso(),
-        termination_exit_status=1, termination_command=["taskkill"],
+        termination_exit_status=fe_mod.SUCCESSFUL_TERMINATION_EXIT_STATUS,
+        termination_command=["taskkill"],
         registry_path=str(reg_mod.registry_path(lid, reg_dir)),
         control_path=str(control_mod.control_path(out)),
     )
@@ -674,7 +702,8 @@ def test_ac_fake_force_evidence_rejected(tmp_path):
         verification_result="VERIFIED",
         verification_checks={name: True for name in own_mod.CHECK_NAMES},
         termination_requested_at=_old_iso(seconds=30), termination_observed_at=_iso(),
-        termination_exit_status=1, termination_command=["taskkill"],
+        termination_exit_status=fe_mod.SUCCESSFUL_TERMINATION_EXIT_STATUS,
+        termination_command=["taskkill"],
         registry_path=str(reg_mod.registry_path(lid, reg_dir)),
         control_path=str(control_mod.control_path(out)),
     )

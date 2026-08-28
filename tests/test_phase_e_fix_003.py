@@ -342,10 +342,11 @@ import ai_agent_framework.finalize_cancelled as fc_mod
 out, tid, ws, ev, go = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 orig = fc_mod._validate_recovery_evidence
 
-def paused(output_dir, task_id, cancel_mode, reason, force_evidence=None):
+def paused(output_dir, task_id, cancel_mode, reason, force_evidence=None, workspace=None):
     # 锁内验证当前 evidence（有效）→ commit 前暂停：信号 EV_VALIDATED 并等待 GO。
     # 全程仍持有 state.lock（验证与 commit 之间不 release —— FIX-002 单一临界区）。
-    orig(output_dir, task_id, cancel_mode, reason, force_evidence=force_evidence)
+    orig(output_dir, task_id, cancel_mode, reason, force_evidence=force_evidence,
+         workspace=workspace)
     Path(ev).write_text("1", encoding="utf-8")
     deadline = time.monotonic() + 60.0
     while not Path(go).exists() and time.monotonic() < deadline:

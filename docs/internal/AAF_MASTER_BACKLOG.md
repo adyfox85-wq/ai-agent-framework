@@ -3,7 +3,7 @@
 > Project: AI Agent Framework
 > Document Type: **Living Long-Term Backlog / 长期问题与恢复登记**
 > Established: 2026-08-27（AAF-MAINT-001-FIX-002）
-> Last Updated: 2026-08-28（AAF-MAINT-HANDOFF-001 — §5.2/§5.4 更新：Obsidian 双角色模型 + GitHub/Obsidian 分工规则；Obsidian Handoff = PILOT / EXPERIMENTAL）
+> Last Updated: 2026-08-28（AAF-v0.4-TASK-005-B-FIX-001 — §5.4 更新：Obsidian Conversation Handoff Pilot 验证完成，PILOT / EXPERIMENTAL → **VERIFIED**；此前更新：AAF-MAINT-HANDOFF-001 — §5.2/§5.4 更新：Obsidian 双角色模型 + GitHub/Obsidian 分工规则）
 > Location: `docs/internal/AAF_MASTER_BACKLOG.md`
 
 ## Purpose
@@ -752,11 +752,14 @@ Obsidian 中的 AAF 文档承担两种角色：
 1. **MIRROR（既有政策）**：repo 正式资产的镜像 —— MIRROR ONLY，顶部声明来源；
    不作为独立权威版本维护；镜像由维护任务显式建立；
    **不开发自动同步程序或 Obsidian plugin**。
-2. **Working Knowledge / Conversation Handoff 层（PILOT / EXPERIMENTAL，2026-08-28 建立）**：
+2. **Working Knowledge / Conversation Handoff 层（VERIFIED，2026-08-28 由
+   AAF-v0.4-TASK-005-B-FIX-001 验证）**：
    working knowledge、discussion、draft、conversation handoff、stage retrospective、
    未定 / 未提升决策、每日项目笔记。当前 Pilot 只含一个入口文件
    `CURRENT_HANDOFF.md`；不建复杂结构 / plugin / 自动化；
-   **尚未验证**（验证 = 新 Planner 对话读取 CURRENT_HANDOFF 后准确恢复项目状态）。
+   **验证完成**（验证 = 新 Planner 对话读取 CURRENT_HANDOFF 后准确恢复项目状态——
+   005-B-FIX-001 会话即该新 Planner 对话，经 CURRENT_HANDOFF + PROJECT_STATE
+   恢复项目状态成功，PILOT / EXPERIMENTAL → VERIFIED）。
 
 GitHub / Obsidian 知识分工（当前工作规则）：
 - GitHub / repo（正式 / 已提升知识；代码与版本权威）：code、formal policy、

@@ -72,8 +72,10 @@ FORCE_CANONICAL_POLL_INTERVAL = 0.2
 # Core CLI 子进程超时（reconcile / finalizer）
 CORE_CLI_TIMEOUT = 90.0
 
-# taskkill 可接受的退出码：0 = 成功终止；128 = 进程已不存在（同样视为“终止已观察到”）
-_TASKKILL_OK_EXIT_CODES = (0, 128)
+# taskkill 成功终止的 exit code（FIX-001 req 5）：**只有 0** 才算 verified successful
+# termination。128（进程已不存在）不是本进程终止动作的验证结果——nonzero /
+# missing / malformed → fail closed，不得授权新的 CANCELLED。
+_TASKKILL_OK_EXIT_CODES = (force_evidence_mod.SUCCESSFUL_TERMINATION_EXIT_STATUS,)
 
 # 默认软取消超时（无配置时）
 _DEFAULT_SOFT_TIMEOUT = 30.0
@@ -779,8 +781,9 @@ class FrameworkLauncher:
         observed_at = datetime.now().isoformat(timespec="seconds")
         termination_observed = term_status in _TASKKILL_OK_EXIT_CODES
         if not termination_observed:
-            # 无法确认终止（权限 / 超时 / 其他错误）→ 不调 finalizer（不得以未确认的
-            # 终止授权 CANCELLED）；evidence 记录失败并保留
+            # 无法验证成功终止（exit != 0，含 128 进程已不存在 / 权限 / 超时 / 其他
+            # 错误）→ 不调 finalizer（不得以未验证成功的终止授权 CANCELLED；FIX-001
+            # req 5）；evidence 记录失败事实并保留（registry 同步 force_termination_failed）
             ev = force_evidence_mod.build_force_evidence(
                 task_id=task_id, launch_id=lid,
                 runner_pid=runner_pid,
@@ -806,7 +809,14 @@ class FrameworkLauncher:
                 ev_path = None
             try:
                 reg_mod.update_registry(
-                    lid, {"force_terminate_requested_at": requested_at, "force_termination_failed": True},
+                    lid,
+                    {
+                        "force_terminate_requested_at": requested_at,
+                        "force_termination_observed_at": observed_at,
+                        "force_termination_exit_status": int(term_status),
+                        "force_termination_output": term_output[:500],
+                        "force_termination_failed": True,
+                    },
                     root=self._registry_dir,
                 )
             except reg_mod.RegistryError:
@@ -847,7 +857,10 @@ class FrameworkLauncher:
                 termination_exit_status=term_status, termination_output=term_output,
             )
 
-        # 7. registry 记录 termination evidence + EXITED（幂等；TASK req 19/26）
+        # 7. registry 记录 termination evidence + EXITED（幂等；TASK req 19/26；
+        #    FIX-001 req 6：durable bridge evidence——requested / observed /
+        #    exit status / evidence path / verification result+checks 全部落盘，
+        #    Core finalizer 锁内独立核对 registry ↔ evidence 一致）
         try:
             reg_mod.update_registry(
                 lid,
@@ -857,6 +870,8 @@ class FrameworkLauncher:
                     "force_termination_exit_status": int(term_status),
                     "force_termination_output": term_output[:500],
                     "force_evidence_path": str(ev_path),
+                    "force_termination_verification_result": verdict.result,
+                    "force_termination_verification_checks": verdict.checks,
                     "state": reg_mod.REGISTRY_STATE_EXITED,
                     "exited_at": observed_at,
                     "exit_result": "FORCE_TERMINATED",
@@ -911,7 +926,11 @@ class FrameworkLauncher:
                 self._active_launch[tid] = lid
                 continue
             # 本协议 launch 的 verified force termination 残留（Bridge 中途崩溃）：
-            # evidence 存在 + 原进程已消失 + 任务尚无终态 → Core finalizer 幂等收敛
+            # evidence 存在 + 原进程已消失 + 任务尚无终态 → Core finalizer 幂等收敛。
+            # FIX-001（req 6）：finalizer 要求 registry 也独立记录 force termination
+            # 关键事实（durable bridge evidence）并逐项一致——若 Bridge 在 evidence
+            # 写入后、registry 更新前崩溃，registry 缺 force 字段 → finalizer fail
+            # closed（零 canonical 写，任务保持非终态，安全失败）
             if verdict.result == ownership_mod.STALE and verdict.checks.get("process_exists") is False \
                     and verdict.checks.get("task_not_terminal") is True:
                 ev_path = reg_mod.force_evidence_path_for(lid, root)

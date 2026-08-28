@@ -1,15 +1,16 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE — 005-A + FIX-001/002/003；E-Ownership / Force Cancel 已交付 — 005-B 已执行，WorkBuddy PASS / Codex REQUEST_CHANGE → pending blocker AAF-v0.4-TASK-005-B-FIX-001；剩余 TASK-005-C Status Window Cancel UX + Real Windows Closure 未交付 → Phase E 不得标 COMPLETE）；Phase F NOT STARTED；当前唯一 Next Step = AAF-v0.4-TASK-005-B-FIX-001）**\
-> Last Updated: 2026-08-28（AAF-MAINT-CONTEXT-001-FIX-003 — Explicit Route Authority + Snapshot Reference Closure：`Route:` canonical machine 字段优先于关键词 heuristic、Route Completeness Guard（required Codex 缺失不得 SUCCESS）、manifest 区分 intake_task（provenance）/ execution_task（authority）、REPORT 统一引用 immutable snapshot；唯一 Next Step 保持 = AAF-v0.4-TASK-005-B-FIX-001）\
-> 2026-08-28（AAF-MAINT-HANDOFF-001 — Obsidian Conversation Handoff Pilot + 阶段收口）：
-> Obsidian Handoff = **PILOT / EXPERIMENTAL**（D:\AdyAI\Obsidian-Vault\AI Agent Framework\CURRENT_HANDOFF.md，
-> 未验证；验证 = 新 Planner 对话读取后准确恢复项目状态）；
-> Context Compaction Maintenance = **CLOSED → PRODUCTION OBSERVATION**（不主动重新设计）；
-> Stage Retrospective / Safety-Efficiency Balance Rule + Context Compaction Observation Rule
-> → AAF_TASK_EXECUTION_POLICY §13 / §14；
-> GitHub = 正式 / 已提升知识权威；Obsidian = Working Knowledge / Conversation Handoff 层
+> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE — 005-A + FIX-001/002/003；E-Ownership / Force Cancel 已交付 — 005-B 已执行 + 005-B-FIX-001 已交付（canonical force authority + successful termination proof，Codex 两个 blocker 已闭合；待 route 阶段 WorkBuddy / Codex 复核通过后记 CLOSED）；剩余 TASK-005-C Status Window Cancel UX + Real Windows Closure 未交付 → Phase E 不得标 COMPLETE）；Phase F NOT STARTED；当前唯一 Next Step = AAF-v0.4-TASK-005-B-FIX-001（route 复核完成后 = AAF-v0.4-TASK-005-C））**\
+> Last Updated: 2026-08-28（AAF-v0.4-TASK-005-B-FIX-001 — Force Recovery Authority and Successful Termination Proof Closure：Core finalizer 由 canonical Bridge registry root + launch_id 推导 registry/evidence 路径（官方 read contract，evidence.registry_path 只作 proof）、evidence 绑定 canonical Bridge location、termination_exit_status == 0 才授权 CANCELLED、registry durable force 字段逐项核对、三方 identity 全量交叉；新增 32 项 authority 正负矩阵测试；Obsidian Handoff = VERIFIED（新 Planner 对话经 CURRENT_HANDOFF + PROJECT_STATE 恢复项目状态成功））\
+> 2026-08-28（AAF-MAINT-CONTEXT-001-FIX-003 — Explicit Route Authority + Snapshot Reference Closure：`Route:` canonical machine 字段优先于关键词 heuristic、Route Completeness Guard（required Codex 缺失不得 SUCCESS）、manifest 区分 intake_task（provenance）/ execution_task（authority）、REPORT 统一引用 immutable snapshot；唯一 Next Step 保持 = AAF-v0.4-TASK-005-B-FIX-001）\
+> 2026-08-28（AAF-MAINT-HANDOFF-001 — Obsidian Conversation Handoff Pilot + 阶段收口）：\
+> Obsidian Handoff = **VERIFIED**（D:\AdyAI\Obsidian-Vault\AI Agent Framework\CURRENT_HANDOFF.md；\
+> 2026-08-28 由 005-B-FIX-001 新会话读取并准确恢复项目状态后验证）；\
+> Context Compaction Maintenance = **CLOSED → PRODUCTION OBSERVATION**（不主动重新设计）；\
+> Stage Retrospective / Safety-Efficiency Balance Rule + Context Compaction Observation Rule\
+> → AAF_TASK_EXECUTION_POLICY §13 / §14；\
+> GitHub = 正式 / 已提升知识权威；Obsidian = Working Knowledge / Conversation Handoff 层\
 > （GitHub / Obsidian 分工见 AAF_MASTER_BACKLOG.md §5.4）\
 > Document Type: **Living Project State / 持续更新的当前状态入口**
 >
@@ -41,14 +42,18 @@ Phase: A — Runtime State Foundation: COMPLETE
             persistent launch registry / ownership verification（11 项三方校验）/
             force cancel API（verified process-tree termination + 结构化 force evidence）/
             Core recovery finalizer force path / restart reauthentication / canonical-aware
-            wait thread + reconciliation；已执行：WorkBuddy PASS / Codex REQUEST_CHANGE
-            → pending blocker AAF-v0.4-TASK-005-B-FIX-001 未关闭，未经 Codex 通过不记
-            CLOSED）；
+            wait thread + reconciliation；已执行：WorkBuddy PASS / Codex REQUEST_CHANGE）；
+            005-B-FIX-001 已交付（Force Recovery Authority + Successful Termination
+            Proof Closure：canonical Bridge registry/evidence authority 绑定、exit 0
+            成功终止证明、registry durable force 字段逐项核对、三方 identity 全量
+            交叉——Codex 原两个 blocker 已闭合；新增 32 项 authority 正负矩阵；
+            待 route 阶段 WorkBuddy / Codex 复核通过后记 005-B CLOSED +
+            E-Ownership / Force Cancel COMPLETE）；
             剩余 TASK-005-C Status Window Cancel UX + Real Windows E2E Closure 未交付
             → Phase E 不得标 COMPLETE）
 Direction: Desktop Shell MVP / Runtime Observability & Control
 Context Compaction Maintenance: CLOSED → PRODUCTION OBSERVATION（不主动重新设计；观察项见 Policy §14）
-Obsidian Handoff: PILOT / EXPERIMENTAL（CURRENT_HANDOFF.md；未验证；新 Planner 对话恢复成功后才可 VERIFIED）
+Obsidian Handoff: VERIFIED（CURRENT_HANDOFF.md；2026-08-28 005-B-FIX-001 新会话读取并准确恢复项目状态后验证）
 GitHub Handoff: VERIFIED（PROJECT_STATE + BACKLOG + Git + latest REPORT 权威恢复链不变）
 
 v0.4 主线（Phase 顺序）：
@@ -61,9 +66,10 @@ D. Progress Visualization（COMPLETE — 2026-08-27 closure：AAF-v0.4-TASK-004-
 E. Safe Cancel Lifecycle（IN PROGRESS — AAF-v0.4-TASK-005-A 已交付 E-Core / Soft Cancel：
    CANCELLED 终态、state.lock、terminal generation、reconciliation、recovery finalizer 基础、
    runner 检查点、cancel.request 契约；见下方 Phase E 段落。005-B 已执行（E-Ownership /
-   Force Cancel 已交付，Codex REQUEST_CHANGE → pending blocker 005-B-FIX-001）；
-   剩余：005-B-FIX-001 关闭 + TASK-005-C（Cancel UI + Windows E2E Closure）完成后
-   才能正式标记 COMPLETE）
+   Force Cancel 已交付）+ 005-B-FIX-001 已交付（canonical force authority + successful
+   termination proof，Codex 原两个 blocker 已闭合，待 route 复核）；
+   剩余：005-B-FIX-001 route 复核通过（记 005-B CLOSED）+ TASK-005-C（Cancel UI +
+   Windows E2E Closure）完成后才能正式标记 COMPLETE）
 F. Project Switching / Duplicate Task UX（NOT STARTED）
 
 Phase F 不得提前实现 / 不得自动启动。
@@ -498,6 +504,58 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
     无 git clean
   - WorkBuddy / Codex 独立复核由本任务 route 阶段执行（verdict 见任务 REPORT.md；
     **未经两者通过不记录 E-Ownership / Force Cancel CLOSED**）
+- **FIX-001（AAF-v0.4-TASK-005-B-FIX-001，2026-08-28）：Force Recovery Authority and
+  Successful Termination Proof Closure**——关闭 Codex 对 005-B 的两个 blocking
+  findings（① 任意 evidence.registry_path 可被当作 registry authority；② 非成功
+  termination 也可授权 CANCELLED）：
+  - `ai_agent_framework/finalize_cancelled.py`：`_validate_force_evidence` 重写——
+    **canonical authority 推导**（req 1/2/3）：Core 经 `bridge.launch_registry`
+    官方 path/schema/read contract 由 canonical Bridge registry root
+    （`AAF_BRIDGE_DIR` / `~/.aaf-bridge`）+ launch_id 推导 registry 与 evidence
+    路径；evidence 文件必须位于 `<registry_root>/<launch_id>.force-evidence.json`；
+    `evidence.registry_path` / `control_path` 只作 proof，必须严格等于 canonical
+    路径——任意外部 registry/evidence 路径不得授权 CANCELLED
+    （fake/noncanonical registry + evidence 全拒）
+  - **successful termination proof**（req 5）：`termination_exit_status == 0`
+    （`force_evidence.SUCCESSFUL_TERMINATION_EXIT_STATUS`，Windows contract）才授权
+    新的 CANCELLED；nonzero / missing / malformed → fail closed（Codex blocker 2
+    闭合：原 `termination_exit_status=1` 合法 evidence 的测试已改为 exit 0）
+  - **durable bridge evidence**（req 6）：Launcher 在调 finalizer 前把 force
+    termination 关键事实（requested / observed / exit status / evidence path /
+    verification result+checks）写入 Bridge-owned registry；Core 锁内逐项核对与
+    evidence 一致（缺 durable 字段 = Bridge 在 evidence 写后、registry 更新前崩溃
+    → fail closed，任务保持非终态）
+  - **三方 identity 全量**（req 3/4/7）：task / launch / workspace / output /
+    PID / creation time / expected entry / normalized command line / registry
+    state（PREPARED / SUPERSEDED 拒绝，RUNNING / EXITED 可）全部一致；timestamp
+    mismatch / verification mismatch / failed taskkill 全拒——仍在同一
+    `state.lock` 临界区内完成（req 9，无 TOCTOU 回归）；已有终态 precedence 不变
+    （req 8：force validation 只决定 non-terminal 是否允许新写 CANCELLED）
+  - `bridge/launcher.py`：`_TASKKILL_OK_EXIT_CODES` 收紧为 `(0,)`（128 进程已不存在
+    不再视为成功终止 → 失败路径 fail closed）；成功路径 registry 增写
+    `force_termination_verification_result` / `force_termination_verification_checks`
+  - `ai_agent_framework/force_evidence.py`：新增 `SUCCESSFUL_TERMINATION_EXIT_STATUS`
+    contract 常量（Launcher 与 Core finalizer 共用单一成功定义）
+  - 测试：**628 passed**（596 基线 + 32 新增，零下降；tests/test_phase_e_force_authority.py
+    32 项 authority 正负矩阵：全一致正向 → CANCELLED；非 canonical evidence 路径 /
+    registry_path proof 篡改 / canonical 路径 fake registry（垃圾 JSON + 他 launch
+    的 schema-合法记录）/ registry 缺 durable 字段 / status 1·128·-1·999 / 缺失
+    status / registry durable 六字段逐一不一致 / registry 侧 workspace·output_dir·
+    PID·creation·entry·command 不一致 / control 侧 workspace·creation·command 不一致 /
+    workspace 参数不一致 / PREPARED·SUPERSEDED / 已有终态 precedence / CLI 正负
+    （真实子进程 + AAF_BRIDGE_DIR，exit 0 与 exit 6 两路径））；既有
+    test_phase_e_ownership.py / test_phase_e_force_e2e.py 适配新契约（exit 0 +
+    registry durable 字段断言 + AAF_BRIDGE_DIR 隔离，不再污染真实 ~/.aaf-bridge）；
+    fix_002/003 对抗 worker 签名适配 workspace 透传
+  - 行为契约变更：force recovery 现在要求 evidence 位于 canonical Bridge location、
+    termination_exit_status == 0、registry 独立 durable 记录；128 不再视为成功终止
+  - 边界遵守：无 Status Window Stop UX / 无 Phase F / 无 RW-020–024 顺手修复；
+    `.aaf/`、`scripts/start_bridge_hidden.vbs`、`AAF_TASK004_PROCESS_CHECK.txt` 未动
+  - Obsidian Handoff：PILOT → **VERIFIED**（本任务即“新 Planner 对话”，经
+    CURRENT_HANDOFF + PROJECT_STATE 恢复项目状态成功；记录于本文件与
+    AAF_MASTER_BACKLOG §5.4；未另开维护支线）
+  - WorkBuddy / Codex 独立复核由本任务 route 阶段执行（verdict 见任务 REPORT.md；
+    **未经两者通过不记 005-B CLOSED / E-Ownership / Force Cancel COMPLETE**）
 - 真实软取消 E2E：Scenario 1（Hermes 前 cancel → Hermes 不启动 → CANCELLED 全套产物）PASS；
   Scenario 2（Hermes 完成 → WorkBuddy 前 cancel → Hermes result 保留 → CANCELLED）PASS；
   真实 run.py CLI 子进程 + finalize_cancelled CLI 幂等 PASS

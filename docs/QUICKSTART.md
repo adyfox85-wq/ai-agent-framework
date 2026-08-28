@@ -194,14 +194,25 @@ v0.4 Phase E 已交付 **CANCELLED 终态 + cooperative soft cancel Core**（`AA
     （超时 / OS 错误）→ 明确错误（`LockTimeout` / `LockError`），不写、不 consume、
     不 fallback 成无锁写。读取（runner 检查点 / inspect）保持无锁（非权威读）；
     recovery 的权威验证始终在其锁内完成。
-  - **Force recovery（TASK-005-B 已开放，带结构化证据门禁）**：`--cancel-mode force` /
-    `--reason FORCE_CANCELLED` 必须同时提供 `--force-evidence <path>`——Launcher 在
-    **verified process-tree termination** 后生成的结构化证据（`task_id / launch_id /
-    runner_pid / runner_creation_time / workspace / termination 时间戳与 exit status /
-    verification result / registry+control proof 路径`）。finalizer 在 `state.lock`
-    临界区内三方交叉验证（evidence ↔ `control.json` ↔ Bridge launch registry：
-    launch_id / task_id / runner 身份 / ownership verified / 非 superseded / 时间序
-    sane）——伪造 / 过期 / 不匹配 → 安全失败（exit code 6），零 canonical 写。
+  - **Force recovery（TASK-005-B 已开放，带结构化证据门禁；FIX-001 canonical
+    authority 绑定）**：`--cancel-mode force` / `--reason FORCE_CANCELLED` 必须同时
+    提供 `--force-evidence <path>`——Launcher 在 **verified process-tree termination**
+    后生成的结构化证据（`task_id / launch_id / runner_pid / runner_creation_time /
+    workspace / termination 时间戳与 exit status / verification result / registry+
+    control proof 路径`）。finalizer 在 `state.lock` 临界区内完成：
+    - **canonical path binding**：evidence 必须位于
+      `~/.aaf-bridge/launches/<launch_id>.force-evidence.json`；registry 由
+      canonical Bridge root + launch_id 推导（`evidence.registry_path` 只是 proof，
+      必须严格等于 canonical 路径，**不是** authority locator）——任意外部
+      registry/evidence 路径不得授权 CANCELLED
+    - **成功终止证明**：只有 `termination_exit_status == 0` 才授权新的 CANCELLED
+      （nonzero / missing / malformed → fail closed）
+    - **durable bridge evidence**：registry 独立记录 requested / observed /
+      exit status / evidence path / verification result+checks，Core 逐项核对一致
+    - 三方交叉验证（evidence ↔ `control.json` ↔ Bridge launch registry：
+      task / launch / workspace / output / PID / creation time / expected entry /
+      normalized command line / registry state）——任一伪造 / 非 canonical / 过期 /
+      不匹配 → 安全失败（exit code 6），零 canonical 写
     已有终态 + force 请求 → 保留现有 terminal（arbitration 优先，force request loses）。
   - `--evidence` 只是 **diagnostic note**，不是 authority evidence。
 - **Process Ownership Protocol（TASK-005-B）**：每次真实 launch 生成唯一 `launch_id`，

@@ -167,8 +167,14 @@ pythonw 无控制台，启动异常（如导入错误）会：
     "看起来像"就杀（`refusal_reason` 以 `OWNERSHIP_` 开头）。
   - **soft timeout 不会自动 taskkill**（设计 §6A.11：必须显式 force 请求；005-C 才交付
     最终用户按钮 / 确认窗）——不要期望当前 UI 有停止按钮。
+  - **force 收敛门槛（FIX-001）**：`request_force_cancel` 只把 `taskkill /T /F` 的
+    **exit 0** 视为 verified successful termination（128 = 进程已不存在，不算成功 →
+    fail closed，不调 finalizer）；Launcher 把 termination 关键事实（requested /
+    observed / exit status / evidence path / verification result+checks）写入
+    registry 后才会调用 Core finalizer，后者锁内逐项核对与 evidence 一致。
   - **诊断**：`~/.aaf-bridge/launches/<launch_id>.json`（registry）+ `.aaf/<Task-ID>/control.json`
-    （task-owned）+ `<launch_id>.force-evidence.json`（force 证据）三份记录可交叉核对。
+    （task-owned）+ `~/.aaf-bridge/launches/<launch_id>.force-evidence.json`（force
+    证据，**必须位于 canonical Bridge location**）三份记录可交叉核对。
   - 已知环境坑：本机 hermes venv 的 `python.exe` 是 uv 重定向壳——Popen 直连子与真实
     解释器是父子关系（pid 不同）。Launcher 会采纳 runner 自报身份（registry 跟随
     control），命令行校验按 runner entry + 参数（不含解释器 argv[0]）比较；进程树
@@ -180,10 +186,13 @@ pythonw 无控制台，启动异常（如导入错误）会：
     （验证与提交之间不释放锁）；要求合法 matching `cancel.request`（`request=soft_cancel`、
     `task_id` 一致、`requested_at` 合法），缺失 / 损坏 / 不匹配 → exit code 6 安全失败，
     不修改 canonical。
-  - **force 收敛（TASK-005-B）**：加 `--cancel-mode force --force-evidence <path>`——
-    evidence 必须是 Launcher 在 verified termination 后生成的结构化 JSON；finalizer 在
-    锁内三方交叉验证（evidence ↔ control.json ↔ registry），伪造 / 过期 / 不匹配 →
-    exit code 6 安全失败（零 canonical 写）。已有终态 + force → 保留现有 terminal。
+  - **force 收敛（TASK-005-B + FIX-001）**：加 `--cancel-mode force --force-evidence <path>`——
+    evidence 必须是 Launcher 在 verified termination 后生成的结构化 JSON **且位于
+    canonical Bridge location**（`~/.aaf-bridge/launches/<launch_id>.force-evidence.json`）；
+    `termination_exit_status` 必须 == 0；registry 必须独立记录 termination 关键事实并与
+    evidence 逐项一致。finalizer 在锁内三方交叉验证（evidence ↔ control.json ↔
+    canonical registry），伪造 / 非 canonical / 过期 / 不匹配 → exit code 6 安全失败
+    （零 canonical 写）。已有终态 + force → 保留现有 terminal。
   - **request 写入也要锁（FIX-003）**：`cancel.request` 不是 terminal truth，
     **但** Framework-owned 的写入 / 替换 / consume（`write_cancel_request` /
     `consume_cancel_request`）与 recovery 共享同一 per-task `state.lock`——否则

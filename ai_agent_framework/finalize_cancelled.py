@@ -44,6 +44,26 @@ TASK-005-B（AAF-v0.4-TASK-005-B，Process Ownership / Force Cancel / Recovery�
   非 superseded / 时间序 sane）——伪造 / 过期 / 不匹配 → 安全失败，零 canonical 写
 - 已有终态 + force 请求 → 保留现有 terminal（arbitration 优先，force loses）
 
+005-B-FIX-001（Force Recovery Authority and Successful Termination Proof Closure；
+Codex 两个 blocking findings 闭合）：
+- **canonical registry authority（blocker 1）**：Core 由 canonical Bridge registry
+  root + launch_id 推导 registry path（``bridge.launch_registry`` 官方
+  path/schema/read contract，``AAF_BRIDGE_DIR`` / ``~/.aaf-bridge`` 唯一根）；
+  evidence.registry_path 只是 proof，必须严格等于 canonical path——不得把它当
+  authority locator，不得手工读任意 JSON 充当 registry
+- **canonical evidence location（req 2）**：force evidence 必须位于
+  ``<registry_root>/<launch_id>.force-evidence.json``；任意外部 evidence 文件路径
+  → 拒绝授权 CANCELLED
+- **successful termination proof（blocker 2 / req 5）**：只有
+  ``termination_exit_status == 0``（Windows 当前 termination contract）才授权新的
+  CANCELLED；nonzero / missing / malformed → fail closed
+- **durable bridge evidence（req 6）**：registry 必须独立记录 force termination
+  关键事实（requested / observed / exit status / evidence path / verification
+  result+checks），Core 锁内逐项核对与 evidence 一致
+- **三方 identity 全量（req 3/4）**：task / launch / workspace / output / PID /
+  creation time / expected entry / normalized command line / registry state
+  全部一致；任一 mismatch → fail closed，不得产生新的 CANCELLED
+
 FIX-002 单一临界区契约（Codex 遗留 recovery TOCTOU blocker 闭合）：
 - canonical identity 验证、terminal arbitration、recovery evidence 验证与
   CANCELLED commit 属于**同一个不可分割的 per-task state.lock 临界区**——
@@ -69,6 +89,7 @@ from pathlib import Path
 from . import cancel as cancel_mod
 from . import control as control_mod
 from . import force_evidence as force_evidence_mod
+from . import proc_identity
 from .lock_utils import LockTimeout, task_state_lock
 from .reconcile import reconcile_terminal_artifacts
 from .task_lifecycle import (
@@ -81,6 +102,9 @@ from .task_lifecycle import (
     read_status,
     task_json_path,
 )
+# FIX-001（req 1/3）：复用正式 registry path/schema/read contract（bridge-owned
+# canonical root + launch_id 推导），不得再手工信任任意 JSON / 任意路径。
+from bridge import launch_registry as reg_mod
 
 EXIT_OK = 0
 EXIT_USAGE = 2
@@ -143,6 +167,7 @@ def _validate_recovery_evidence(
     cancel_mode: str,
     reason: str,
     force_evidence: Path | str | None = None,
+    workspace: str | None = None,
 ) -> None:
     """在“准备新提交 CANCELLED”前验证 recovery evidence（FIX-001 req 8/10/12 + TASK-005-B）。
 
@@ -151,7 +176,8 @@ def _validate_recovery_evidence(
     commit 前不 release lock；不得在锁外验证后再提交）。
 
     - force → ``_validate_force_evidence``（TASK-005-B：结构化 force evidence
-      三方交叉验证；伪造 / 过期 / 不匹配 → ForceEvidenceError，零 canonical 写）
+      三方交叉验证；FIX-001：canonical authority 绑定 + 成功终止证明；
+      伪造 / 非 canonical / 过期 / 不匹配 → ForceEvidenceError，零 canonical 写）
     - soft → 必须存在合法 matching cancel.request（parseable / soft_cancel /
       task_id 匹配 / requested_at 合法）；任何缺失/损坏/mismatch → RecoveryEvidenceError，
       不写 canonical
@@ -164,7 +190,7 @@ def _validate_recovery_evidence(
                 "FORCE_EVIDENCE_REQUIRED: force recovery 必须提供结构化 force evidence "
                 "路径（TASK-005-B req 21）；不得凭任意字符串 evidence 提交 CANCELLED"
             )
-        _validate_force_evidence(output_dir, task_id, Path(force_evidence))
+        _validate_force_evidence(output_dir, task_id, Path(force_evidence), workspace=workspace)
         return
     # 复用 cancel.py 的 parser / validator（req 13：不得复制第二套不一致 JSON parser）
     req, warning = cancel_mod.inspect_cancel_request(output_dir)
@@ -193,29 +219,50 @@ def _validate_recovery_evidence(
         )
 
 
-def _validate_force_evidence(output_dir: Path, task_id: str, force_evidence_path: Path) -> None:
-    """**锁内**验证 force recovery evidence（TASK-005-B req 20/22）。
+def _path_eq(a: object, b: object) -> bool:
+    """规范化路径相等（非空 + 绝对化 + normcase；与 ownership 同规则）。"""
+    return bool(a and b and proc_identity.canonicalize_path(str(a)) == proc_identity.canonicalize_path(str(b)))
 
-    交叉验证 evidence ↔ control.json ↔ Bridge launch registry（三方，§6B.13/§6B.14）：
 
-    1. evidence 可 parse + schema_version/kind/verification_result 结构合法（结构层）
+def _cmdline_eq(a: object, b: object) -> bool:
+    """expected_command_line 规范化逐位置相等（registry/control/evidence 三方同源）。"""
+    if not isinstance(a, list) or not isinstance(b, list) or len(a) != len(b):
+        return False
+    return proc_identity.canonicalize_command_line(a) == proc_identity.canonicalize_command_line(b)
+
+
+def _validate_force_evidence(
+    output_dir: Path,
+    task_id: str,
+    force_evidence_path: Path,
+    workspace: str | None = None,
+) -> None:
+    """**锁内**验证 force recovery evidence（FIX-001 req 1–7；TASK-005-B req 20/22）。
+
+    三方交叉验证（evidence ↔ control.json ↔ Bridge launch registry；§6B.13/§6B.14），
+    authority 根由 **canonical Bridge registry root + launch_id** 推导（FIX-001
+    blocker 1 闭合：不得把 evidence.registry_path 当作 locator）：
+
+    1. evidence 结构合法（schema_version/kind/verification_result/字段集）
     2. evidence.task_id == 请求 task_id（canonical identity 已由调用方锁内验证）
-    3. control.json 存在且 lock-stable：
-       - control.launch_id == evidence.launch_id
-       - control.task_id == task_id
-       - control.superseded_by 为空（非 stale / 非 superseded）
-       - control.force_terminate_requested == true（Launcher 已确认 force 请求）
-       - control.runner_pid == evidence.runner_pid
-    4. registry（evidence.registry_path proof 字段；Bridge 私有根只读）：
-       - registry.launch_id == evidence.launch_id
-       - registry.task_id == task_id
-       - registry.state != SUPERSEDED（stale evidence 拒绝）
-       - registry.runner_pid == evidence.runner_pid
-    5. evidence.control_path proof == 本任务 output_dir 的 control.json
-    6. ownership 已验证：verification_result ∈ {VERIFIED, REAUTHENTICATED} 且
-       verification_checks 全部 True（结构层已校验；此处不再重复读）
-    7. 时间戳 sane：termination_observed_at >= termination_requested_at
-       （伪造“先观察到后请求”的时间序拒绝）
+    3. canonical path binding（FIX-001 req 1/2）：
+       - evidence 文件必须位于 ``<registry_root>/<launch_id>.force-evidence.json``
+         （bridge.launch_registry 官方 path contract；任意外部路径 → 拒绝）
+       - evidence.registry_path proof 必须严格等于 canonical registry path
+       - evidence.control_path proof 必须严格等于本任务 control.json
+    4. 成功终止证明（FIX-001 req 5）：``termination_exit_status == 0``——
+       nonzero / missing / malformed → fail closed，不得授权新的 CANCELLED
+    5. control.json 交叉（lock-stable）：launch_id / task_id / 非 superseded /
+       force_terminate_requested == true / runner_pid / runner_creation_time /
+       workspace / expected_runner_entry / expected_command_line
+    6. registry 交叉（官方 read contract，canonical path 推导）：
+       launch_id / task_id / workspace / output_dir（== 本任务 output_dir）/
+       runner_pid / runner_creation_time / expected_runner_entry /
+       expected_command_line / state（PREPARED / SUPERSEDED 拒绝）
+    7. durable bridge evidence（FIX-001 req 6）：registry 必须独立记录 force
+       termination 关键事实并与 evidence 逐项一致——requested_at / observed_at /
+       exit status / evidence path / verification result+checks
+    8. 时间序 sane：termination_observed_at >= termination_requested_at
 
     任一失败 → ForceEvidenceError（fail safely：零 canonical 写、零 generation bump）。
     """
@@ -228,17 +275,47 @@ def _validate_force_evidence(output_dir: Path, task_id: str, force_evidence_path
             f"FORCE_EVIDENCE_ERROR: evidence task_id {ev.get('task_id')!r} "
             f"!= 请求 task_id {task_id!r}（mismatch → fail safely）"
         )
+    launch_id = ev.get("launch_id")
+    if not isinstance(launch_id, str) or not launch_id:
+        raise ForceEvidenceError("FORCE_EVIDENCE_ERROR: evidence.launch_id 缺失/非法")
 
-    # control.json 交叉（锁内读取——与 commit 同一临界区，lock-stable）
+    # --- req 1/2：canonical authority path（bridge 官方 path contract 推导）---
+    canonical_reg_path = reg_mod.registry_path(launch_id)
+    canonical_ev_path = reg_mod.force_evidence_path_for(launch_id)
+
+    # req 2：evidence 文件必须位于 canonical Bridge location——不得接受任意外部
+    # evidence 文件授权 CANCELLED
+    if not _path_eq(force_evidence_path, canonical_ev_path):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: evidence 文件不在 canonical Bridge location: "
+            f"{force_evidence_path} != {canonical_ev_path}——任意外部 evidence 不得授权 CANCELLED"
+        )
+    # req 1：evidence.registry_path 只作 proof，必须严格等于 canonical registry path
+    if not _path_eq(ev.get("registry_path") or "", canonical_reg_path):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: evidence.registry_path {ev.get('registry_path')!r} "
+            f"!= canonical registry path {canonical_reg_path}——不得把任意路径当作 authority locator"
+        )
+
+    # --- req 5：successful termination proof（Windows contract：exit 0）---
+    term_status = ev.get("termination_exit_status")
+    if term_status != force_evidence_mod.SUCCESSFUL_TERMINATION_EXIT_STATUS:
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: termination_exit_status {term_status!r} != "
+            f"{force_evidence_mod.SUCCESSFUL_TERMINATION_EXIT_STATUS}——只有 verified "
+            f"successful termination 才能授权新的 CANCELLED（nonzero/missing/malformed → fail closed）"
+        )
+
+    # --- control.json 交叉（锁内读取——与 commit 同一临界区，lock-stable）---
     control, cerr = control_mod.read_control(output_dir)
     if control is None:
         raise ForceEvidenceError(
             f"FORCE_EVIDENCE_ERROR: 缺少可验证的 control.json（{control_mod.control_path(output_dir)}）"
             f"{'——' + cerr if cerr else ''}——force recovery 必须存在 task-owned control artifact"
         )
-    if control.get("launch_id") != ev.get("launch_id"):
+    if control.get("launch_id") != launch_id:
         raise ForceEvidenceError(
-            f"FORCE_EVIDENCE_ERROR: evidence launch_id {ev.get('launch_id')!r} "
+            f"FORCE_EVIDENCE_ERROR: evidence launch_id {launch_id!r} "
             f"!= control.launch_id {control.get('launch_id')!r}（launch 不匹配）"
         )
     if control.get("task_id") != task_id:
@@ -261,44 +338,153 @@ def _validate_force_evidence(output_dir: Path, task_id: str, force_evidence_path
             f"FORCE_EVIDENCE_ERROR: evidence runner_pid {ev.get('runner_pid')!r} "
             f"!= control.runner_pid {control.get('runner_pid')!r}"
         )
-    if control.get("runner_creation_time") and ev.get("runner_creation_time") and \
-            control.get("runner_creation_time") != ev.get("runner_creation_time"):
+    # req 4：creation time 三方一致（缺失/不可解析 → fail closed）
+    if not proc_identity.creation_times_equal(
+        control.get("runner_creation_time"), ev.get("runner_creation_time")
+    ):
         raise ForceEvidenceError(
-            "FORCE_EVIDENCE_ERROR: evidence runner_creation_time 与 control 不一致"
+            f"FORCE_EVIDENCE_ERROR: evidence runner_creation_time "
+            f"{ev.get('runner_creation_time')!r} 与 control "
+            f"{control.get('runner_creation_time')!r} 不一致/缺失"
+        )
+    # req 4：workspace 三方一致
+    if not _path_eq(control.get("workspace") or "", ev.get("workspace") or ""):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: evidence workspace {ev.get('workspace')!r} "
+            f"!= control.workspace {control.get('workspace')!r}"
+        )
+    # req 3/4：expected runner entry / normalized command line
+    if control.get("expected_runner_entry") != ev.get("expected_runner_entry"):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: evidence expected_runner_entry "
+            f"{ev.get('expected_runner_entry')!r} != control "
+            f"{control.get('expected_runner_entry')!r}"
+        )
+    if not _cmdline_eq(control.get("expected_command_line"), ev.get("expected_command_line")):
+        raise ForceEvidenceError(
+            "FORCE_EVIDENCE_ERROR: evidence expected_command_line 与 control 不一致"
         )
     # control_path proof 字段必须指向本任务 control.json
-    if str(Path(str(ev.get("control_path") or "")).resolve()) != str(control_mod.control_path(output_dir).resolve()):
+    if not _path_eq(ev.get("control_path") or "", control_mod.control_path(output_dir)):
         raise ForceEvidenceError(
             f"FORCE_EVIDENCE_ERROR: evidence.control_path {ev.get('control_path')!r} "
             f"!= 本任务 control.json（{control_mod.control_path(output_dir)}）"
         )
 
-    # Bridge launch registry 交叉（evidence.registry_path proof；Core 只读 Bridge 私有根）
-    reg_path = Path(str(ev.get("registry_path") or ""))
-    try:
-        reg = json.loads(reg_path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise ForceEvidenceError(f"FORCE_EVIDENCE_ERROR: registry 不可读（{reg_path}）: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise ForceEvidenceError(f"FORCE_EVIDENCE_ERROR: registry 损坏（{reg_path}）: {exc}") from exc
-    if not isinstance(reg, dict):
-        raise ForceEvidenceError(f"FORCE_EVIDENCE_ERROR: registry 结构非法（{reg_path}）")
-    if reg.get("launch_id") != ev.get("launch_id"):
+    # --- Bridge launch registry 交叉（官方 read contract：schema 验证 + canonical path）---
+    registry, reg_err = reg_mod.read_registry(launch_id)
+    if reg_err:
+        raise ForceEvidenceError(f"FORCE_EVIDENCE_ERROR: registry 不可用: {reg_err}")
+    if registry is None:
         raise ForceEvidenceError(
-            f"FORCE_EVIDENCE_ERROR: registry.launch_id {reg.get('launch_id')!r} "
-            f"!= evidence.launch_id {ev.get('launch_id')!r}"
+            f"FORCE_EVIDENCE_ERROR: canonical registry 不存在（{canonical_reg_path}）——"
+            f"不得以任意外部 JSON 充当 registry"
         )
-    if reg.get("task_id") != task_id:
+    if registry.get("launch_id") != launch_id:
         raise ForceEvidenceError(
-            f"FORCE_EVIDENCE_ERROR: registry.task_id {reg.get('task_id')!r} "
+            f"FORCE_EVIDENCE_ERROR: registry.launch_id {registry.get('launch_id')!r} "
+            f"!= evidence.launch_id {launch_id!r}"
+        )
+    if registry.get("task_id") != task_id:
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: registry.task_id {registry.get('task_id')!r} "
             f"!= 请求 task_id {task_id!r}"
         )
-    if reg.get("state") == "SUPERSEDED":
-        raise ForceEvidenceError("FORCE_EVIDENCE_ERROR: registry 已 SUPERSEDED——stale evidence 拒绝")
-    if reg.get("runner_pid") != ev.get("runner_pid"):
+    # req 3/4：workspace / output_dir 三方一致（output_dir 还必须 == 本任务 output_dir）
+    if not _path_eq(registry.get("workspace") or "", ev.get("workspace") or ""):
         raise ForceEvidenceError(
-            f"FORCE_EVIDENCE_ERROR: registry.runner_pid {reg.get('runner_pid')!r} "
-            f"!= evidence.runner_pid {ev.get('runner_pid')!r}"
+            f"FORCE_EVIDENCE_ERROR: evidence workspace {ev.get('workspace')!r} "
+            f"!= registry.workspace {registry.get('workspace')!r}"
+        )
+    if not _path_eq(registry.get("output_dir") or "", ev.get("output_dir") or ""):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: evidence output_dir {ev.get('output_dir')!r} "
+            f"!= registry.output_dir {registry.get('output_dir')!r}"
+        )
+    if not _path_eq(registry.get("output_dir") or "", output_dir):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: registry.output_dir {registry.get('output_dir')!r} "
+            f"!= 本任务 output_dir {output_dir}"
+        )
+    if workspace is not None and not _path_eq(registry.get("workspace") or "", workspace):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: 请求 workspace {workspace!r} != registry.workspace "
+            f"{registry.get('workspace')!r}"
+        )
+    if registry.get("runner_pid") != ev.get("runner_pid"):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: evidence runner_pid {ev.get('runner_pid')!r} "
+            f"!= registry.runner_pid {registry.get('runner_pid')!r}"
+        )
+    if not proc_identity.creation_times_equal(
+        registry.get("runner_creation_time"), ev.get("runner_creation_time")
+    ):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: evidence runner_creation_time "
+            f"{ev.get('runner_creation_time')!r} 与 registry "
+            f"{registry.get('runner_creation_time')!r} 不一致/缺失"
+        )
+    if registry.get("expected_runner_entry") != ev.get("expected_runner_entry"):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: evidence expected_runner_entry "
+            f"{ev.get('expected_runner_entry')!r} != registry "
+            f"{registry.get('expected_runner_entry')!r}"
+        )
+    if not _cmdline_eq(registry.get("expected_command_line"), ev.get("expected_command_line")):
+        raise ForceEvidenceError(
+            "FORCE_EVIDENCE_ERROR: evidence expected_command_line 与 registry 不一致"
+        )
+    # registry state：RUNNING / EXITED 可授权；PREPARED（runner 从未启动，不可能有
+    # verified termination）/ SUPERSEDED（stale）/ 非法值 → 拒绝（req 4/7）
+    reg_state = registry.get("state")
+    if reg_state == reg_mod.REGISTRY_STATE_PREPARED:
+        raise ForceEvidenceError(
+            "FORCE_EVIDENCE_ERROR: registry 仍 PREPARED——runner 从未启动，"
+            "不可能存在已验证的 force termination"
+        )
+    if reg_state == reg_mod.REGISTRY_STATE_SUPERSEDED:
+        raise ForceEvidenceError("FORCE_EVIDENCE_ERROR: registry 已 SUPERSEDED——stale evidence 拒绝")
+    if reg_state not in (reg_mod.REGISTRY_STATE_RUNNING, reg_mod.REGISTRY_STATE_EXITED):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: registry state 非法 {reg_state!r}"
+            f"（仅 RUNNING / EXITED 可授权 CANCELLED）"
+        )
+
+    # --- durable bridge evidence（req 6：Core 独立核对 registry ↔ evidence 事实一致）---
+    if registry.get("force_terminate_requested_at") != ev.get("termination_requested_at"):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: registry.force_terminate_requested_at "
+            f"{registry.get('force_terminate_requested_at')!r} != evidence.termination_requested_at "
+            f"{ev.get('termination_requested_at')!r}——registry 与 evidence 不一致"
+        )
+    if registry.get("force_termination_observed_at") != ev.get("termination_observed_at"):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: registry.force_termination_observed_at "
+            f"{registry.get('force_termination_observed_at')!r} != evidence.termination_observed_at "
+            f"{ev.get('termination_observed_at')!r}——registry 与 evidence 不一致"
+        )
+    if registry.get("force_termination_exit_status") != ev.get("termination_exit_status"):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: registry.force_termination_exit_status "
+            f"{registry.get('force_termination_exit_status')!r} != evidence.termination_exit_status "
+            f"{ev.get('termination_exit_status')!r}——registry 与 evidence 不一致"
+        )
+    if not _path_eq(registry.get("force_evidence_path") or "", canonical_ev_path):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: registry.force_evidence_path "
+            f"{registry.get('force_evidence_path')!r} != canonical evidence path "
+            f"{canonical_ev_path}——registry 未指向本 evidence"
+        )
+    if registry.get("force_termination_verification_result") != ev.get("verification_result"):
+        raise ForceEvidenceError(
+            f"FORCE_EVIDENCE_ERROR: registry.force_termination_verification_result "
+            f"{registry.get('force_termination_verification_result')!r} != evidence.verification_result "
+            f"{ev.get('verification_result')!r}"
+        )
+    if registry.get("force_termination_verification_checks") != ev.get("verification_checks"):
+        raise ForceEvidenceError(
+            "FORCE_EVIDENCE_ERROR: registry.force_termination_verification_checks 与 "
+            "evidence.verification_checks 不一致"
         )
 
     # 时间序 sane：observed >= requested（伪造时间序拒绝）
@@ -365,9 +551,11 @@ def finalize_cancelled_task(
         #    evidence、不改写（force request loses；统一经共享 helper 幂等返回）
         if not is_terminal_status(prev.get("status", "")):
             # 5. 锁内 evidence 验证（req 5/8/20-22：soft = 当前锁内仍有效的 matching
-            #    cancel.request；force = 三方交叉验证的结构化 force evidence）
+            #    cancel.request；force = canonical authority 绑定 + 三方交叉验证 +
+            #    成功终止证明（FIX-001）的结构化 force evidence）
             _validate_recovery_evidence(
-                output_dir, task_id, cancel_mode, reason, force_evidence=force_evidence
+                output_dir, task_id, cancel_mode, reason,
+                force_evidence=force_evidence, workspace=str(workspace),
             )
 
         # 6. 同一临界区内提交（req 1/2/3：共享锁内 helper；调用方已持锁，不再次

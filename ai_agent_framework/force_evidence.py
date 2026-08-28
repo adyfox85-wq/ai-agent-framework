@@ -13,6 +13,15 @@ force evidence 的角色：
 读者：Core recovery finalizer（finalize_cancelled force path，锁内验证）。
 
 存储位置：``~/.aaf-bridge/launches/<launch_id>.force-evidence.json``（与 registry 同目录）。
+
+FIX-001（AAF-v0.4-TASK-005-B-FIX-001）安全契约：
+- **canonical location binding**：evidence 文件必须位于上述 canonical Bridge location
+  （registry root + launch_id 推导）；finalizer 不接受任意外部 evidence 路径授权
+  CANCELLED（req 2）。``registry_path`` / ``control_path`` 字段只是 proof，必须严格
+  等于 canonical 路径（req 1），**不是** authority locator。
+- **成功终止证明**：只有 ``termination_exit_status == 0``
+  （``SUCCESSFUL_TERMINATION_EXIT_STATUS``）才授权新的 CANCELLED；nonzero /
+  missing / malformed → fail closed（req 5）。
 """
 from __future__ import annotations
 
@@ -23,6 +32,13 @@ from pathlib import Path
 
 FORCE_EVIDENCE_SCHEMA_VERSION = 1
 FORCE_EVIDENCE_KIND = "force_termination"
+
+# Windows 当前 termination contract（FIX-001 req 5）：只有 exit status == 0 才证明
+# “verified successful termination”。nonzero / missing / malformed → finalizer
+# fail closed，不得授权新的 CANCELLED（128 = 进程已不存在，不是本进程终止动作的
+# 验证结果，同样不算成功）。Launcher（bridge/launcher.py）与 Core finalizer
+# （finalize_cancelled.py）共用此常量，单一 termination 成功定义。
+SUCCESSFUL_TERMINATION_EXIT_STATUS = 0
 
 # 允许的 verification result（Launcher 只会在 VERIFIED / REAUTHENTICATED 时执行 kill）
 VALID_VERIFICATION_RESULTS = ("VERIFIED", "REAUTHENTICATED")

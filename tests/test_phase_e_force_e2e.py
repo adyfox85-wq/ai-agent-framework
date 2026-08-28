@@ -334,6 +334,64 @@ def test_e2e_negative_failed_taskkill_fails_closed_no_cancelled(tmp_path, monkey
     _taskkill(runner_pid)
 
 
+def test_e2e_recovery_after_verified_termination_commits_cancelled(tmp_path, monkeypatch):
+    """FIX-001 req 6/10：Bridge 在 verified termination 后、mark_exited 前崩溃
+    （registry 仍 RUNNING + durable force 字段已落盘 + canonical evidence）→
+    instance B recover_launches 兜底调 finalizer → CANCELLED 收敛。"""
+    launcher_a, task_file, ws, out, done_a, captured_a = _launch_dummy(tmp_path)
+    assert launcher_a.launch(task_file, str(ws), out, TID) is True
+    lid, runner_pid = _wait_handshake(launcher_a, out)
+
+    # 模拟 Bridge 已完成的 force termination：control 标记 + 真实终止进程树 +
+    # canonical evidence + registry durable 字段（state 保持 RUNNING = 崩溃窗口）
+    control_mod.update_control(out, {"force_terminate_requested": True}, task_id=TID)
+    _taskkill(runner_pid)  # 真实进程树终止（等价 verified termination）
+    assert _wait_until(lambda: not psutil.pid_exists(runner_pid), 10.0)
+
+    reg_dir = launcher_a._registry_dir
+    entry, _ = reg_mod.read_registry(lid, root=reg_dir)
+    requested_at = _old_iso(seconds=30)
+    observed_at = datetime.now().isoformat(timespec="seconds")
+    ev = fe_mod.build_force_evidence(
+        task_id=TID, launch_id=lid, runner_pid=runner_pid,
+        runner_creation_time=entry["runner_creation_time"],
+        workspace=str(ws), output_dir=str(out),
+        expected_runner_entry=entry["expected_runner_entry"],
+        expected_command_line=entry["expected_command_line"],
+        verification_result="VERIFIED",
+        verification_checks={name: True for name in own_mod.CHECK_NAMES},
+        termination_requested_at=requested_at, termination_observed_at=observed_at,
+        termination_exit_status=fe_mod.SUCCESSFUL_TERMINATION_EXIT_STATUS,
+        termination_command=["taskkill", "/T", "/F", "/PID", str(runner_pid)],
+        registry_path=str(reg_mod.registry_path(lid, reg_dir)),
+        control_path=str(control_mod.control_path(out)),
+    )
+    ev_path = reg_mod.force_evidence_path_for(lid, reg_dir)
+    fe_mod.write_force_evidence(ev_path, ev)
+    reg_mod.update_registry(
+        lid,
+        {
+            "force_terminate_requested_at": requested_at,
+            "force_termination_observed_at": observed_at,
+            "force_termination_exit_status": ev["termination_exit_status"],
+            "force_evidence_path": str(ev_path),
+            "force_termination_verification_result": ev["verification_result"],
+            "force_termination_verification_checks": ev["verification_checks"],
+        },
+        root=reg_dir,
+    )
+
+    # instance B（逻辑重启）recover_launches → STALE + evidence 兜底 → finalizer
+    launcher_b = FrameworkLauncher(run_py=DUMMY_RUNNER, registry_dir=reg_dir)
+    recovered = launcher_b.recover_launches(reg_dir)
+    assert lid in recovered and not recovered[lid].ok()  # STALE（进程已消失）
+    assert _wait_until(lambda: read_status(out).get("status") == "CANCELLED", 25.0)
+    assert read_status(out)["status"] == "CANCELLED"
+    # registry 收敛为 EXITED（recover 兜底路径）
+    entry_final, _ = reg_mod.read_registry(lid, root=reg_dir)
+    assert entry_final["state"] == reg_mod.REGISTRY_STATE_EXITED
+
+
 def test_e2e_negative_wrong_ownership_force_refused_target_alive(tmp_path):
     launcher, task_file, ws, out, done, captured = _launch_dummy(tmp_path)
     assert launcher.launch(task_file, str(ws), out, TID) is True

@@ -536,14 +536,18 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
     `force_termination_verification_result` / `force_termination_verification_checks`
   - `ai_agent_framework/force_evidence.py`：新增 `SUCCESSFUL_TERMINATION_EXIT_STATUS`
     contract 常量（Launcher 与 Core finalizer 共用单一成功定义）
-  - 测试：**628 passed**（596 基线 + 32 新增，零下降；tests/test_phase_e_force_authority.py
+  - 测试：**630 passed**（596 基线 + 34 新增，零下降；tests/test_phase_e_force_authority.py
     32 项 authority 正负矩阵：全一致正向 → CANCELLED；非 canonical evidence 路径 /
     registry_path proof 篡改 / canonical 路径 fake registry（垃圾 JSON + 他 launch
     的 schema-合法记录）/ registry 缺 durable 字段 / status 1·128·-1·999 / 缺失
     status / registry durable 六字段逐一不一致 / registry 侧 workspace·output_dir·
     PID·creation·entry·command 不一致 / control 侧 workspace·creation·command 不一致 /
     workspace 参数不一致 / PREPARED·SUPERSEDED / 已有终态 precedence / CLI 正负
-    （真实子进程 + AAF_BRIDGE_DIR，exit 0 与 exit 6 两路径））；既有
+    （真实子进程 + AAF_BRIDGE_DIR，exit 0 与 exit 6 两路径））；真实 Windows E2E
+    新增 2 项反向/恢复路径（tests/test_phase_e_force_e2e.py：失败 taskkill →
+    TERMINATION_FAILED fail closed 目标存活零 CANCELLED；verified termination 后
+    Bridge 崩溃窗口（registry 仍 RUNNING + durable 字段已落盘）→ instance B
+    recover_launches 兜底收敛 CANCELLED）；既有
     test_phase_e_ownership.py / test_phase_e_force_e2e.py 适配新契约（exit 0 +
     registry durable 字段断言 + AAF_BRIDGE_DIR 隔离，不再污染真实 ~/.aaf-bridge）；
     fix_002/003 对抗 worker 签名适配 workspace 透传

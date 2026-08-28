@@ -38,8 +38,22 @@ class TaskParseError(ValueError):
 
 
 def extract_task_body(text: str) -> str:
-    """提取 AAF_TASK_BEGIN ... AAF_TASK_END 之间的正文；无标记时报错。"""
-    m = re.search(re.escape(BEGIN_MARKER) + r"(.*?)" + re.escape(END_MARKER), text, re.DOTALL)
+    """提取 AAF_TASK_BEGIN ... AAF_TASK_END 之间的正文；无标记时报错。
+
+    RW-008 生产 blocker（TASK-009 实证）：标记必须**独立成行**匹配
+    （``^AAF_TASK_END$`` MULTILINE），不得匹配正文中出现的
+    ``AAF_TASK_END authority`` 等文档性说明——否则 body 被提前截断，
+    后面的 Acceptance / Route 字段全部丢失，Bridge 误报
+    「缺少必填字段: Acceptance」。BEGIN/END 均为独立行是 AAF 模板
+    与落盘格式的既有契约（``f"{BEGIN_MARKER}\\n{body}\\n{END_MARKER}"``）。
+    """
+    m = re.search(
+        r"^\ufeff?[ \t]*" + re.escape(BEGIN_MARKER) + r"[ \t]*\r?$"
+        r"(.*?)"
+        r"^[ \t]*" + re.escape(END_MARKER) + r"[ \t]*\r?$",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
     if not m:
         raise TaskParseError("缺少 AAF_TASK_BEGIN / AAF_TASK_END 标记")
     return m.group(1).strip()

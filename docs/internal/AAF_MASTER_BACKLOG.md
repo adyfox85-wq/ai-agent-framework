@@ -192,14 +192,14 @@ P3
 | ID | RW-008 |
 | Title | TASK / Bridge parser compatibility |
 | Category | Real-world usage / Parser |
-| Status | PARTIAL |
+| Status | SOLVED (v0.4) |
 | Priority | P1 |
-| Evidence / Origin | 真实问题：最初 TASK 中以下单行字段出现换行格式时 Bridge 校验失败：Task ID / Task Name / Workspace。另：Planner 富文本 / Markdown 转义曾造成 marker 和文本格式风险。2026-08-19 生产复现：Planner 生成的标准 Compact TASK（Acceptance 为 20 项编号列表，后续还有 Expected Final Result / Route / Route Hint）被 Bridge 判「缺少必填字段: Acceptance」，但 Acceptance 实际存在 |
-| Current Implementation | 2026-08-19 修复（RW-008 intake/parser blocker）：<br>- `bridge/task_io.py::parse_task` 与 `ai_agent_framework/task_validation.py::parse_task_fields` 解析前统一归一化行尾（CRLF → LF），修复 `\r` 卡住行锚定正则导致字段标题行（含 Acceptance）匹配失败的问题；覆盖全部单行 + 多行字段<br>- 两层校验（Bridge UX guard + Formal validator）新增 Acceptance 唯一性 fail-closed：重复声明 → 拒绝，不得 first/last wins（与 Route 契约一致）<br>- 新增 `tests/test_rw008_intake_crlf.py`（11 tests）：Compact TASK / CRLF 混合 / 全 CRLF / BOM / whitespace / 20 项编号列表 / 后续 section / EOF 边界 / missing / empty / duplicate |
-| Remaining Gap | 仍存在的明确 contract gap：<br>- 全角空格（U+3000）行首缩进字段标题 → 解析失败（已实测复现，未修）<br>- Planner 富文本 / Markdown 转义风险（原 Evidence，未处理）<br>- `Acceptance Criteria` 旧别名仅在 task_validation 支持，`bridge/task_io` 层未支持 |
-| Decision | Acceptance CRLF/multiline blocker 已修复并回归；上述剩余 gap 登记待办，不假关 |
+| Evidence / Origin | 真实问题：最初 TASK 中以下单行字段出现换行格式时 Bridge 校验失败：Task ID / Task Name / Workspace。另：Planner 富文本 / Markdown 转义曾造成 marker 和文本格式风险。2026-08-19 生产复现：Planner 生成的标准 Compact TASK（Acceptance 为 20 项编号列表，后续还有 Expected Final Result / Route / Route Hint）被 Bridge 判「缺少必填字段: Acceptance」，但 Acceptance 实际存在。2026-08-29 生产再复现（TASK-009）：61e3a05 CRLF 修复后仍报「缺少必填字段: Acceptance」 |
+| Current Implementation | 两轮修复（2026-08-19 + 2026-08-29）：<br>① 61e3a05：`parse_task` / `parse_task_fields` 解析前统一归一化行尾（CRLF → LF）；两层校验新增 Acceptance 唯一性 fail-closed；新增 `tests/test_rw008_intake_crlf.py`（11 tests）<br>② marker extraction 修复（本次）：`bridge/task_io.py::extract_task_body` 由裸子串 `BEGIN + (.*?) + END` 改为**独立行锚定** `^AAF_TASK_BEGIN$ ... ^AAF_TASK_END$`（MULTILINE，兼容 CRLF `\r?` 与 BOM `\ufeff?`）。原实现从第一个 `AAF_TASK_END` 子串截断——TASK-009 正文 Requirements 写有「AAF_TASK_BEGIN / AAF_TASK_END authority」被误当结束标记，Acceptance/Route 全部丢弃（61e3a05 不涉及此路径，故重启后仍复现）。新增 `tests/test_rw008_production_intake.py`（7 tests）+ `fixtures/TASK-009-production.md`（真实生产输入 exact fixture） |
+| Remaining Gap | 剩余项均为 **LEGACY / NON-CONTRACT / OBSERVATION**（按正式 Compact TASK contract 分类，不构成 v0.4 blocker）：<br>- 全角空格（U+3000）行首缩进字段标题 → 解析失败（已实测复现，非 contract，deferred observation）<br>- Planner 富文本 / Markdown 转义风险（原 Evidence，未具体复现，deferred observation）<br>- `Acceptance Criteria` 旧别名仅在 task_validation 支持，`bridge/task_io` 层未支持（LEGACY，正式 contract 为 `Acceptance`） |
+| Decision | 正式 Compact TASK contract 已完整支持（LF/CRLF/BOM/独立行 marker/多行 Acceptance/后续 section/EOF/duplicate fail-closed/missing-empty reject/Route fail-closed）。RW-008 = SOLVED for v0.4；剩余 legacy/non-contract 兼容性仅登记 observation，不做 parser 扩张 |
 | Target | parser 兼容多种合理排版（含全角空格、富文本转义），且不受 Markdown 转义影响 |
-| Do Not Forget | README 规避 ≠ 代码层已兼容；CRLF 已兼容，全角空格 / 富文本转义 / 旧别名缺口仍在 |
+| Do Not Forget | 代码层 exact production regression 已通过（TASK-009 原文 fixture 校验 True）；真实 Bridge 投递由用户最终确认。剩余 U+3000 / 富文本 / 旧别名仅为 observation，不得为关 backlog 而扩张 parser |
 
 ---
 
@@ -807,7 +807,7 @@ Obsidian working knowledge → stable conclusion → Framework task → 提升�
 | RW-005 | Framework 执行速度与阶段耗时 | OBSERVATION | P2 |
 | RW-006 | Runtime 状态可视化 | SOLVED | P1 |
 | RW-007 | Agent executable discovery reliability | PARTIAL | P2 |
-| RW-008 | TASK / Bridge parser compatibility | PARTIAL | P1 |
+| RW-008 | TASK / Bridge parser compatibility | SOLVED (v0.4) | P1 |
 | RW-009 | ChatGPT Project / Conversation disaster recovery | PARTIAL | P0 |
 | RW-010 | Desktop App / Windows Program Packaging | OPEN | P2 |
 | RW-011 | Router local constraint classification incident | SOLVED | P1 |

@@ -49,7 +49,7 @@ from .launcher import (
     RUNNING,
 )
 from .status_window import StatusWindowController, collect_status, overall_status_label
-from .win32 import HotkeyConflictError, HotkeyListener, unregister_hotkey
+from .win32 import HotkeyConflictError, HotkeyListener
 
 CONFIG_CHECK_INTERVAL = 2.0  # 秒：热键触发时检查配置变化（无需重启 Bridge）
 CONFIG_RELOAD_INTERVAL = 2.0  # 秒：后台轮询配置 mtime
@@ -58,6 +58,9 @@ HEALTH_POLL_INTERVAL = 5.0  # 秒：health 轮询 → Tray 图标/Tooltip
 # RW-012：hotkey listener 自恢复（有界 backoff；唯一 owner = Bridge 实例）
 RECOVERY_MAX_FAILURES = 3  # 连续恢复失败上限 → 停止自动恢复（不 tight loop）
 RECOVERY_BACKOFF_SECONDS = (15.0, 30.0, 60.0)  # 第 1/2/3 次失败后的等待秒数
+
+# RW-012 FIX-001：旧 listener 停止确认的有界上限（stop 契约；超时 → fail safe）
+LISTENER_STOP_TIMEOUT = 5.0  # 秒
 
 # 单实例 mutex（Restart 交接 / 防双开）
 _SINGLE_INSTANCE_MUTEX = "Local\\AAF_Bridge_SingleInstance_v0_4"
@@ -314,6 +317,9 @@ class Bridge:
         # RW-012：listener 自恢复策略 + 主动退出标志（生命周期 owner = 本 Bridge 实例）
         self._recovery = HotkeyRecovery()
         self._shutting_down = False
+        # RW-012 FIX-001：lifecycle transition 互斥（同一时刻只有一个 transition
+        # owner；Tk 主线程串行之外的最小并发 guard）
+        self._lifecycle_lock = threading.Lock()
         self._apply_hotkey()
         self._start_tray()
         self.root.after(100, self._poll_events)
@@ -328,33 +334,70 @@ class Bridge:
         except OSError:
             return 0.0
 
+    def _stop_listener(self, timeout: float = LISTENER_STOP_TIMEOUT) -> bool:
+        """停止当前 listener 并确认线程退出（stop 契约；thread-owned unregister）。
+
+        - Bridge/主线程只调用 listener.stop(timeout)：请求停止 + 有界 join；
+          UnregisterHotKey 由 listener 自己的线程在 run() 收尾时执行
+          （registration 归 listener 线程所有，外部线程不得直接注销）。
+        - 返回 True = 已确认退出（或本来就没有 listener）；
+          返回 False = 超时未退出 → 调用方必须 fail safe（不得启动 replacement）。
+        """
+        listener = self.listener
+        self.listener = None  # 立即解绑：health 判定不再引用旧 listener
+        if listener is None:
+            return True
+        try:
+            exited = listener.stop(timeout)
+        except Exception:
+            exited = False
+        if not exited:
+            _log(
+                "AAF Bridge: 旧热键监听线程未能在限时内退出"
+                f"（{timeout:.0f}s），fail safe：不启动重复 listener，"
+                "保持 DEGRADED 状态等待有界重试。"
+            )
+        return exited
+
     def _apply_hotkey(self, show_error: bool = True) -> None:
+        """应用热键配置（启动 / 配置热加载 / 自动恢复）：stop-before-replace。
+
+        - 先通过 listener-owned stop 契约停掉旧 listener（线程内注销 + 有界
+          join），确认旧线程退出后才创建新 listener；主线程绝不直接
+          UnregisterHotKey（registration 归 listener 线程所有）。
+        - 旧 listener 未能在限时内退出 → fail safe：不创建 replacement、
+          写入 warning、状态保持 DEGRADED（可恢复性保留给有界重试）。
+        - _lifecycle_lock：同一时刻只有一个 lifecycle transition owner，
+          并发触发被合并，不会创建多个 listener。
+        """
         parsed = cfg_mod.parse_hotkey(self.cfg.get("hotkey", "ctrl+alt+a"))
         if parsed is None:
             if show_error:
                 ui.show_error("AAF Bridge", f"热键配置无效: {self.cfg.get('hotkey')!r}（示例: ctrl+alt+a）")
             return
         mods, vk = parsed
-        # 先注销旧热键，避免热加载后旧热键残留（改回原热键时冲突）
-        if self.listener is not None:
-            try:
-                unregister_hotkey(self.hotkey_id)
-            except Exception:
-                pass
-            self.listener = None  # 旧 daemon 线程进入 GetMessageW 等待，热键已注销不再触发
-        self.listener = HotkeyListener(mods, vk, self._on_hotkey, self.hotkey_id)
-        self.listener.start()
-        self.listener.wait_ready(3.0)
-        err = self.listener.error()
-        if err is not None:
-            if show_error:
-                ui.show_error(
-                    "AAF Bridge — 热键冲突",
-                    f"{err}\n请在 ~/.aaf-bridge/config.json 修改 hotkey 后等待配置热加载。",
-                )
+        if not self._lifecycle_lock.acquire(blocking=False):
+            _log("AAF Bridge: 热键生命周期转换已在进行，本次触发被合并（不创建重复 listener）。")
             return
-        # RW-012：成功应用（启动 / 热键变更 / 自动恢复）→ 恢复策略归零（允许重新自恢复）
-        self._recovery.reset()
+        try:
+            # 先停止旧 listener 并确认退出，才允许创建新 listener（stop-before-replace）
+            if not self._stop_listener():
+                return  # fail safe：旧 listener 未确认退出 → 不启动 replacement
+            self.listener = HotkeyListener(mods, vk, self._on_hotkey, self.hotkey_id)
+            self.listener.start()
+            self.listener.wait_ready(3.0)
+            err = self.listener.error()
+            if err is not None:
+                if show_error:
+                    ui.show_error(
+                        "AAF Bridge — 热键冲突",
+                        f"{err}\n请在 ~/.aaf-bridge/config.json 修改 hotkey 后等待配置热加载。",
+                    )
+                return
+            # RW-012：成功应用（启动 / 热键变更 / 自动恢复）→ 恢复策略归零（允许重新自恢复）
+            self._recovery.reset()
+        finally:
+            self._lifecycle_lock.release()
 
     def _current_health(self) -> tuple[str, str]:
         """健康判定 + 恢复状态说明（供 Tray / 状态窗口观察；失败必须可见）。"""
@@ -483,11 +526,9 @@ class Bridge:
         - 单实例 mutex 保证新旧不双开：旧实例退出后新实例取得所有权
         """
         if self.listener is not None:
-            try:
-                unregister_hotkey(self.hotkey_id)
-            except Exception:
-                pass
-            self.listener = None
+            # RW-012 FIX-001：请求 listener stop（thread-owned unregister + 有界 join），
+            # 主线程不直接 UnregisterHotKey；进程随后退出，kernel 释放残余 registration
+            self._stop_listener()
         argv = build_restart_argv()
         try:
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
@@ -522,6 +563,16 @@ class Bridge:
             self.root.quit()
         else:
             self._shutting_down = False
+
+    def shutdown(self) -> None:
+        """Intentional shutdown（Exit 确认 / Ctrl+C）：listener stop 契约收尾。
+
+        - 请求 listener stop → listener-owned unregister → 有界 join
+        - 不触发任何恢复（_shutting_down 已置位，恢复被策略拒绝，不复活）
+        - 幂等：可安全重复调用
+        """
+        self._shutting_down = True
+        self._stop_listener()
 
     # ---------- Phase E / TASK-005-C：Stop / Force 动作（req 3/4/5/7） ----------
 
@@ -798,6 +849,7 @@ def main() -> int:
             bridge.tray.stop()
         except Exception:
             pass
+    bridge.shutdown()  # RW-012 FIX-001：intentional shutdown → listener stop 契约收尾
     guard.release()
     return 0
 

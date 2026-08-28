@@ -25,6 +25,7 @@ import pytest
 import tkinter as tk
 
 from ai_agent_framework.runtime_state import RuntimeState
+from ai_agent_framework import runtime_health as rh_mod
 from bridge import main as bridge_main
 from bridge import status_window as sw
 from bridge import tray as tray_mod
@@ -831,3 +832,93 @@ def test_stage_strip_rendered_in_window(tk_root, tmp_path):
     assert "○" in w._cells["CODEX"].cget("text")
     assert "未开始" in w._cells["REPORT"].cget("text")
     w.close()
+
+
+# ---------------------------------------------------------------------------
+# TASK-007 / RW-020：Runtime Health 集成（只读观察；UI 无 terminal authority）
+# ---------------------------------------------------------------------------
+
+
+def test_collect_status_running_includes_health(tmp_path):
+    """RUNNING + 无 ownership 记录 + 新鲜活动 → health 有值但无警告（不误报）。"""
+    out = tmp_path / "AAF-HL-1"
+    out.mkdir()
+    activity = (datetime.now() - timedelta(minutes=1)).isoformat(timespec="seconds")
+    (out / "task.json").write_text(
+        dumps({
+            "task_id": "AAF-HL-1", "status": "RUNNING", "stage": "HERMES", "agent": "hermes",
+            "updated_at": activity, "task_path": str(tmp_path / "TASK.md"),
+            "workspace": str(tmp_path), "report_path": None,
+            "started_at": activity, "last_activity_at": activity, "phases": {},
+        }),
+        encoding="utf-8",
+    )
+    snap = collect_status(
+        {"hotkey": "ctrl+alt+a", "current_project": "P", "current_workspace": "W"},
+        ("OK", "正常运行"),
+        _launcher_with_last(out, "AAF-HL-1", result="RUNNING"),
+    )
+    assert snap.health in (rh_mod.HEALTH_UNKNOWN,)
+    assert snap.health_warning == ""
+    assert snap.health_diagnostics  # 有诊断行（查看诊断可用）
+
+
+def test_collect_status_dead_runner_warning_banner(tmp_path):
+    """RUNNING + runner 已死 + stale + 期望产物缺失 → 中文「任务可能已异常中断」警告。"""
+    out = tmp_path / "AAF-HL-2"
+    out.mkdir()
+    stale = (datetime.now() - timedelta(minutes=25)).isoformat(timespec="seconds")
+    (out / "task.json").write_text(
+        dumps({
+            "task_id": "AAF-HL-2", "status": "RUNNING", "stage": "WORKBUDDY", "agent": "workbuddy",
+            "updated_at": stale, "task_path": str(tmp_path / "TASK.md"),
+            "workspace": str(tmp_path), "report_path": None,
+            "started_at": stale, "last_activity_at": stale,
+            "phases": {"WORKBUDDY": {"state": "RUNNING"}},
+        }),
+        encoding="utf-8",
+    )
+    (out / "control.json").write_text(
+        dumps({
+            "schema_version": 1, "task_id": "AAF-HL-2", "workspace": str(tmp_path),
+            "launch_id": "hl2", "launcher_pid": 1, "launcher_instance_id": "i",
+            "started_at": stale, "expected_runner_entry": "run.py",
+            "expected_command_line": ["py", "run.py", "T"],
+            "runner_pid": 987654321, "runner_creation_time": "2026-08-28T10:00:00.000",
+            "cancel_requested": False, "force_terminate_requested": False, "superseded_by": None,
+        }),
+        encoding="utf-8",
+    )
+    (out / "workbuddy_prompt.md").write_text("p", encoding="utf-8")  # agent 已调用未产出
+    snap = collect_status(
+        {"hotkey": "ctrl+alt+a", "current_project": "P", "current_workspace": "W"},
+        ("OK", "正常运行"),
+        _launcher_with_last(out, "AAF-HL-2", result="RUNNING"),
+    )
+    assert "任务可能已异常中断" in snap.health_warning
+    assert snap.health == "SUSPICIOUS_DEAD"
+    assert snap.health_diagnostics
+
+
+def test_collect_status_terminal_no_health_warning(tmp_path):
+    """SUCCESS 终态 → health NOT_APPLICABLE，无 liveness 警告（canonical wins）。"""
+    out = tmp_path / "AAF-HL-3"
+    out.mkdir()
+    (out / "task.json").write_text(
+        dumps({
+            "task_id": "AAF-HL-3", "status": "SUCCESS", "stage": "COMPLETED", "agent": None,
+            "task_path": str(tmp_path / "TASK.md"), "workspace": str(tmp_path),
+            "report_path": str(out / "REPORT.md"),
+            "started_at": (datetime.now() - timedelta(minutes=10)).isoformat(timespec="seconds"),
+            "last_activity_at": (datetime.now() - timedelta(minutes=1)).isoformat(timespec="seconds"),
+            "phases": {},
+        }),
+        encoding="utf-8",
+    )
+    snap = collect_status(
+        {"hotkey": "ctrl+alt+a", "current_project": "P", "current_workspace": "W"},
+        ("OK", "正常运行"),
+        _launcher_with_last(out, "AAF-HL-3", result="FINISHED"),
+    )
+    assert snap.health == "NOT_APPLICABLE"
+    assert snap.health_warning == ""

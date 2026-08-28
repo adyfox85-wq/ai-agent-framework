@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -29,14 +30,21 @@ def verdict_blocked(agent: str, body: str) -> bool:
 
     只认全大写结论标记（FAILED / FAIL / REQUEST_CHANGE）；小写/首字母大写的描述性动词
     （如 "Failed to read file"）属于工具级错误描述，不构成任务失败。
+
+    RW-022：FAILED 分支同样允许通过结论逃逸——WorkBuddy PASS_WITH_WARNING / Codex APPROVE
+    正文中的历史 FAILED 引用（如"原 FAILED 项已解决"、"FAILED 场景验证通过"）不是当前阻断；
+    Hermes（无 verdict 语义）与无通过结论的正文仍按 FAILED 阻断（fail-safe）。
     """
     body = body.strip()
     if not body:
         return True
     if body.startswith('FRAMEWORK_ERROR'):
         return True
-    # 显式失败结论（全大写）：任何 agent 都阻断
+    # 显式失败结论（全大写）：任何 agent 都阻断；reviewer agent 已有明确通过结论时，
+    # 正文中的历史/工具级 FAILED 引用不视为当前阻断（RW-022）
     if re.search(r'\bFAILED\b', body):
+        if agent in ('workbuddy', 'codex') and verdict_ok(agent, body):
+            return False
         return True
     # FAIL / REQUEST_CHANGE：有通过结论（PASS/PASS_WITH_WARNING/APPROVE）时，
     # 正文中的历史引用（如"原 REQUEST_CHANGE 已关闭"）不视为阻断
@@ -47,11 +55,54 @@ def verdict_blocked(agent: str, body: str) -> bool:
     return False
 
 
-def _extract_unresolved(results: dict[str, str]) -> str:
+def read_structured_blocking(agent: str, output_dir) -> tuple[bool, bool | None, str]:
+    """读取 ``<agent>_result.json`` 的 blocking 信号（RW-022 structured-first）。
+
+    返回 (available, blocking, status)：
+    - available=False：JSON 缺失 / 损坏 / 无 blocking_rework 字段 → 调用方走 narrative fallback
+    - available=True：blocking = blocking_rework 字段（bool）；status =
+      structured_summary_status（COMPLETE / CONSISTENCY_VIOLATION / MALFORMED /
+      NOT_PROVIDED …）
+    """
+    if output_dir is None:
+        return False, None, ''
+    path = Path(output_dir) / f'{agent}_result.json'
+    if not path.exists():
+        return False, None, ''
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return False, None, ''
+    if not isinstance(data, dict) or not isinstance(data.get('blocking_rework'), bool):
+        return False, None, ''
+    return True, bool(data['blocking_rework']), str(data.get('structured_summary_status') or '')
+
+
+def agent_result_blocked(agent: str, body: str, output_dir=None) -> bool:
+    """聚合用阻断判定：structured result 优先，legacy narrative 为 fail-safe fallback（RW-022）。
+
+    - structured JSON 存在且 blocking_rework 合法：
+      * summary COMPLETE（经 schema validation + narrative 一致性 guard）→ 直接采用
+        blocking_rework（Agent 显式声明的事实；不再用 narrative 关键词猜测）
+      * 非 COMPLETE（MALFORMED / CONSISTENCY_VIOLATION / 其他）→ 结构化信号与
+        narrative 任一判定阻断即阻断（fail-safe：无法证明无阻断时不得 SUCCESS）
+    - 无 structured JSON（legacy 目录 / 未写入）→ 原 narrative keyword 判定（向后兼容；
+      空结果 / FRAMEWORK_ERROR / 明确 FAILED / FAIL / REQUEST_CHANGE 仍阻断——不 fail-open）
+    """
+    available, blocking, summary_status = read_structured_blocking(agent, output_dir)
+    if not available:
+        return verdict_blocked(agent, body)
+    if summary_status == 'COMPLETE':
+        return blocking
+    # 非 COMPLETE：fail-safe 交叉验证（任一信号阻断 → 阻断）
+    return blocking or verdict_blocked(agent, body)
+
+
+def _extract_unresolved(results: dict[str, str], output_dir=None) -> str:
     """只收集真正未解决的阻断项；正常执行摘要 / diff / PASS / PASS_WITH_WARNING / APPROVE / 非阻断 warning 不进入。"""
     issues = []
     for name, body in results.items():
-        if verdict_blocked(name, body):
+        if agent_result_blocked(name, body, output_dir):
             head = ' | '.join(body.strip().splitlines()[:3])[:600]
             issues.append(f'- {name}: {head}')
     return '\n'.join(issues) if issues else 'None identified.'
@@ -131,7 +182,9 @@ def build_report(
         if integrity_notes:
             unresolved = '\n'.join([unresolved, *[f'- {n}' for n in integrity_notes]])
     else:
-        unresolved = _extract_unresolved(results)
+        # RW-022：unresolved 同样 structured-first（<agent>_result.json blocking_rework），
+        # legacy narrative 为 fail-safe fallback
+        unresolved = _extract_unresolved(results, output_dir)
         if integrity_notes:
             unresolved = '\n'.join([unresolved, *[f'- {n}' for n in integrity_notes]])
 

@@ -25,7 +25,7 @@ from .context_packet import (
 from . import proc_identity
 from . import project_boundary
 from . import task_lifecycle
-from .report import build_report, verdict_blocked
+from .report import agent_result_blocked, build_report, verdict_blocked
 from .reconcile import reconcile_terminal_artifacts
 from .router import ALLOWED_ROUTE_AGENTS, Route, RouteStatus, decide_route, parse_explicit_route
 from .task_lifecycle import (
@@ -136,10 +136,15 @@ def _result_is_valid(body: str) -> bool:
     return bool(body) and not body.startswith('FRAMEWORK_ERROR')
 
 
-def _aggregate_status(agents: list[str], results: dict[str, str]) -> str:
-    """所有必需节点通过（无缺失 / FRAMEWORK_ERROR / FAILED / FAIL / REQUEST_CHANGE）→ SUCCESS，否则 WAITING。"""
+def _aggregate_status(agents: list[str], results: dict[str, str], output_dir=None) -> str:
+    """所有必需节点通过（无缺失 / FRAMEWORK_ERROR / FAILED / FAIL / REQUEST_CHANGE）→ SUCCESS，否则 WAITING。
+
+    RW-022：优先使用 structured result（``<agent>_result.json`` 的 blocking_rework——
+    Agent 显式声明的事实），structured 缺失 / 损坏时 fallback 到 legacy narrative keyword
+    判定（``agent_result_blocked``；fail-safe——无法证明无阻断时不得 SUCCESS）。
+    """
     for agent in agents:
-        if verdict_blocked(agent, results.get(agent, '')):
+        if agent_result_blocked(agent, results.get(agent, ''), output_dir):
             return 'WAITING'
     return 'SUCCESS'
 
@@ -487,7 +492,7 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
             # 检查点：Codex 完成后 / Report finalization 前
             if _check_cancel(output_dir, task_id, task_file, workspace):
                 return output_dir / 'REPORT.md'
-            status = _aggregate_status(route.agents, results)
+            status = _aggregate_status(route.agents, results, output_dir)
             final_status = 'SUCCESS' if status == 'SUCCESS' else 'WAITING'
 
         # 执行链完整性保护：必需 Executor / Validator / Reviewer 无有效结果 → REPORT 明确标记

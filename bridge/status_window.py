@@ -47,12 +47,15 @@ import tkinter as tk
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from tkinter import messagebox
 
 from . import config as cfg_mod
+from . import launch_registry as reg_mod
 from . import task_io
 from . import progress as progress_mod
 from . import stuck as stuck_mod
 from ai_agent_framework import cancel as cancel_mod
+from ai_agent_framework import runtime_health as runtime_health_mod
 from ai_agent_framework import runtime_state as runtime_state_mod
 from ai_agent_framework.task_lifecycle import TERMINAL_STATUSES
 
@@ -614,6 +617,14 @@ class StatusSnapshot:
     empty_hint: str | None = None
     # Phase E / TASK-005-C：Stop / Cancel UX（UI/control 态；None = 不提供 Stop）
     cancel_ui: CancelUi | None = None
+    # TASK-007 / RW-020：Runtime Health（只读观察；lifecycle 与 health 严格分离）
+    # health = 技术判定码；health_warning = 面向用户中文警告；health_detail = 警告详情；
+    # health_diagnostics = 诊断行（[查看诊断] 展示）；resume_hint = 既有恢复路径提示
+    health: str = ""
+    health_warning: str = ""
+    health_detail: str = ""
+    health_diagnostics: list = field(default_factory=list)
+    resume_hint: str = ""
 
 
 def _empty_stage_strip() -> dict:
@@ -719,6 +730,24 @@ def collect_status(cfg: dict, health: tuple, launcher) -> StatusSnapshot:
     progress_text = progress_mod.progress_text(est.percent, status=status, has_info=runtime is not None)
     share_text = progress_mod.stage_share_text(strip)
 
+    # --- TASK-007 / RW-020：Runtime Health（只读观察；lifecycle 与 health 严格分离） ---
+    # 只对 canonical RUNNING 做 liveness 观察；只产生 health + warning + diagnostics，
+    # 绝不写任何 canonical terminal（Terminal authority 保持 Core / Lifecycle）。
+    health = runtime_health_mod.RuntimeHealth(
+        runtime_health_mod.HEALTH_NOT_APPLICABLE, signals={},
+    )
+    if status == 'RUNNING' and ref.output_dir is not None:
+        try:
+            health = runtime_health_mod.collect_health(
+                ref.output_dir,
+                registry_dir=reg_mod.registry_root(),
+            )
+        except Exception:  # noqa: BLE001 —— 只读健康检查异常不得破坏状态窗口
+            health = runtime_health_mod.RuntimeHealth(
+                runtime_health_mod.HEALTH_UNKNOWN, signals={},
+                diagnostics=['runtime health 读取失败（只读检查异常，不影响任务执行）'],
+            )
+
     # --- Phase E / TASK-005-C：Stop / Cancel UX（只读 artifacts + launcher backend） ---
     cancel_ui = collect_cancel_ui(
         launcher, ref.task_id or "", ref.output_dir, status,
@@ -770,6 +799,11 @@ def collect_status(cfg: dict, health: tuple, launcher) -> StatusSnapshot:
         report_path=report_path,
         empty_hint=None,
         cancel_ui=cancel_ui,
+        health=health.health,
+        health_warning=health.warning,
+        health_detail=health.warning_detail,
+        health_diagnostics=list(health.diagnostics),
+        resume_hint=health.resume_hint,
     )
 
 
@@ -818,6 +852,9 @@ class StatusWindow(tk.Toplevel):
         self._task_dir = None
         self._cancel_task_id = None
         self._force_shown = False
+        # TASK-007 / RW-020：health 诊断缓存（[查看诊断] 展示；只读）
+        self._health_diagnostics: list = []
+        self._health_resume_hint = ""
 
         self.title("AAF 状态窗口 — AI Agent Framework")
         self.resizable(False, False)
@@ -906,6 +943,20 @@ class StatusWindow(tk.Toplevel):
         )
         self._lbl_stuck.grid_remove()
 
+        # TASK-007 / RW-020：Runtime Health 警告横幅（只读观察；lifecycle 与 health
+        # 严格分离——绝不写 canonical terminal；默认隐藏）
+        self._lbl_health = tk.Label(
+            self._task_frame,
+            text="",
+            font=("Segoe UI", 9, "bold"),
+            fg="#8b0000",
+            bg="#ffe9e9",
+            anchor="w",
+            justify="left",
+            wraplength=380,
+        )
+        self._lbl_health.grid_remove()
+
         tk.Frame(self._task_frame, height=1, bg="#cccccc").grid(
             row=12, column=0, columnspan=4, sticky="ew", padx=4, pady=4
         )
@@ -947,6 +998,10 @@ class StatusWindow(tk.Toplevel):
         self.btn_log.pack(side="left", padx=5)
         self.btn_task_dir = tk.Button(btns, text="查看任务目录", width=12, command=self._on_open_task_dir)
         self.btn_task_dir.pack(side="left", padx=5)
+        # TASK-007 / RW-020：[查看诊断]——展示 runtime health 诊断 + 既有恢复路径（只读；
+        # 不写 canonical；Diagnostics / Resume UX，Req 5/6）
+        self.btn_diag = tk.Button(btns, text="查看诊断", width=10, command=self._on_open_diagnostics)
+        self.btn_diag.pack(side="left", padx=5)
         # Phase E / TASK-005-C：[停止当前任务] 只发 soft cancel 请求；[强制停止] 只在
         # backend 明确 force eligible 时显示（req 6），点击后经二次中文确认才触发
         self.btn_stop = tk.Button(btns, text="停止当前任务", width=12, command=self._on_stop)
@@ -1070,6 +1125,21 @@ class StatusWindow(tk.Toplevel):
         else:
             self._lbl_stuck.grid_remove()
 
+        # TASK-007 / RW-020：Runtime Health 警告横幅（只观察；不改 canonical state；
+        # 「任务可能已异常中断」中文明确显示 + 安全入口见 [查看诊断]）
+        self._health_diagnostics = list(getattr(snap, "health_diagnostics", []) or [])
+        self._health_resume_hint = getattr(snap, "resume_hint", "") or ""
+        self.btn_diag.config(
+            state="normal" if self._health_diagnostics else "disabled"
+        )
+        hw = getattr(snap, "health_warning", "") or ""
+        hd = getattr(snap, "health_detail", "") or ""
+        if hw:
+            self._lbl_health.config(text=f"⚠ {hw}" + (f"（{hd}）" if hd else ""))
+            self._lbl_health.grid()
+        else:
+            self._lbl_health.grid_remove()
+
         for stage, state in snap.stage_strip.items():
             cell = self._cells.get(stage)
             if cell is None:
@@ -1138,6 +1208,24 @@ class StatusWindow(tk.Toplevel):
     def _on_open_task_dir(self) -> None:
         if getattr(self, "_task_dir", None):
             open_directory(self._task_dir)
+
+    def _on_open_diagnostics(self) -> None:
+        """[查看诊断]：展示 Runtime Health 诊断 + 既有恢复路径（只读；不写 canonical）。
+
+        内容来自最近一次 collect_status 的 health_diagnostics / resume_hint——
+        窗口不重新执行诊断、不触碰任何 canonical artifact。
+        """
+        lines = ["【任务运行诊断】（只读观察）", "=" * 40]
+        for d in getattr(self, "_health_diagnostics", []) or []:
+            lines.append(f"- {d}")
+        hint = getattr(self, "_health_resume_hint", "") or ""
+        if hint:
+            lines.append("")
+            lines.append(hint)
+        try:
+            messagebox.showinfo("任务诊断", "\n".join(lines), parent=self)
+        except tk.TclError:
+            pass
 
     def _on_stop(self) -> None:
         """[停止当前任务]：只发送 soft cancel 请求（req 3；UI 不写 terminal）。

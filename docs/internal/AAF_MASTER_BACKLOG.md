@@ -413,7 +413,7 @@ P3
 | ID | RW-020 |
 | Title | Dead Runner / Orphaned RUNNING State Detection |
 | Category | Runtime Reliability / Runtime Observability |
-| Status | OPEN |
+| Status | **SOLVED**（Runtime Integrity batch / AAF-v0.4-TASK-007 交付，2026-08-28：`ai_agent_framework/runtime_health.py` 只读 liveness 判定——Lifecycle State 与 Runtime Health 严格分离；组合信号死判（runner 进程缺失/身份不可证明 + last_activity stale + 期望阶段产物缺失 → SUSPICIOUS_DEAD「任务可能已异常中断」）；单一 PID / 单一时间阈值不判死；PID reuse fail-safe；canonical terminal wins；recovery 流程保护；Status Window 中文警告横幅 + [查看诊断]（含既有 resume-from 恢复路径提示）；30 项单元回归 + 6 项真实 runner 运行时练习 + 3 项 UI 集成；CLI `python -m ai_agent_framework.runtime_health --output <dir>`；真实任务实况验证 HEALTHY（TASK-007 自身 runner，creation time + 命令行 identity 通过）。UI 无 terminal authority——只产生 health/warning/diagnostics，Terminal authority 保持 Core / Lifecycle） |
 | Priority | P1 |
 | Evidence / Origin | AAF-v0.4-TASK-001-FIX-003 real incident, 2026-08-27。任务进入 WORKBUDDY 阶段后（Hermes 已完成）：task.status=RUNNING、stage=WORKBUDDY、agent=workbuddy、last_activity_at 停止更新、workbuddy_result.md 从未生成、WorkBuddy 进程已不存在、Framework runner 进程已不存在、Bridge 进程已不存在、REPORT.md 未生成；task.json 长时间保持 RUNNING / WORKBUDDY，用户无任何提示只能继续等待。<br><br>后续通过 Framework resume 恢复：复用 Hermes result → WorkBuddy PASS → Codex APPROVE → REPORT → SUCCESS / COMPLETED。恢复机制有效，但 **Dead Runner Detection 缺失**。<br><br>2026-08-27 再次真实复现（AAF-v0.4-TASK-004 Phase D）：实现与 E2E 全部完成后（.aaf/AAF-v0.4-TASK-004/REPORT.md 已生成，mtime 2026-08-27 20:03:04），canonical task.json 仍残留 RUNNING / HERMES（started_at = last_activity_at = updated_at = 2026-08-27T19:07:15，不再推进）；2026-08-27 20:18:33 process check（AAF_TASK004_PROCESS_CHECK.txt）：无任何相关 TASK-004 runner 进程、Bridge 进程亦不存在；canonical RUNNING 未被自动对账 / 回收（该 run 的 runner 进程在 E2E 前由 cleanup.py 清理，task.json 只读保留未改）。<br><br>Phase D UI suspected-stuck（bridge/stuck.py，仅观察提示）**不解决 RW-020**：它只提示「任务可能已停滞」，不做 ownership / process liveness 检测、不做 canonical 对账；RW-020 完整协议（liveness 跟踪、staleness + artifact expectation、Resume / Diagnostics / Resolve UX）仍未实现。 |
 | Problem | RUNNING 目前只表达 lifecycle state，不能证明 execution owner / runner / 当前 agent 仍存活。 |
@@ -458,7 +458,7 @@ P3
 | ID | RW-022 |
 | Title | Framework Final Status Aggregation: PASS_WITH_WARNING + APPROVE + Blocking NONE → WAITING |
 | Category | Framework lifecycle / Report aggregation / Planner handoff semantics |
-| Status | OPEN |
+| Status | **SOLVED**（Runtime Integrity batch / AAF-v0.4-TASK-007 交付，2026-08-28：`_aggregate_status` / `build_report` 聚合改为 structured-first——`<agent>_result.json` 的 `blocking_rework`（Agent 显式声明）优先于 narrative 关键词猜测；narrative fallback 保留且 fail-safe（空结果 / FRAMEWORK_ERROR / FAILED / FAIL / REQUEST_CHANGE 仍阻断，不 fail-open）；`verdict_blocked` FAILED 分支增加 reviewer 通过结论逃逸（PASS_WITH_WARNING / APPROVE 正文的历史 FAILED 引用不再误阻断）；20 项聚合回归（A–G 全场景）+ 真实 runner 运行时验证：PASS_WITH_WARNING + APPROVE + blocking NONE → REPORT Current Status = SUCCESS 且 warning 内容保留；真阻断（REQUEST_CHANGE / 缺失 / FRAMEWORK_ERROR）→ WAITING 不变；历史 REPORT 不重写——只修未来聚合行为） |
 | Priority | P1 |
 | Evidence / Origin | AAF-v0.4-TASK-003 real execution, 2026-08-27。最终 REPORT 顶部 Current Status = WAITING，但：Hermes implementation SUCCESS、Tests 284 passed、WorkBuddy PASS_WITH_WARNING（blocking rework: NONE）、Codex APPROVE（Blocking Issues: NONE）、Scope Leakage: NONE、Remote Sync: SYNCED、Codex Recommended Phase C Status = COMPLETE。<br><br>同类顶部 WAITING 先前已出现于 AAF-v0.4-TASK-002（Phase B）REPORT（当时 Codex closure review 在 REPORT 生成时点尚未完成，属可解释实例）；Phase C 为更干净的反例：全部 Agent 均已完成且无 blocking，顶部仍聚合为 WAITING。 |
 | Observed Behavior | - Hermes implementation success（284 passed）<br>- WorkBuddy PASS_WITH_WARNING（无 blocking rework）<br>- Codex APPROVE / Blocking Issues NONE<br>- Scope Leakage NONE / Remote Sync SYNCED<br>- 但最终 REPORT 顶部 Current Status = WAITING |
@@ -819,9 +819,9 @@ Obsidian working knowledge → stable conclusion → Framework task → 提升�
 | RW-017 | .aaf Runtime Artifact Git Ignore Consistency | OBSERVATION | P3 |
 | RW-018 | GitHub Push / Proxy Environment Reliability | OBSERVATION | P3 |
 | RW-019 | Agent Review Execution Evidence Consistency | OBSERVATION | P2 |
-| RW-020 | Dead Runner / Orphaned RUNNING State Detection | OPEN | P1 |
+| RW-020 | Dead Runner / Orphaned RUNNING State Detection | SOLVED | P1 |
 | RW-021 | Bridge Restart / Exit Completion Notification Continuity | OPEN | P2 |
-| RW-022 | Framework Final Status Aggregation: PASS_WITH_WARNING + APPROVE + Blocking NONE → WAITING | OPEN | P1 |
+| RW-022 | Framework Final Status Aggregation: PASS_WITH_WARNING + APPROVE + Blocking NONE → WAITING | SOLVED | P1 |
 | RW-023 | E2E Validation Fixed Task ID Reuse Causes Duplicate Trigger / GUI Loop | OPEN | P2 |
 | RW-024 | Completion Dialog Copy Report UX（复制报告二次弹窗 + Z 序问题） | OPEN | P2 |
 | RW-025 | Session Continuity Clock Flake（test_first_rollover_generates_files 秒级时钟边界） | OPEN | P3 |

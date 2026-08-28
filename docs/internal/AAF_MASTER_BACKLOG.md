@@ -192,14 +192,14 @@ P3
 | ID | RW-008 |
 | Title | TASK / Bridge parser compatibility |
 | Category | Real-world usage / Parser |
-| Status | OPEN |
+| Status | PARTIAL |
 | Priority | P1 |
-| Evidence / Origin | 真实问题：最初 TASK 中以下单行字段出现换行格式时 Bridge 校验失败：Task ID / Task Name / Workspace。另：Planner 富文本 / Markdown 转义曾造成 marker 和文本格式风险 |
-| Current Implementation | README 已提供规避方式（推荐单行字段、纯文本代码块输出 TASK）；Bridge parser 对单行格式工作正常 |
-| Remaining Gap | 未来希望同时支持：<br>- `Task ID: VALUE`（单行）<br>- 字段名后一行再给 VALUE<br>- Markdown heading 形式<br>parser 代码层仍有兼容性缺口 |
-| Decision | 当前不修改 parser（登记待办）；使用 README 规避方式 |
-| Target | parser 兼容多种合理排版，且不受 Markdown 转义影响 |
-| Do Not Forget | README 规避 ≠ 代码层已兼容；缺口仍在 |
+| Evidence / Origin | 真实问题：最初 TASK 中以下单行字段出现换行格式时 Bridge 校验失败：Task ID / Task Name / Workspace。另：Planner 富文本 / Markdown 转义曾造成 marker 和文本格式风险。2026-08-19 生产复现：Planner 生成的标准 Compact TASK（Acceptance 为 20 项编号列表，后续还有 Expected Final Result / Route / Route Hint）被 Bridge 判「缺少必填字段: Acceptance」，但 Acceptance 实际存在 |
+| Current Implementation | 2026-08-19 修复（RW-008 intake/parser blocker）：<br>- `bridge/task_io.py::parse_task` 与 `ai_agent_framework/task_validation.py::parse_task_fields` 解析前统一归一化行尾（CRLF → LF），修复 `\r` 卡住行锚定正则导致字段标题行（含 Acceptance）匹配失败的问题；覆盖全部单行 + 多行字段<br>- 两层校验（Bridge UX guard + Formal validator）新增 Acceptance 唯一性 fail-closed：重复声明 → 拒绝，不得 first/last wins（与 Route 契约一致）<br>- 新增 `tests/test_rw008_intake_crlf.py`（11 tests）：Compact TASK / CRLF 混合 / 全 CRLF / BOM / whitespace / 20 项编号列表 / 后续 section / EOF 边界 / missing / empty / duplicate |
+| Remaining Gap | 仍存在的明确 contract gap：<br>- 全角空格（U+3000）行首缩进字段标题 → 解析失败（已实测复现，未修）<br>- Planner 富文本 / Markdown 转义风险（原 Evidence，未处理）<br>- `Acceptance Criteria` 旧别名仅在 task_validation 支持，`bridge/task_io` 层未支持 |
+| Decision | Acceptance CRLF/multiline blocker 已修复并回归；上述剩余 gap 登记待办，不假关 |
+| Target | parser 兼容多种合理排版（含全角空格、富文本转义），且不受 Markdown 转义影响 |
+| Do Not Forget | README 规避 ≠ 代码层已兼容；CRLF 已兼容，全角空格 / 富文本转义 / 旧别名缺口仍在 |
 
 ---
 
@@ -807,7 +807,7 @@ Obsidian working knowledge → stable conclusion → Framework task → 提升�
 | RW-005 | Framework 执行速度与阶段耗时 | OBSERVATION | P2 |
 | RW-006 | Runtime 状态可视化 | SOLVED | P1 |
 | RW-007 | Agent executable discovery reliability | PARTIAL | P2 |
-| RW-008 | TASK / Bridge parser compatibility | OPEN | P1 |
+| RW-008 | TASK / Bridge parser compatibility | PARTIAL | P1 |
 | RW-009 | ChatGPT Project / Conversation disaster recovery | PARTIAL | P0 |
 | RW-010 | Desktop App / Windows Program Packaging | OPEN | P2 |
 | RW-011 | Router local constraint classification incident | SOLVED | P1 |

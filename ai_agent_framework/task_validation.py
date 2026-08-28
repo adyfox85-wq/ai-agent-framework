@@ -145,7 +145,14 @@ def _read_multiline_field(body: str, field_key: str) -> str:
 
 
 def parse_task_fields(task_text: str) -> dict[str, str]:
-    """提取 TASK 字段（含可选字段；找不到 → 空字符串）。"""
+    """提取 TASK 字段（含可选字段；找不到 → 空字符串）。
+
+    RW-008：解析前统一归一化行尾（CRLF → LF）。行锚定正则依赖
+    MULTILINE ``$``（断言在 ``\\n`` 前），CRLF 下 ``\\r`` 会卡住
+    ``[ \\t]*$``，导致 ``Acceptance:`` 等标题行匹配失败。归一化只影响
+    解析结果，不改原文语义。
+    """
+    task_text = task_text.replace("\r\n", "\n").replace("\r", "\n")
     keys = tuple(dict.fromkeys(list(REQUIRED_FIELDS) + list(OPTIONAL_FIELDS)))
     fields = {key: "" for key in keys}
     for key in keys:
@@ -206,6 +213,10 @@ def validate_task_text(task_text: str) -> ValidationResult:
     missing = [key for key in REQUIRED_FIELDS if not fields[key]]
     if missing:
         errors.append("缺失必填字段: " + ", ".join(missing))
+
+    # RW-008：Acceptance 唯一性 fail-closed（与 Route 契约一致；不得 first/last wins）
+    if count_field_occurrences(task_text, "Acceptance") > 1:
+        errors.append("Acceptance 字段重复声明（fail-closed，不得 first/last wins）")
 
     errors.extend(_task_id_errors(fields["Task ID"]))
     # Workspace：CLI --workspace 已强制；TASK 文件内存在时才校验

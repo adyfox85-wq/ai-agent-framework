@@ -107,7 +107,15 @@ def _read_multiline_field(body: str, field_key: str) -> str:
 
 
 def parse_task(body: str) -> dict[str, str]:
-    """解析 TASK 正文，返回字段 dict（缺失字段为 ''）。"""
+    """解析 TASK 正文，返回字段 dict（缺失字段为 ''）。
+
+    RW-008：解析前统一归一化行尾（CRLF → LF）。行锚定正则依赖
+    MULTILINE ``$``（断言在 ``\\n`` 前），CRLF 下 ``\\r`` 会卡住
+    ``[ \\t]*$``，导致 ``Acceptance:`` 等标题行匹配失败（生产复现：
+    「缺少必填字段: Acceptance」）。归一化只影响解析，不改原文语义；
+    落盘仍保留 Planner 原始正文。
+    """
+    body = body.replace("\r\n", "\n").replace("\r", "\n")
     result: dict[str, str] = {}
     for key, name in SINGLE_LINE_FIELDS.items():
         result[name] = _read_single_line_field(body, key)
@@ -128,6 +136,13 @@ def validate_task_text(
         return False, [str(e)]
 
     fields = parse_task(body)
+
+    # RW-008：Acceptance 唯一性 fail-closed（与 Route 契约一致；不得 first/last wins）
+    acc_occurrences = len(
+        re.findall(r"(?im)^[ \t]*(?:#+[ \t]*)?Acceptance[ \t]*(?:[:：]|$)", body or "")
+    )
+    if acc_occurrences > 1:
+        errors.append("Acceptance 字段重复声明（fail-closed，不得 first/last wins）")
 
     for name, label in [
         ("task_id", "Task ID"),

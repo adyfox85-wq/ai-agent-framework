@@ -769,6 +769,10 @@ GitHub / Obsidian 知识分工（当前工作规则）：
 Promotion 模型：
 Obsidian working knowledge → stable conclusion → Framework task → 提升进 repo / GitHub 正式资产
 
+未来泛化（planned policy，未激活，AAF-MAINT-HANDOFF-001）：
+若本 Pilot 成功，同类 conversation-handoff 模式可推广为其他用户项目的默认做法；
+当前不迁移 / 不修改其他项目。
+
 ---
 
 # 6. Update Rules（更新规则）

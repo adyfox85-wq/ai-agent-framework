@@ -193,7 +193,8 @@ def test_f_approve_blocking_false_non_blocking(tmp_path, monkeypatch):
 
 TECHNICAL_FAILED_NARRATIVE = (
     "implemented and verified. The previously FAILED test is now covered; "
-    "the failure handling path works as expected. Overall result: SUCCESS."
+    "the failure handling path works as expected.\n"
+    "Overall result: SUCCESS."
 )
 
 
@@ -335,14 +336,14 @@ def test_derive_verdict_failed_normalization():
     assert _derive_verdict(
         "workbuddy", "**Result: PASS_WITH_WARNING**\n历史 FAILED 项已解决") == "PASS_WITH_WARNING"
     assert _derive_verdict(
-        "workbuddy", "previously FAILED test now passes. Overall result: SUCCESS.") == "PASS"
+        "workbuddy", "previously FAILED test now passes.\nOverall result: SUCCESS.") == "PASS"
     # codex：REQUEST_CHANGE 不派生成 APPROVE；SUCCESS 归一化为 APPROVE
     assert _derive_verdict("codex", "REQUEST_CHANGE: fix router") == "REQUEST_CHANGE"
     # FIX-005：正文 token 无权威——行内无标签的 "APPROVE" 不是 verdict 行；
     # 显式整体结论行（Final verdict: APPROVE）才是 authority
     assert _derive_verdict("codex", "previous REQUEST_CHANGE resolved; APPROVE") is None
     assert _derive_verdict(
-        "codex", "previous REQUEST_CHANGE resolved; Final verdict: APPROVE") == "APPROVE"
+        "codex", "previous REQUEST_CHANGE resolved.\nFinal verdict: APPROVE") == "APPROVE"
     assert _derive_verdict("codex", "Overall result: SUCCESS.") == "APPROVE"
     # 无结论词 / FRAMEWORK_ERROR 开头 → None
     assert _derive_verdict("workbuddy", "implemented ok") is None

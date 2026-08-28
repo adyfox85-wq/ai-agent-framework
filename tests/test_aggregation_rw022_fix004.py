@@ -472,7 +472,8 @@ def test_failed_recognition_preserved():
     assert verdict_blocked("workbuddy", "Result: FAILED - implementation incomplete.") is True
     # technical FAILED false-positive protection：明确 overall SUCCESS → 不误判
     technical = ("implemented and verified. The previously FAILED test is now covered; "
-                 "the failure handling path works as expected. Overall result: SUCCESS.")
+                 "the failure handling path works as expected.\n"
+                 "Overall result: SUCCESS.")
     assert verdict_blocked("workbuddy", technical) is False
     assert check_narrative_json_consistency(
         "workbuddy", technical,

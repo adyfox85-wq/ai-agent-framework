@@ -83,11 +83,12 @@ def verdict_blocked(agent: str, body: str) -> bool:
     return _explicit_failure_marker(body)
 
 
-# 显式失败判定形态已统一到 canonical verdict semantic（FIX-005）：
-# verdict_parser 的行首标签 / 行内整体标签 / 裸 token 行覆盖原
+# 显式失败判定形态已统一到 canonical verdict semantic（FIX-005 / FIX-006）：
+# verdict_parser 的行首标签 / 整行整体标签 / 裸 token 行覆盖原
 # _RESULT_VERDICT_LINE_RE（Result/Verdict/Status/结论/判定 + 失败词）与
 # _PREFIX_FAIL_RE（行首 FAILED:/FAIL:/REQUEST_CHANGE:）——单一 parser 复用，
-# 避免多份正则漂移。
+# 避免多份正则漂移（FIX-006：verdict authority 严格 line-level，正文句子中
+# 的 verdict-like label / code span / blockquote 均无权威）。
 
 _STRUCTURED_BEGIN_MARKER = 'AAF_STRUCTURED_RESULT_BEGIN'
 _STRUCTURED_END_MARKER = 'AAF_STRUCTURED_RESULT_END'

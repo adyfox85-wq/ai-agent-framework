@@ -103,9 +103,9 @@ def _run_chain(tmp_path, monkeypatch, agents: dict) -> Path:
     ("# Result: **SUCCESS**", "codex", "APPROVE", False, "SUCCESS"),
     ("## VALIDATOR REPORT\n**Result: PASS_WITH_WARNING**\nW1: x",
      "workbuddy", "PASS_WITH_WARNING", False, "PASS_WITH_WARNING"),
-    # 行内整体标签
-    ("implemented and verified. Overall result: SUCCESS.", "workbuddy", "PASS", False, "SUCCESS"),
-    ("review complete. Final verdict: APPROVE", "codex", "APPROVE", False, "APPROVE"),
+    # 整行整体标签（label 位于逻辑行首——FIX-006：句中形态无 authority）
+    ("implemented and verified.\nOverall result: SUCCESS.", "workbuddy", "PASS", False, "SUCCESS"),
+    ("review complete.\nFinal verdict: APPROVE", "codex", "APPROVE", False, "APPROVE"),
     # 裸 token 整行 / 行首前缀（legacy 兼容形态）
     ("PASS", "workbuddy", "PASS", False, "PASS"),
     ("APPROVE", "codex", "APPROVE", False, "APPROVE"),

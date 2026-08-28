@@ -489,22 +489,21 @@ class Bridge:
                 f"Task ID: {last.task_id} 启动失败（TASK.md 已保留）。",
             )
 
-    def _copy_last_report(self) -> None:
-        """Copy Last Report → Planner Handoff → 剪贴板（不调用 Agent，不启动 TASK）。"""
+    def _copy_last_report(self) -> bool:
+        """Copy Last Report → Planner Handoff → 剪贴板（不调用 Agent，不启动 TASK）。
+
+        RW-024：复制动作不再弹第二个「报告已复制」modal——返回 bool 供完成窗口
+        就地显示「已复制 ✓ / 复制失败」。handoff 构建与剪贴板写逻辑保持不变。
+        """
         last = handoff.load_last_run()
         if last is None:
-            ui.show_error("AAF Bridge", "NO_LAST_RUN：还没有运行过的 Framework TASK。")
-            return
+            return False
         report_text = handoff.read_report(last.report_path)
         if report_text is None:
-            ui.show_error("AAF Bridge", "REPORT_NOT_FOUND：last REPORT.md 不存在，无法生成 Handoff。")
-            return
+            return False
         closure = handoff.git_snapshot(Path(last.task_path).parent if last.task_path else ".")
         payload = handoff.build_handoff(last, report_text, closure)
-        if ui.clipboard_set_text(self.root, payload):
-            ui.show_info("报告已复制", f"Task ID: {last.task_id}\nPlanner Handoff 已复制到剪贴板。")
-        else:
-            ui.show_error("AAF Bridge", "剪贴板写入失败（可能被其他程序占用）。")
+        return ui.clipboard_set_text(self.root, payload)
 
     def _handle_hotkey(self) -> None:
         if self.busy:

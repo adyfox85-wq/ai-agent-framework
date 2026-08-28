@@ -3,7 +3,7 @@
 > Project: AI Agent Framework
 > Document Type: **Living Long-Term Backlog / 长期问题与恢复登记**
 > Established: 2026-08-27（AAF-MAINT-001-FIX-002）
-> Last Updated: 2026-08-28（AAF-v0.4-TASK-006-FIX-001 — Phase F Atomic Config Persistence + Real UX Closure：Codex 两个 blocker 关闭轮——① config.save_config 统一 atomic contract（同目录 tmp + flush/fsync + os.replace；失败清理 tmp 抛 ConfigError，旧 config 字节级保留；update_project 复用，无 write_text 旁路）；② 真实 Bridge/UI 交互 harness（真实 Tk 确认窗/状态卡片 + 真实按钮 invoke + 真实剪贴板）覆盖 Known 切换确认并执行 / 拒绝零写入 / Unknown 确认前不执行 / Invalid fail closed / Duplicate running 卡片无第二 runner / Duplicate terminal 卡片不覆盖 / RUNNING 跨 workspace 拒绝 / restart 恢复；真实 UI 验收修复 duplicate 卡片 [打开 REPORT] 死按钮（闭包捕获 report_path）；780 passed（760 基线 + 20 新增：11 原子 + 9 真实 UI，全量两次连跑零失败）；UX evidence 存 `.aaf/AAF-v0.4-TASK-006-FIX-001/UX_EVIDENCE.md`；RW-003 / RW-016 SOLVED 状态按实际证据保持（FIX-001 不改写 backlog 判定）；Phase F 正式 COMPLETE 留待 WorkBuddy 独立验证 + Codex 复审后由 Planner 确认；此前更新：AAF-v0.4-TASK-006 — Phase F Project Switching and Duplicate Task UX：RW-003 由 OPEN → SOLVED（Bridge 从 canonical TASK Workspace 识别 + 已知/陌生 workspace 显式确认切换 + recent_projects 持久化 + running/duplicate 保护，设计 §9 全量落地）；RW-016 由 OPEN → SOLVED（duplicate 状态卡片：running/completed/abnormal/unknown 分类 + 中文展示 + 不覆盖 artifacts，设计 §10 全量落地）；RW-006 由 OPEN → SOLVED（状态校正：Phase C/D/E 已交付状态窗口 + 进度估算 + stuck 提示 + 停止入口 + Phase F 项目切换，Remaining Gap 全部闭合，仅按真实交付证据校正状态，不重新开发）；RW-009 / RW-014 仅状态核对保持 PARTIAL（无新交付，未扩大 scope）；760 passed（688 基线 + 72 新增：Phase F 63 单元 + 9 真实 Windows E2E）；Phase F 实现 + 测试 + E2E 完成，正式 COMPLETE 判定留待 WorkBuddy 独立验证 + Codex 审查；此前更新：AAF-v0.4-TASK-005-C-FIX-001 — Cancel Timestamp Timezone Compatibility Fix：canonical UTC/aware elapsed contract 统一 cancel elapsed 计算，关闭 Codex 唯一 timezone blocker；688 passed；Phase E = COMPLETE / Phase F = NOT STARTED；此前更新：AAF-v0.4-TASK-005-C — RW-014 由 OPEN → PARTIAL（Phase E 交付主体：状态窗口停止/强制停止 UX；剩余 Tray 菜单停止项按 §12.2 登记为后续阶段范围边界）；Phase E = COMPLETE / Phase F = NOT STARTED；此前更新：AAF-v0.4-TASK-005-B-FIX-001 — §5.4 更新：Obsidian Conversation Handoff Pilot 验证完成，PILOT / EXPERIMENTAL → **VERIFIED**）
+> Last Updated: 2026-08-28（AAF-v0.4-TASK-008 — RW-024 Completion Dialog Copy UX：完成窗口单窗改造——点击「复制报告」不再弹第二「报告已复制」modal、不再关闭主窗，窗内就地反馈（按钮变「已复制 ✓」/「复制失败」），仅「关闭」退出；`_copy_last_report` 返回 bool、handoff 构建与剪贴板写逻辑不变；新增 9 项 mocked/unit-level Tk 测试（成功/重复/关闭/失败全路径 + Bridge 复制逻辑回归）；RW-024 OPEN → SOLVED；此前更新：AAF-v0.4-TASK-006-FIX-001 — Phase F Atomic Config Persistence + Real UX Closure：Codex 两个 blocker 关闭轮——① config.save_config 统一 atomic contract（同目录 tmp + flush/fsync + os.replace；失败清理 tmp 抛 ConfigError，旧 config 字节级保留；update_project 复用，无 write_text 旁路）；② 真实 Bridge/UI 交互 harness（真实 Tk 确认窗/状态卡片 + 真实按钮 invoke + 真实剪贴板）覆盖 Known 切换确认并执行 / 拒绝零写入 / Unknown 确认前不执行 / Invalid fail closed / Duplicate running 卡片无第二 runner / Duplicate terminal 卡片不覆盖 / RUNNING 跨 workspace 拒绝 / restart 恢复；真实 UI 验收修复 duplicate 卡片 [打开 REPORT] 死按钮（闭包捕获 report_path）；780 passed（760 基线 + 20 新增：11 原子 + 9 真实 UI，全量两次连跑零失败）；UX evidence 存 `.aaf/AAF-v0.4-TASK-006-FIX-001/UX_EVIDENCE.md`；RW-003 / RW-016 SOLVED 状态按实际证据保持（FIX-001 不改写 backlog 判定）；Phase F 正式 COMPLETE 留待 WorkBuddy 独立验证 + Codex 复审后由 Planner 确认；此前更新：AAF-v0.4-TASK-006 — Phase F Project Switching and Duplicate Task UX：RW-003 由 OPEN → SOLVED（Bridge 从 canonical TASK Workspace 识别 + 已知/陌生 workspace 显式确认切换 + recent_projects 持久化 + running/duplicate 保护，设计 §9 全量落地）；RW-016 由 OPEN → SOLVED（duplicate 状态卡片：running/completed/abnormal/unknown 分类 + 中文展示 + 不覆盖 artifacts，设计 §10 全量落地）；RW-006 由 OPEN → SOLVED（状态校正：Phase C/D/E 已交付状态窗口 + 进度估算 + stuck 提示 + 停止入口 + Phase F 项目切换，Remaining Gap 全部闭合，仅按真实交付证据校正状态，不重新开发）；RW-009 / RW-014 仅状态核对保持 PARTIAL（无新交付，未扩大 scope）；760 passed（688 基线 + 72 新增：Phase F 63 单元 + 9 真实 Windows E2E）；Phase F 实现 + 测试 + E2E 完成，正式 COMPLETE 判定留待 WorkBuddy 独立验证 + Codex 审查；此前更新：AAF-v0.4-TASK-005-C-FIX-001 — Cancel Timestamp Timezone Compatibility Fix：canonical UTC/aware elapsed contract 统一 cancel elapsed 计算，关闭 Codex 唯一 timezone blocker；688 passed；Phase E = COMPLETE / Phase F = NOT STARTED；此前更新：AAF-v0.4-TASK-005-C — RW-014 由 OPEN → PARTIAL（Phase E 交付主体：状态窗口停止/强制停止 UX；剩余 Tray 菜单停止项按 §12.2 登记为后续阶段范围边界）；Phase E = COMPLETE / Phase F = NOT STARTED；此前更新：AAF-v0.4-TASK-005-B-FIX-001 — §5.4 更新：Obsidian Conversation Handoff Pilot 验证完成，PILOT / EXPERIMENTAL → **VERIFIED**）
 > Location: `docs/internal/AAF_MASTER_BACKLOG.md`
 
 ## Purpose
@@ -502,7 +502,6 @@ P3
 | ID | RW-024 |
 | Title | Completion Dialog Copy Report UX（复制报告后二次弹窗 + Z 序问题） |
 | Category | Runtime UX / Bridge / Completion dialog |
-| Status | OPEN |
 | Priority | P2 |
 | Evidence / Origin | 用户明确反馈（2026-08-27，Phase D 期间）。当前行为（bridge/main.py `_copy_last_report()`，line 405–420）：任务完成 → 弹出第一个完成窗口 → 点击「复制报告」→ `ui.show_info("报告已复制", …)` 再弹出第二个提示窗口 → 第二窗口可能落在第一个窗口后面 → 点确定后两个窗口一起关闭。 |
 | Problem | 完成通知被拆成两个 modal：复制动作触发第二个弹窗，与主完成窗口存在 Z 序竞争；用户看到两个窗口叠在一起，点确定后两个一起关闭。 |
@@ -510,6 +509,7 @@ P3
 | Current Implementation | 完成时弹主完成窗口；点「复制报告」另弹提示窗（show_info），两窗叠置；点确定后两窗一起关闭。 |
 | Remaining Gap | 单窗 UX 改造：合并按钮、就地反馈、关闭语义唯一。 |
 | Decision | 本任务只登记，不实现。 |
+| Status | **SOLVED**（AAF-v0.4-TASK-008 交付，2026-08-28：完成窗口单窗 UX——`show_finished` 点击「复制报告」只执行复制并在窗内就地反馈（按钮变「已复制 ✓」/ 窗内「复制失败」），不再弹第二 modal、不关闭主窗，仅「关闭」/窗口关闭按钮退出；`_copy_last_report` 返回 bool，handoff 构建与剪贴板写逻辑不变；新增 9 项 mocked/unit-level Tk 测试覆盖成功/重复/关闭/失败全路径 + Bridge 复制逻辑回归） |
 | Target | 完成通知单窗口：复制不弹新 modal、不关主窗、原地轻量反馈；仅「关闭」按钮关闭。 |
 | Related | 与 RW-021（completion notification continuity——Bridge 换代后「通知是否送达」的连续性缺口）**明确区分**：RW-024 是「通知窗口自身交互」的 UX 缺陷；与 RW-023（E2E orchestration）无关；与 RW-016（duplicate 状态 UX）无关。 |
 | Do Not Forget | 不合并到 RW-021 / RW-016 / RW-023；属独立 completion dialog UX 条目。 |
@@ -823,7 +823,7 @@ Obsidian working knowledge → stable conclusion → Framework task → 提升�
 | RW-021 | Bridge Restart / Exit Completion Notification Continuity | OPEN | P2 |
 | RW-022 | Framework Final Status Aggregation: PASS_WITH_WARNING + APPROVE + Blocking NONE → WAITING | SOLVED | P1 |
 | RW-023 | E2E Validation Fixed Task ID Reuse Causes Duplicate Trigger / GUI Loop | OPEN | P2 |
-| RW-024 | Completion Dialog Copy Report UX（复制报告二次弹窗 + Z 序问题） | OPEN | P2 |
+| RW-024 | Completion Dialog Copy Report UX（复制报告二次弹窗 + Z 序问题） | SOLVED | P2 |
 | RW-025 | Session Continuity Clock Flake（test_first_rollover_generates_files 秒级时钟边界） | OPEN | P3 |
 | BND-001 | Planner-layer Anti-Drift Validation | PARTIAL | P2 |
 | CTX-001 | Context Length / Conversation Rollover UX | PARTIAL | P1 |

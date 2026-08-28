@@ -274,7 +274,12 @@ def clipboard_get_text(root: tk.Tk) -> str:
 def show_finished(root: tk.Tk, task_id: str, report_path: str, on_copy) -> None:
     """任务完成窗口（Phase C 中文优先）：显示结果 + [复制报告] / [关闭]。
 
-    on_copy 由调用方提供（执行 handoff 构建 + 写剪贴板 + 提示）。
+    RW-024：单窗 UX——点击「复制报告」只执行复制并在窗内就地反馈
+    （按钮变「已复制 ✓」/ 窗内「复制失败」），不弹第二个 modal、
+    不关闭主窗；仅「关闭」按钮 / 窗口关闭按钮退出。
+
+    on_copy 由调用方提供（执行 handoff 构建 + 写剪贴板），返回 bool：
+    True = 复制成功；False = 复制失败。
     """
     win = tk.Toplevel(root)
     win.title("任务已完成 — AAF Bridge")
@@ -294,17 +299,29 @@ def show_finished(root: tk.Tk, task_id: str, report_path: str, on_copy) -> None:
     ).pack(padx=12, pady=(2, 6), anchor="w")
 
     btns = tk.Frame(win)
-    btns.pack(pady=8)
+    btns.pack(pady=(4, 0))
+    feedback = tk.Label(win, text="", font=("Segoe UI", 9), fg="#1a7f37")
+    feedback.pack(pady=(2, 6))
+
+    copy_btn = tk.Button(btns, text="复制报告", width=12)
+    copy_btn.pack(side="left", padx=8)
 
     def do_copy():
         try:
-            on_copy()
-        finally:
-            win.destroy()
+            ok = bool(on_copy())
+        except Exception:  # noqa: BLE001 —— 复制回调异常显式显示失败，不弹窗
+            ok = False
+        if ok:
+            copy_btn.config(text="已复制 ✓")
+            feedback.config(text="已复制 ✓", fg="#1a7f37")
+        else:
+            copy_btn.config(text="复制报告")
+            feedback.config(text="复制失败", fg="#b00020")
 
-    tk.Button(btns, text="复制报告", width=12, command=do_copy).pack(side="left", padx=8)
+    copy_btn.config(command=do_copy)
     tk.Button(btns, text="关闭", width=12, command=win.destroy).pack(side="left", padx=8)
 
+    win.protocol("WM_DELETE_WINDOW", win.destroy)
     win.grab_set()
     win.update_idletasks()
     x = root.winfo_screenwidth() // 2 - win.winfo_width() // 2

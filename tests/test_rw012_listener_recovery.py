@@ -12,6 +12,13 @@ request_stop + 有界 join），stop-before-replace，旧 listener 超时未退�
 fail safe（不启动 duplicate replacement），并发 lifecycle transition 由
 _lifecycle_lock 合并为单一 owner。
 
+RW-012 FIX-002（ownership retention + readiness truth）：stop 超时不再清空
+self.listener（旧 listener 未确认退出前 Bridge 持续持有其引用，记入
+_pending_stop → DEGRADED / recovery pending，跨 recovery cycle 不启动
+replacement）；wait_ready 返回值参与 start success 判定（初始化超时 /
+error 均不 reset recovery、不报告 healthy）；健康判定区分 alive / ready /
+error（thread alive != hotkey usable）。
+
 本文件覆盖（全部非 GUI / 不注册真实热键 / 不触碰用户会话）：
 A. listener 意外退出 → 恢复尝试 → 只有一个活跃 listener
 B. 恢复成功 → Bridge 保持可用（健康 OK）；stop-before-replace 顺序
@@ -37,11 +44,12 @@ from bridge import main as bridge_main
 
 
 class FakeListener:
-    """模拟 HotkeyListener 的最小健康接口（error / is_alive）+ stop 契约。"""
+    """模拟 HotkeyListener 的最小健康接口（error / is_alive / is_ready）+ stop 契约。"""
 
-    def __init__(self, error=None, alive=True, stop_result=True):
+    def __init__(self, error=None, alive=True, ready=True, stop_result=True):
         self._error = error
         self._alive = alive
+        self._ready = ready
         self._stop_result = stop_result
         self.stop_requests = 0  # stop 契约调用计数
 
@@ -50,6 +58,9 @@ class FakeListener:
 
     def is_alive(self):
         return self._alive
+
+    def is_ready(self):
+        return self._ready
 
     def request_stop(self):
         self.stop_requests += 1
@@ -88,6 +99,7 @@ def _stub_bridge(listener=None, recovery=None, shutting_down=False, tray=None):
     b._shutting_down = shutting_down
     b._recovery = recovery if recovery is not None else bridge_main.HotkeyRecovery()
     b.listener = listener
+    b._pending_stop = None
     b.tray = tray
     b._last_health = None
     b._lifecycle_lock = threading.Lock()
@@ -300,7 +312,10 @@ def _make_recording_listener_class(created, events, err=None, stop_result=True):
             pass
 
         def wait_ready(self, timeout):
-            pass
+            return True  # FIX-002：wait_ready 返回值参与 start success 判定
+
+        def is_ready(self):
+            return True
 
         def error(self):
             return self._err
@@ -349,7 +364,8 @@ def test_apply_hotkey_stop_before_replace(monkeypatch):
 
 
 def test_apply_hotkey_old_listener_stuck_fails_safe_no_duplicate(monkeypatch):
-    """C：旧 listener 未能在限时内退出 → 不创建 replacement；warning 可见；不伪装健康。"""
+    """C：旧 listener 未能在限时内退出 → 不创建 replacement；warning 可见；
+    FIX-002：ownership reference 保留（不伪装健康、不丢引用、跨 cycle 不重复）。"""
     created = []
     events = []
     logs = []
@@ -367,8 +383,14 @@ def test_apply_hotkey_old_listener_stuck_fails_safe_no_duplicate(monkeypatch):
     b._apply_hotkey()  # 旧 listener 卡死 → fail safe
     assert len(created) == 1  # 没有第二个 listener（无重复注册）
     assert first.stop_requests >= 1  # stop 契约确实被调用（有界等待后放弃）
-    assert b.listener is None  # fail safe：状态不伪装 healthy（health = DEGRADED）
+    # FIX-002：stop 未确认退出 → Bridge 仍持有 old listener 的 ownership reference
+    assert b.listener is first
+    assert b._pending_stop is first
     assert any("限时内退出" in m and "fail safe" in m for m in logs)  # warning 可观察
+    # health 不伪装 healthy（pending → DEGRADED）
+    status, detail = b._current_health()
+    assert status == bridge_main.HEALTH_DEGRADED
+    assert "未确认退出" in detail
 
 
 def test_apply_hotkey_concurrency_guard_single_transition_owner(monkeypatch):
@@ -438,7 +460,10 @@ def test_apply_hotkey_recovery_mode_suppresses_dialog(monkeypatch):
             pass
 
         def wait_ready(self, timeout):
-            pass
+            return True  # FIX-002：wait_ready 返回值参与 start success 判定
+
+        def is_ready(self):
+            return True
 
         def error(self):
             return self._err
@@ -490,10 +515,14 @@ def test_try_recover_hotkey_exception_fails_safely():
 
 
 def test_stop_listener_bounded_timeout_returns_false():
-    """stop 契约有界：listener.stop 超时 → _stop_listener 返回 False（fail safe 信号）。"""
-    b = _stub_bridge(listener=FakeListener(alive=True, stop_result=False))
+    """stop 契约有界：listener.stop 超时 → _stop_listener 返回 False（fail safe 信号）；
+    FIX-002：stop 未确认退出 → 不清空 self.listener（ownership retention）。"""
+    old = FakeListener(alive=True, stop_result=False)
+    b = _stub_bridge(listener=old)
     assert b._stop_listener(timeout=0.5) is False
-    assert b.listener is None  # 已解绑：health 判定不再引用卡死的旧 listener
+    # 旧 listener 仍可能存活 → Bridge 必须持续持有其引用（不 orphan、不伪装成功）
+    assert b.listener is old
+    assert b._pending_stop is old
 
 
 def test_stop_listener_returns_true_when_no_listener():
@@ -545,7 +574,10 @@ def test_poll_health_rebuild_conflict_bounded_three_then_stop(monkeypatch):
             pass
 
         def wait_ready(self, timeout):
-            pass
+            return True  # FIX-002：wait_ready 返回值参与 start success 判定
+
+        def is_ready(self):
+            return True
 
         def error(self):
             return self._err

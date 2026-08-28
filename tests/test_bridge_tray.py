@@ -66,15 +66,19 @@ def test_event_namespace_prefixed_for_bridge_dispatch():
 
 
 class FakeListener:
-    def __init__(self, error=None, alive=True):
+    def __init__(self, error=None, alive=True, ready=True):
         self._error = error
         self._alive = alive
+        self._ready = ready
 
     def error(self):
         return self._error
 
     def is_alive(self):
         return self._alive
+
+    def is_ready(self):
+        return self._ready
 
 
 def test_health_ok_when_registered_and_alive():

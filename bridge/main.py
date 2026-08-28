@@ -61,6 +61,17 @@ RECOVERY_BACKOFF_SECONDS = (15.0, 30.0, 60.0)  # 第 1/2/3 次失败后的等待
 
 # RW-012 FIX-001：旧 listener 停止确认的有界上限（stop 契约；超时 → fail safe）
 LISTENER_STOP_TIMEOUT = 5.0  # 秒
+# RW-012 FIX-002：新 listener 初始化就绪等待上限（wait_ready authority）
+LISTENER_READY_TIMEOUT = 3.0  # 秒
+
+# RW-012 FIX-002（one-listener ownership invariant，跨 recovery cycle 成立）：
+# - 只要旧 listener 尚未确认退出（stop() == True / is_alive() == False），
+#   self.listener 必须持续指向它（ownership retention），不得启动 replacement；
+#   未确认退出的 listener 记入 self._pending_stop（DEGRADED / recovery pending
+#   可观察状态），下一轮 recovery 继续针对同一个旧 listener 处理。
+# - wait_ready(timeout) 返回值参与 start success 判定：初始化超时（线程可能
+#   仍 alive 但未 ready）不 reset recovery/backoff、不报告 healthy。
+# - 健康判定区分 alive / ready / error：thread alive != hotkey usable。
 
 # 单实例 mutex（Restart 交接 / 防双开）
 _SINGLE_INSTANCE_MUTEX = "Local\\AAF_Bridge_SingleInstance_v0_4"
@@ -145,20 +156,29 @@ class SingleInstance:
         self.release()
 
 
-def classify_bridge_health(listener) -> tuple[str, str]:
+def classify_bridge_health(listener, stop_pending: bool = False) -> tuple[str, str]:
     """最小 health 判定（设计 §8.2，Phase B 范围）：(status, detail)。
 
-    - OK：listener 已注册且消息循环线程存活
-    - DEGRADED：未注册 / 注册失败（冲突）/ 线程已退出
+    - OK：listener 已注册且消息循环线程存活且初始化就绪
+    - DEGRADED：未注册 / 注册失败（冲突）/ 线程已退出 / 未就绪 /
+      stop 已请求但未确认退出（stop_pending）
+    RW-012 FIX-002：健康判定区分 alive / ready / error 三个维度——
+    线程存活（is_alive()）不等于初始化就绪（ready），未 ready 不得视为
+    hotkey usable；旧 listener 未确认退出（stop_pending）时即使线程仍存活
+    也视为 DEGRADED（不伪装 healthy）。
     不实现 heartbeat / self-healing / RW-020（Phase B 明确排除）。
     """
     if listener is None:
         return HEALTH_DEGRADED, "热键未注册"
+    if stop_pending:
+        return HEALTH_DEGRADED, "旧热键监听线程未确认退出（等待其退出后重建）"
     err = listener.error()
     if err is not None:
         return HEALTH_DEGRADED, f"热键注册失败: {err}"
     if not listener.is_alive():
         return HEALTH_DEGRADED, "热键监听线程已退出"
+    if not listener.is_ready():
+        return HEALTH_DEGRADED, "热键监听线程未就绪"
     return HEALTH_OK, "正常运行"
 
 
@@ -320,6 +340,11 @@ class Bridge:
         # RW-012 FIX-001：lifecycle transition 互斥（同一时刻只有一个 transition
         # owner；Tk 主线程串行之外的最小并发 guard）
         self._lifecycle_lock = threading.Lock()
+        # RW-012 FIX-002：stop 已请求但未确认退出的旧 listener（ownership
+        # retention 的可见状态）。只要该引用非 None，Bridge 就仍持有旧 listener
+        # 的 ownership reference——未确认退出前不得启动 replacement、不得伪装
+        # healthy；它被确认退出（stop True / is_alive False）后清空。
+        self._pending_stop: HotkeyListener | None = None
         self._apply_hotkey()
         self._start_tray()
         self.root.after(100, self._poll_events)
@@ -342,20 +367,35 @@ class Bridge:
           （registration 归 listener 线程所有，外部线程不得直接注销）。
         - 返回 True = 已确认退出（或本来就没有 listener）；
           返回 False = 超时未退出 → 调用方必须 fail safe（不得启动 replacement）。
+
+        RW-012 FIX-002（ownership retention）：只在确认退出后才清空
+        self.listener 引用——stop 超时（旧线程仍可能存活）时保留引用并把
+        listener 记入 self._pending_stop（degraded / recovery pending 可观察
+        状态）；下一轮 recovery 继续针对同一个旧 listener 处理。任何情况下
+        都不会出现「旧 listener 仍存活但 Bridge 已丢失其 reference」的 orphan
+        窗口，因此跨 recovery cycle 不会误启动 duplicate replacement。
         """
         listener = self.listener
-        self.listener = None  # 立即解绑：health 判定不再引用旧 listener
         if listener is None:
+            self._pending_stop = None
             return True
         try:
             exited = listener.stop(timeout)
         except Exception:
             exited = False
-        if not exited:
+        if exited:
+            # 仅确认退出后解绑（stop True ⟹ 线程已退出 ⟹ thread-owned
+            # unregister 已完成）；pending 状态一并清除
+            self.listener = None
+            self._pending_stop = None
+        else:
+            # stop 超时：旧线程仍可能存活 → 保留 ownership reference，
+            # 标记 pending（health = DEGRADED），不伪装 stop success
+            self._pending_stop = listener
             _log(
                 "AAF Bridge: 旧热键监听线程未能在限时内退出"
                 f"（{timeout:.0f}s），fail safe：不启动重复 listener，"
-                "保持 DEGRADED 状态等待有界重试。"
+                "保留 ownership reference，保持 DEGRADED 等待有界重试。"
             )
         return exited
 
@@ -366,7 +406,10 @@ class Bridge:
           join），确认旧线程退出后才创建新 listener；主线程绝不直接
           UnregisterHotKey（registration 归 listener 线程所有）。
         - 旧 listener 未能在限时内退出 → fail safe：不创建 replacement、
-          写入 warning、状态保持 DEGRADED（可恢复性保留给有界重试）。
+          写入 warning、保留 ownership reference（_pending_stop）、状态保持
+          DEGRADED（可恢复性保留给有界重试；跨 recovery cycle 不重复）。
+        - 新 listener 启动后必须 wait_ready 成功且无 error 才算启动成功：
+          wait_ready 超时 / error 均不 reset recovery/backoff、不报告 healthy。
         - _lifecycle_lock：同一时刻只有一个 lifecycle transition owner，
           并发触发被合并，不会创建多个 listener。
         """
@@ -385,7 +428,9 @@ class Bridge:
                 return  # fail safe：旧 listener 未确认退出 → 不启动 replacement
             self.listener = HotkeyListener(mods, vk, self._on_hotkey, self.hotkey_id)
             self.listener.start()
-            self.listener.wait_ready(3.0)
+            # RW-012 FIX-002：wait_ready 返回值必须参与 start success 判定——
+            # 初始化超时（线程可能仍 alive 但未 ready）不得视为 healthy
+            ready = self.listener.wait_ready(LISTENER_READY_TIMEOUT)
             err = self.listener.error()
             if err is not None:
                 if show_error:
@@ -394,6 +439,15 @@ class Bridge:
                         f"{err}\n请在 ~/.aaf-bridge/config.json 修改 hotkey 后等待配置热加载。",
                     )
                 return
+            if not ready:
+                # 初始化未在限时内就绪：不 reset recovery/backoff、不报告 healthy；
+                # 尽力停止未就绪的 listener（未确认退出时保留引用 → recovery pending）
+                _log(
+                    "AAF Bridge: 热键监听线程未能在限时内就绪（初始化超时），"
+                    "视为启动失败，不重置恢复策略，进入 DEGRADED 恢复流程。"
+                )
+                self._stop_listener()
+                return
             # RW-012：成功应用（启动 / 热键变更 / 自动恢复）→ 恢复策略归零（允许重新自恢复）
             self._recovery.reset()
         finally:
@@ -401,7 +455,7 @@ class Bridge:
 
     def _current_health(self) -> tuple[str, str]:
         """健康判定 + 恢复状态说明（供 Tray / 状态窗口观察；失败必须可见）。"""
-        status, detail = classify_bridge_health(self.listener)
+        status, detail = classify_bridge_health(self.listener, self._pending_stop is not None)
         note = self._recovery.note()
         if note and status == HEALTH_DEGRADED:
             detail = f"{detail}；{note}" if detail else note
@@ -412,9 +466,15 @@ class Bridge:
         try:
             self._apply_hotkey(show_error=False)
         except Exception:
-            self.listener = None
+            # 异常路径不盲目清空引用（orphan prevention）：仅当旧 listener 已
+            # 确认退出（is_alive False ⟹ thread-owned unregister 已完成）才允许
+            # 解绑；仍存活 → 保留引用，由下一轮 recovery 继续处理
+            cur = self.listener
+            if cur is not None and not cur.is_alive():
+                self.listener = None
+                self._pending_stop = None
             return False
-        status, _ = classify_bridge_health(self.listener)
+        status, _ = classify_bridge_health(self.listener, self._pending_stop is not None)
         return status == HEALTH_OK
 
     def _poll_config(self) -> None:
@@ -467,10 +527,23 @@ class Bridge:
         - 主动退出（shutting_down）期间不触发恢复（退出不复活）
         - 恢复进行中/已停止/backoff 期内重复触发被策略拒绝（无重复 listener / 无 tight loop）
         - 失败保持在 Tray 图标 / Tooltip / 状态窗口可见（note 并入 detail）
+        - RW-012 FIX-002：pending 旧 listener 的迟延退出独立检测——即使恢复策略
+          处于 backoff / 已停止，旧 listener 一旦确认退出也必须清理 ownership
+          reference（不留死引用、不伪装 healthy）；随后按正常恢复策略决定是否
+          启动 exactly one replacement（不得因引用残留而永久卡死）
         """
         try:
             if not self._shutting_down:
-                status, detail = classify_bridge_health(self.listener)
+                if self._pending_stop is not None and not self._pending_stop.is_alive():
+                    _log(
+                        "AAF Bridge: 旧热键监听线程已确认退出（迟延退出），"
+                        "清理 ownership reference。"
+                    )
+                    self.listener = None
+                    self._pending_stop = None
+                status, detail = classify_bridge_health(
+                    self.listener, self._pending_stop is not None
+                )
                 if status == HEALTH_DEGRADED:
                     if self._recovery.should_attempt(time.monotonic()):
                         self._recovery.begin_attempt()
@@ -488,7 +561,9 @@ class Bridge:
                                 f"（第 {self._recovery.consecutive_failures} 次）。"
                                 f"{self._recovery.note()}"
                             )
-                        status, detail = classify_bridge_health(self.listener)
+                        status, detail = classify_bridge_health(
+                            self.listener, self._pending_stop is not None
+                        )
                     note = self._recovery.note()
                     if note:
                         detail = f"{detail}；{note}" if detail else note

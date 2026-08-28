@@ -175,6 +175,15 @@ class HotkeyListener(threading.Thread):
         """等待初始化完成（注册成功 / 失败 / 已被 stop）；返回是否已就绪。"""
         return self._ready.wait(timeout)
 
+    def is_ready(self) -> bool:
+        """非阻塞查询初始化是否已完成（注册成功 / 失败 / 已被 stop 均算完成）。
+
+        RW-012 FIX-002：健康判定必须区分 alive / ready / error——线程存活
+        （is_alive()）不等于初始化就绪（ready）；未 ready 的线程不得视为
+        hotkey usable。
+        """
+        return self._ready.is_set()
+
     def wait_unregistered(self, timeout: float = 5.0) -> bool:
         """等待线程内注销完成（可观测性 / 测试用；stop 成功即已隐含）。"""
         return self._unregistered.wait(timeout)

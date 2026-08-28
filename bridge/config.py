@@ -74,17 +74,23 @@ def load_config(path: Path | None = None) -> dict:
 def save_config(cfg: dict, path: Path | None = None) -> Path:
     """原子保存配置（创建目录）——正式 config.json 唯一写入路径（统一 atomic contract）。
 
-    Contract（AAF-v0.4-TASK-006-FIX-001，关闭 Codex blocker：不得直接
-    Path.write_text 覆盖正式 config.json）：
+    Contract（AAF-v0.4-TASK-006-FIX-001 + FIX-002，统一 ConfigError 异常契约）：
     - 在正式 config 同目录写临时文件（同卷 → os.replace 原子替换成立）
     - 写后 flush + fsync，close 完成后才 os.replace(tmp, 正式路径)
     - 任一环节失败：清理临时文件，抛 ConfigError；正式 config 保持原样
       （不留下半截正式 config；不静默声称写入成功）
+    - json 序列化失败（TypeError / ValueError，如不可序列化对象 / 循环引用）
+      同样转换为 ConfigError —— 调用方（main.py ConfigError UX）统一处理
     - 所有正式 config 写入（save_config / update_project）均复用本函数
     """
     p = path or CONFIG_PATH
     p.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(cfg, ensure_ascii=False, indent=2)
+    try:
+        payload = json.dumps(cfg, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError) as exc:
+        # FIX-002：序列化失败在触碰文件系统之前发生 → 旧 config 原样、零 tmp；
+        # 统一转 ConfigError（与写失败 / replace 失败同一契约）
+        raise ConfigError(f"配置序列化失败: {exc}") from exc
     tmp = p.with_name(f".{p.name}.tmp-{os.getpid()}-{_tmp_suffix()}")
     try:
         with open(tmp, "w", encoding="utf-8") as f:

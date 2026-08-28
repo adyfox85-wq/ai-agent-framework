@@ -3,7 +3,8 @@
 覆盖（TASK req 1/2/3/8）：
 - atomic save success：tmp + flush/fsync + os.replace 统一契约；无 tmp 残留
 - temp write failure：抛 ConfigError，正式 config 保持原样，tmp 清理
-- replace 前异常（json.dumps 失败 / open 失败）：正式 config 不受影响
+- replace 前异常（json.dumps 序列化失败 / open 失败）：正式 config 不受影响
+  （FIX-002：序列化失败同样抛 ConfigError，统一异常契约）
 - replace failure：抛 ConfigError，正式 config 保持原样，tmp 清理
 - update_project 复用同一 atomic contract（唯一写入点，无旁路）
 - restart after successful switch：fresh load 恢复 current/workspace/recent
@@ -104,17 +105,25 @@ def test_atomic_save_temp_write_failure_preserves_old(tmp_path, monkeypatch):
     assert _tmp_leftovers(p.parent) == []
 
 
-# ---------- 3. replace 前异常（json.dumps 失败） ----------
+# ---------- 3. replace 前异常（json.dumps 序列化失败） ----------
 
 def test_atomic_save_json_dump_error_touches_nothing(tmp_path):
+    """序列化失败 → ConfigError（统一契约，FIX-002）：旧 config 字节级保留、零 tmp。
+
+    覆盖两类 json.dumps 异常：不可序列化对象（TypeError）与循环引用（ValueError）。
+    """
     p = tmp_path / "config.json"
     cfg_mod.save_config({"hotkey": "ctrl+alt+a"}, p)
     old_bytes = p.read_bytes()
-    bad = {"unserializable": object()}  # json.dumps 抛 TypeError（replace 前异常路径）
-    with pytest.raises(TypeError):
-        cfg_mod.save_config(bad, p)
-    assert p.read_bytes() == old_bytes
-    assert _tmp_leftovers(p.parent) == []
+    circular = []
+    circular.append(circular)
+    for bad in ({"unserializable": object()}, circular):
+        with pytest.raises(cfg_mod.ConfigError) as ei:
+            cfg_mod.save_config(bad, p)
+        assert "序列化" in str(ei.value)
+        # 旧 config 未被破坏（原字节不变）；无 tmp 残留（未触碰文件系统）
+        assert p.read_bytes() == old_bytes
+        assert _tmp_leftovers(p.parent) == []
 
 
 # ---------- 4. replace failure ----------

@@ -434,10 +434,10 @@ def show_duplicate_card(root: tk.Tk, info, on_view_status=None, on_open_report=N
     btns.pack(pady=12)
 
     def _safe(cb):
-        def wrapper():
+        def wrapper(*args, **kwargs):
             win.destroy()
             try:
-                cb()
+                cb(*args, **kwargs)  # 透传参数：on_open_report 需要 report_path（FIX-001）
             except Exception:  # noqa: BLE001 —— 打开失败不得让卡片卡死
                 pass
         return wrapper
@@ -445,7 +445,12 @@ def show_duplicate_card(root: tk.Tk, info, on_view_status=None, on_open_report=N
     if on_view_status is not None:
         tk.Button(btns, text="查看状态", width=12, command=_safe(on_view_status)).pack(side="left", padx=8)
     if on_open_report is not None and info.report_path:
-        tk.Button(btns, text="打开 REPORT", width=12, command=_safe(on_open_report)).pack(side="left", padx=8)
+        # FIX-001：按钮命令以闭包捕获 report_path——Tk 按钮 invoke 不带参数，
+        # 直接 _safe(on_open_report) 会以零参数调用 → TypeError 被吞 → 死按钮
+        tk.Button(
+            btns, text="打开 REPORT", width=12,
+            command=_safe(lambda: on_open_report(info.report_path)),
+        ).pack(side="left", padx=8)
     tk.Button(btns, text="关闭", width=12, command=win.destroy).pack(side="left", padx=8)
 
     win.grab_set()

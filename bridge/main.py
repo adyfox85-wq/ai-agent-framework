@@ -543,6 +543,15 @@ class Bridge:
         # 3) 确认后执行：切换持久化（如需）→ 落盘 TASK.md（save_task duplicate 兜底仍在）
         try:
             target = intake.apply_submission(plan, cfg_mod.CONFIG_PATH)
+        except cfg_mod.ConfigError as e:
+            # FIX-001：原子保存失败 → 显式失败（不静默声称切换成功）；旧 config 原样
+            # 保留（save_config contract），任务未启动
+            ui.show_error(
+                "AAF Bridge — 配置保存失败",
+                f"项目切换未能持久化，任务未启动：{e}\n"
+                f"原配置保持不变，请检查磁盘空间 / 文件权限后重试。",
+            )
+            return
         except task_io.TaskParseError as e:
             # 兜底：plan 后出现竞态 duplicate（文件已存在）→ 尽力展示状态卡片
             dup_info = dup_mod.inspect_duplicate(plan.task_id, plan.workspace, None)

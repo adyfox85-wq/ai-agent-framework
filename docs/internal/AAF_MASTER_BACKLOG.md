@@ -3,7 +3,7 @@
 > Project: AI Agent Framework
 > Document Type: **Living Long-Term Backlog / 长期问题与恢复登记**
 > Established: 2026-08-27（AAF-MAINT-001-FIX-002）
-> Last Updated: 2026-08-28（AAF-v0.4-TASK-006 — Phase F Project Switching and Duplicate Task UX：RW-003 由 OPEN → SOLVED（Bridge 从 canonical TASK Workspace 识别 + 已知/陌生 workspace 显式确认切换 + recent_projects 持久化 + running/duplicate 保护，设计 §9 全量落地）；RW-016 由 OPEN → SOLVED（duplicate 状态卡片：running/completed/abnormal/unknown 分类 + 中文展示 + 不覆盖 artifacts，设计 §10 全量落地）；RW-006 由 OPEN → SOLVED（状态校正：Phase C/D/E 已交付状态窗口 + 进度估算 + stuck 提示 + 停止入口 + Phase F 项目切换，Remaining Gap 全部闭合，仅按真实交付证据校正状态，不重新开发）；RW-009 / RW-014 仅状态核对保持 PARTIAL（无新交付，未扩大 scope）；760 passed（688 基线 + 72 新增：Phase F 63 单元 + 9 真实 Windows E2E）；Phase F 实现 + 测试 + E2E 完成，正式 COMPLETE 判定留待 WorkBuddy 独立验证 + Codex 审查；此前更新：AAF-v0.4-TASK-005-C-FIX-001 — Cancel Timestamp Timezone Compatibility Fix：canonical UTC/aware elapsed contract 统一 cancel elapsed 计算，关闭 Codex 唯一 timezone blocker；688 passed；Phase E = COMPLETE / Phase F = NOT STARTED；此前更新：AAF-v0.4-TASK-005-C — RW-014 由 OPEN → PARTIAL（Phase E 交付主体：状态窗口停止/强制停止 UX；剩余 Tray 菜单停止项按 §12.2 登记为后续阶段范围边界）；Phase E = COMPLETE / Phase F = NOT STARTED；此前更新：AAF-v0.4-TASK-005-B-FIX-001 — §5.4 更新：Obsidian Conversation Handoff Pilot 验证完成，PILOT / EXPERIMENTAL → **VERIFIED**）
+> Last Updated: 2026-08-28（AAF-v0.4-TASK-006-FIX-001 — Phase F Atomic Config Persistence + Real UX Closure：Codex 两个 blocker 关闭轮——① config.save_config 统一 atomic contract（同目录 tmp + flush/fsync + os.replace；失败清理 tmp 抛 ConfigError，旧 config 字节级保留；update_project 复用，无 write_text 旁路）；② 真实 Bridge/UI 交互 harness（真实 Tk 确认窗/状态卡片 + 真实按钮 invoke + 真实剪贴板）覆盖 Known 切换确认并执行 / 拒绝零写入 / Unknown 确认前不执行 / Invalid fail closed / Duplicate running 卡片无第二 runner / Duplicate terminal 卡片不覆盖 / RUNNING 跨 workspace 拒绝 / restart 恢复；真实 UI 验收修复 duplicate 卡片 [打开 REPORT] 死按钮（闭包捕获 report_path）；779 passed（760 基线 + 19 新增：11 原子 + 8 真实 UI，全量两次连跑零失败）；UX evidence 存 `.aaf/AAF-v0.4-TASK-006-FIX-001/UX_EVIDENCE.md`；RW-003 / RW-016 SOLVED 状态按实际证据保持（FIX-001 不改写 backlog 判定）；Phase F 正式 COMPLETE 留待 WorkBuddy 独立验证 + Codex 复审后由 Planner 确认；此前更新：AAF-v0.4-TASK-006 — Phase F Project Switching and Duplicate Task UX：RW-003 由 OPEN → SOLVED（Bridge 从 canonical TASK Workspace 识别 + 已知/陌生 workspace 显式确认切换 + recent_projects 持久化 + running/duplicate 保护，设计 §9 全量落地）；RW-016 由 OPEN → SOLVED（duplicate 状态卡片：running/completed/abnormal/unknown 分类 + 中文展示 + 不覆盖 artifacts，设计 §10 全量落地）；RW-006 由 OPEN → SOLVED（状态校正：Phase C/D/E 已交付状态窗口 + 进度估算 + stuck 提示 + 停止入口 + Phase F 项目切换，Remaining Gap 全部闭合，仅按真实交付证据校正状态，不重新开发）；RW-009 / RW-014 仅状态核对保持 PARTIAL（无新交付，未扩大 scope）；760 passed（688 基线 + 72 新增：Phase F 63 单元 + 9 真实 Windows E2E）；Phase F 实现 + 测试 + E2E 完成，正式 COMPLETE 判定留待 WorkBuddy 独立验证 + Codex 审查；此前更新：AAF-v0.4-TASK-005-C-FIX-001 — Cancel Timestamp Timezone Compatibility Fix：canonical UTC/aware elapsed contract 统一 cancel elapsed 计算，关闭 Codex 唯一 timezone blocker；688 passed；Phase E = COMPLETE / Phase F = NOT STARTED；此前更新：AAF-v0.4-TASK-005-C — RW-014 由 OPEN → PARTIAL（Phase E 交付主体：状态窗口停止/强制停止 UX；剩余 Tray 菜单停止项按 §12.2 登记为后续阶段范围边界）；Phase E = COMPLETE / Phase F = NOT STARTED；此前更新：AAF-v0.4-TASK-005-B-FIX-001 — §5.4 更新：Obsidian Conversation Handoff Pilot 验证完成，PILOT / EXPERIMENTAL → **VERIFIED**）
 > Location: `docs/internal/AAF_MASTER_BACKLOG.md`
 
 ## Purpose
@@ -98,7 +98,7 @@ P3
 | ID | RW-003 |
 | Title | Bridge 自动识别与切换项目 |
 | Category | Real-world usage / Bridge |
-| Status | **SOLVED**（Phase F / AAF-v0.4-TASK-006 交付，2026-08-28） |
+| Status | **SOLVED**（Phase F / AAF-v0.4-TASK-006 交付，2026-08-28；FIX-001 原子持久化 + 真实 UX 证据轮，2026-08-28） |
 | Priority | P1 |
 | Evidence / Origin | 真实事件：从 H5 workspace 切换回 AAF workspace 时，Bridge 因 current_workspace 不一致拒绝任务，需要人工修改 config 才能继续 |
 | Current Implementation | Phase F（2026-08-28，AAF-v0.4-TASK-006）已交付：Bridge 从 canonical TASK Workspace 字段识别目标 workspace（不依赖聊天上下文/猜测路径）；workspace 分类驱动提交流程——SAME 正常继续无额外确认 / KNOWN（recent_projects 命中）显式确认后切换 / UNKNOWN（首次出现）fail-safe 暂停 + 明确确认 / INVALID（路径不存在、非目录、malformed、无权限、安全校验失败）fail closed 拒绝并给出明确原因；切换持久化唯一入口 = `config.update_project`（current_project / current_workspace + recent_projects 上限 5 条按 last_used 倒序）；RUNNING 任务时拒绝跨 workspace 切换；确认窗中文优先（当前项目 / 目标项目 / Workspace / Task ID / 将修改 AAF Bridge 项目设置说明）；restart 后 current project 从 config 正确恢复。设计 §9 全量落地。 |
@@ -340,7 +340,7 @@ P3
 | ID | RW-016 |
 | Title | Duplicate Task Status UX |
 | Category | Runtime UX / Bridge |
-| Status | **SOLVED**（Phase F / AAF-v0.4-TASK-006 交付，2026-08-28） |
+| Status | **SOLVED**（Phase F / AAF-v0.4-TASK-006 交付，2026-08-28；FIX-001 原子持久化 + 真实 UX 证据轮，2026-08-28） |
 | Priority | P1 |
 | Evidence / Origin | 真实使用：AAF-MAINT-002 实际已经执行完成，用户再次按 Ctrl+Alt+A 提交相同 Task ID 时只收到 TASK_ALREADY_EXISTS。用户无法从弹窗判断任务到底是 RUNNING / WAITING / SUCCESS / FAILED / stale；也没有查看任务 / 查看状态 / 打开 REPORT 的入口。 |
 | Current Implementation | Phase F（2026-08-28，AAF-v0.4-TASK-006）已交付：duplicate protection 原样保留（canonical TASK.md 落盘路径存在即 duplicate，与 save_task 同一判定，未放宽 execution authority）；duplicate 触发时展示中文状态卡片——至少区分 running（同 Task ID 正在运行：不启动第二 runner）/ completed（已完成 SUCCESS/WAITING/FAILED/CANCELLED：明确说明需新 Task ID）/ abnormal（已存在但状态异常：残留 RUNNING/CREATED 等）/ unknown（状态未知：无 task.json）；卡片显示 Task ID / 当前状态（中文映射 + 英文原值）/ 当前阶段 / 最近活动 / 结果 / REPORT 路径，提供 [查看状态] / [打开 REPORT]（归档任务自动定位）/ [关闭]；RUNNING 卡片不提供 [打开 REPORT]（REPORT 未生成）；不覆盖任何历史 artifacts；RUNNING 任务时拒绝跨 workspace 切换。设计 §10 全量落地。 |

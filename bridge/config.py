@@ -72,11 +72,46 @@ def load_config(path: Path | None = None) -> dict:
 
 
 def save_config(cfg: dict, path: Path | None = None) -> Path:
-    """保存配置（创建目录）。"""
+    """原子保存配置（创建目录）——正式 config.json 唯一写入路径（统一 atomic contract）。
+
+    Contract（AAF-v0.4-TASK-006-FIX-001，关闭 Codex blocker：不得直接
+    Path.write_text 覆盖正式 config.json）：
+    - 在正式 config 同目录写临时文件（同卷 → os.replace 原子替换成立）
+    - 写后 flush + fsync，close 完成后才 os.replace(tmp, 正式路径)
+    - 任一环节失败：清理临时文件，抛 ConfigError；正式 config 保持原样
+      （不留下半截正式 config；不静默声称写入成功）
+    - 所有正式 config 写入（save_config / update_project）均复用本函数
+    """
     p = path or CONFIG_PATH
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = json.dumps(cfg, ensure_ascii=False, indent=2)
+    tmp = p.with_name(f".{p.name}.tmp-{os.getpid()}-{_tmp_suffix()}")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
+    except OSError as exc:
+        raise ConfigError(f"配置文件保存失败: {exc}") from exc
+    finally:
+        # 成功路径：tmp 已被 rename 不存在（missing_ok 无副作用）；
+        # 失败/中断路径：清理临时文件，绝不残留半截正式 config 或垃圾 tmp
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
     return p
+
+
+_TMP_COUNTER = [0]
+
+
+def _tmp_suffix() -> str:
+    """临时文件后缀：进程内自增 + 时间戳，避免同进程并发/快速连续保存碰撞。"""
+    _TMP_COUNTER[0] += 1
+    import time as _time
+    return f"{_TMP_COUNTER[0]}-{int(_time.monotonic() * 1000)}"
 
 
 def parse_hotkey(hotkey: str) -> tuple[int, int] | None:

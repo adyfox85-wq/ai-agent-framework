@@ -318,6 +318,49 @@ snapshot 或 stage 文件后来变化（含 tamper）→ 检测为 hash 不匹�
   concatenation（有结构化 JSON 时 prompt 不含上游 narrative 全文）；
 - Compact TASK Policy 文件存在且被当前模板（`templates/TASK.md`）引用。
 
+## 13. Stage Retrospective / Safety-Efficiency Balance Rule（阶段回顾与安全×效率平衡）
+
+（2026-08-28，AAF-MAINT-HANDOFF-001 增补为正式 Policy）
+
+在每个 completed phase / risk boundary / closure cycle 之后，Planner 必须回顾：
+
+- effective work（真实有效的工作）
+- mergeable work（可合并的工作）
+- suspected wasted work（疑似浪费的工作）
+- over-safety / efficiency too low（过度安全 → 效率过低）
+- over-speed / safety degraded（过度求快 → 安全下降）
+- process improvement for next stage（下一阶段流程改进）
+
+在创建另一个完整 TASK 之前，Planner 必须考虑：
+same-parent / same-risk 的 blockers 能否先 **batch-closed**
+（一个 repair batch / closure cycle），而不是 one blocker = one full lifecycle。
+
+目标：**平衡 Safety × Efficiency**。
+- 不为提速删除独立验证（WorkBuddy / Codex 独立验证不得因提速移除）。
+- 不为安心保留过度验证；验证强度以真实风险与真实回归为准。
+- 同风险域修复优先合并收口；收口后尽快回到 observation，不无限优化过程本身。
+
+## 14. Context Compaction Observation Rule（TASK / Context Compaction 观察规则）
+
+（2026-08-28，AAF-MAINT-HANDOFF-001 正式登记）
+
+状态：IMPLEMENTED + VERIFIED → **PRODUCTION OBSERVATION**
+（AAF-MAINT-CONTEXT-001 + FIX-001..FIX-005 已收口；本 Policy §1–§12 即其正式记录）
+
+- **不得继续主动重新设计 / 重开维护。**
+- 后续 Stage Retrospective（§13）中只观察真实回归，例如：
+  - TASK re-expansion（TASK 重新膨胀）
+  - stage prompt re-expansion（stage prompt 重新膨胀）
+  - excessive full-content fallback（过度全文 fallback）
+  - missing referenced information（引用信息缺失）
+  - Compact TASK ambiguity（压缩 TASK 歧义）
+  - structured summary information loss（结构化摘要信息丢失）
+  - snapshot / hash / reference bugs（快照 / hash / 引用 bug）
+  - legacy compatibility issues（旧格式 / 旧 TASK 兼容问题）
+  - repeated review failures caused by insufficient context（因上下文不足导致的重复审查失败）
+- 只有真实观察到上述问题才允许重开维护：先登记 AAF_MASTER_BACKLOG，
+  再以最小 FIX 关闭；不得以预防性理由重新设计。
+
 ---
 
 *Policy 变更须经 Planner 评审 + WorkBuddy/Codex 复核后落盘；本文件本身同样遵守

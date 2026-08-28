@@ -3,7 +3,7 @@
 > Project: AI Agent Framework
 > Document Type: **Living Long-Term Backlog / 长期问题与恢复登记**
 > Established: 2026-08-27（AAF-MAINT-001-FIX-002）
-> Last Updated: 2026-08-28（AAF-MAINT-CONTEXT-001-FIX-002 — CTX-002 补齐完整性协议：immutable snapshot / Remote Sync Truth / structured summary 契约；测量证据更新为可复算值 26,211→5,379（-79.5%））
+> Last Updated: 2026-08-28（AAF-MAINT-HANDOFF-001 — §5.2/§5.4 更新：Obsidian 双角色模型 + GitHub/Obsidian 分工规则；Obsidian Handoff = PILOT / EXPERIMENTAL）
 > Location: `docs/internal/AAF_MASTER_BACKLOG.md`
 
 ## Purpose
@@ -725,7 +725,8 @@ ChatGPT（Project / conversation）:
   planner / discussion interface —— 用于规划和协作
 
 Obsidian（D:\AdyAI\Obsidian-Vault\AI Agent Framework\）:
-  human-readable mirror and recovery layer —— 用于阅读、搜索和恢复
+  working knowledge / conversation handoff layer（PILOT / EXPERIMENTAL，2026-08-28 建立）
+  + human-readable mirror（MIRROR ONLY）—— 阅读、搜索、恢复与工作记录（详见 §5.4）
 ```
 
 ## 5.3 ChatGPT 丢失后的恢复原则
@@ -744,12 +745,29 @@ GitHub / local repo
 
 Framework 仍能恢复到可继续升级的状态（见 RW-009）。
 
-## 5.4 Obsidian 镜像政策
+## 5.4 Obsidian 政策（2026-08-28 更新：双角色 + 分工规则，AAF-MAINT-HANDOFF-001）
 
-- Obsidian 中的 AAF 文档是 **MIRROR ONLY** 镜像。
-- 镜像文件顶部声明来源与"MIRROR ONLY"。
-- 不将镜像作为独立权威版本维护。
-- 镜像由维护任务显式建立；**不开发自动同步程序或 Obsidian plugin**。
+Obsidian 中的 AAF 文档承担两种角色：
+
+1. **MIRROR（既有政策）**：repo 正式资产的镜像 —— MIRROR ONLY，顶部声明来源；
+   不作为独立权威版本维护；镜像由维护任务显式建立；
+   **不开发自动同步程序或 Obsidian plugin**。
+2. **Working Knowledge / Conversation Handoff 层（PILOT / EXPERIMENTAL，2026-08-28 建立）**：
+   working knowledge、discussion、draft、conversation handoff、stage retrospective、
+   未定 / 未提升决策、每日项目笔记。当前 Pilot 只含一个入口文件
+   `CURRENT_HANDOFF.md`；不建复杂结构 / plugin / 自动化；
+   **尚未验证**（验证 = 新 Planner 对话读取 CURRENT_HANDOFF 后准确恢复项目状态）。
+
+GitHub / Obsidian 知识分工（当前工作规则）：
+- GitHub / repo（正式 / 已提升知识；代码与版本权威）：code、formal policy、
+  frozen design、PROJECT_STATE、MASTER_BACKLOG、formal REPORTs、promoted / finalized assets
+- Obsidian（Working Knowledge 层）：working knowledge、discussion、draft、
+  conversation handoff、stage retrospective、uncertain / not-yet-promoted decisions、
+  daily project notes
+- **一条信息只有一个 active authority；禁止维护两份可编辑的权威副本。**
+
+Promotion 模型：
+Obsidian working knowledge → stable conclusion → Framework task → 提升进 repo / GitHub 正式资产
 
 ---
 

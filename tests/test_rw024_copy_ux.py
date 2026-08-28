@@ -9,17 +9,27 @@ E. [关闭] 按钮 → 关闭主窗口
 F. copy failure → 窗内「复制失败」反馈 → 无 false success（按钮不回退为已复制）
    + 失败后重试成功 → 反馈转为「已复制 ✓」
 
+FIX-001 追加覆盖（TASK req 3/4/9 A–H）：
+G. 反馈计时器到期 → 按钮/反馈恢复「复制报告」（临时反馈，不永久停留）
+H. 反馈期内重复复制 → 复制再次执行 + 计时器刷新（不提前恢复）
+I. 窗口在 timer 到期前关闭 → after 回调无异常、不重建窗口、无残留
+J. backlog RW-024 状态与当前实现一致（SOLVED + 完成态字段 + 无「只登记不实现」）
+
 策略：mocked/unit-level Tk 行为——真实（withdrawn）tk.Tk root 上调用
 `ui.show_finished`，复制回调（on_copy）全部 mock：不触真实剪贴板、不触
 ToDesk-sensitive clipboard E2E；用 monkeypatch 的 show_info/show_error
-记录器证明成功路径零 modal 调用。
+记录器证明成功路径零 modal 调用。计时器通过 monkeypatch
+`ui_mod.COPY_FEEDBACK_MS` 缩短后以真实 Tk after 事件循环驱动。
 
 另含 Bridge 层测试：`Bridge._copy_last_report` 保留 handoff 构建 +
 `ui.clipboard_set_text` 写剪贴板逻辑，返回 bool，且不再调用任何提示弹窗。
 """
 from __future__ import annotations
 
+import re
+import time
 import tkinter as tk
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -307,3 +317,104 @@ def test_bridge_copy_last_report_no_last_run_returns_false(ui_root, monkeypatch,
     bridge.root = root
     assert bridge._copy_last_report() is False
     assert modal_spy["info"] == [] and modal_spy["error"] == []
+
+
+# ========== FIX-001 G. 反馈计时器到期 → 恢复「复制报告」（临时反馈） ==========
+
+def test_g_timer_restores_copy_report_label(ui_root, monkeypatch):
+    root = ui_root
+    monkeypatch.setattr(ui_mod, "COPY_FEEDBACK_MS", 100)
+    ui_mod.show_finished(root, "RW024-G", r"C:\out\REPORT.md", lambda: True)
+    win = _find_finished_window(root)
+    _button(win, "复制报告").invoke()
+    _pump(root)
+
+    assert "已复制 ✓" in _button_texts(win), "复制成功必须先显示「已复制 ✓」"
+
+    time.sleep(0.25)  # 跨过 100ms 反馈期
+    _pump(root)
+
+    assert _button(win, "复制报告") is not None, "timer 到期后按钮必须恢复「复制报告」"
+    assert "已复制 ✓" not in _button_texts(win), "「已复制 ✓」不得永久停留"
+    assert "已复制 ✓" not in _label_texts(win), "窗内反馈标签一并恢复"
+    assert _find_finished_window(root) is win, "恢复后主窗口仍保持打开"
+
+
+# ========== FIX-001 H. 反馈期内重复复制 → 再次执行 + 计时器刷新 ==========
+
+def test_h_repeat_copy_before_timer_resets_feedback(ui_root, monkeypatch):
+    root = ui_root
+    monkeypatch.setattr(ui_mod, "COPY_FEEDBACK_MS", 200)
+    calls = []
+    ui_mod.show_finished(root, "RW024-H", r"C:\out\REPORT.md", lambda: calls.append(1) or True)
+    win = _find_finished_window(root)
+    toplevels_before = len(_find_toplevels(root))
+
+    _button(win, "复制报告").invoke()
+    _pump(root)
+    time.sleep(0.12)  # 第一次 timer（200ms）尚未到期
+    second = _button(win, "已复制 ✓")
+    assert second is not None, "反馈期内按钮仍可点击"
+    second.invoke()  # timer 到期前再次复制
+    _pump(root)
+
+    assert calls == [1, 1], "每次点击都必须再次执行复制"
+    assert len(_find_toplevels(root)) == toplevels_before, "重复复制不得创建第二窗口"
+
+    time.sleep(0.12)  # 已过第一次 deadline（200ms），第二次刷新后（+200ms）尚未到期
+    _pump(root)
+    assert "已复制 ✓" in _button_texts(win), "timer 被刷新：第一次 deadline 过后反馈仍在显示"
+
+    time.sleep(0.35)  # 跨过第二次 deadline
+    _pump(root)
+    assert _button(win, "复制报告") is not None, "刷新后的 timer 到期恢复「复制报告」"
+
+
+# ========== FIX-001 I. 窗口在 timer 到期前关闭 → after 回调无异常、不重建窗口 ==========
+
+def test_i_window_close_before_timer_no_exception(ui_root, monkeypatch):
+    root = ui_root
+    monkeypatch.setattr(ui_mod, "COPY_FEEDBACK_MS", 100)
+    ui_mod.show_finished(root, "RW024-I", r"C:\out\REPORT.md", lambda: True)
+    win = _find_finished_window(root)
+    _button(win, "复制报告").invoke()
+    _pump(root)
+
+    close_btn = _button(win, "关闭")
+    close_btn.invoke()  # timer 到期前显式关闭窗口
+    _pump(root)
+
+    time.sleep(0.25)  # 跨过 timer deadline：after 回调此时触发，不得抛异常
+    _pump(root)  # 若回调抛 TclError/重建窗口，此处会失败
+
+    assert _find_finished_window(root) is None, "关闭后不得重建完成窗口"
+    assert _find_toplevels(root) == [], "关闭后无残留窗口"
+
+
+# ========== FIX-001 J. backlog RW-024 状态与当前实现一致 ==========
+
+def test_j_backlog_rw024_matches_implementation():
+    """RW-024 单一可信当前状态：SOLVED + 完成态 Current Implementation +
+    Remaining Gap=NONE + Decision 不再「只登记，不实现」。"""
+    backlog = (
+        Path(__file__).resolve().parents[1]
+        / "docs" / "internal" / "AAF_MASTER_BACKLOG.md"
+    )
+    text = backlog.read_text(encoding="utf-8")
+
+    m = re.search(r"## RW-024 — .*?(?=\n## RW-|\Z)", text, re.S)
+    assert m, "backlog 必须存在 RW-024 条目"
+    section = m.group(0)
+
+    assert "SOLVED" in section, "RW-024 Status 必须为 SOLVED"
+    assert "本任务只登记，不实现" not in section, "Decision 不得保留「只登记，不实现」登记态"
+    assert re.search(r"Remaining Gap\s*\|\s*\*\*NONE\*\*", section), (
+        "Remaining Gap 必须为 NONE（无 blocking gap）"
+    )
+    # Current Implementation 描述当前完成态：单窗 + 窗内临时反馈 + 恢复动作语义
+    assert "临时" in section and "恢复「复制报告」" in section, (
+        "Current Implementation 必须描述「已复制 ✓」为临时反馈并恢复「复制报告」"
+    )
+    assert "不弹第二 modal" in section or "不弹第二个 modal" in section, (
+        "Current Implementation 必须保持无第二 modal 约束"
+    )

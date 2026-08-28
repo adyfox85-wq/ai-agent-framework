@@ -4,6 +4,10 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox
 
+# RW-024（FIX-001）：复制成功反馈临时时长——按钮「已复制 ✓」在此毫秒数后
+# 经 Tk after() 自动恢复「复制报告」（主线程调度，无后台线程）。
+COPY_FEEDBACK_MS = 1500
+
 
 def show_confirm(
     root: tk.Tk,
@@ -277,6 +281,9 @@ def show_finished(root: tk.Tk, task_id: str, report_path: str, on_copy) -> None:
     RW-024：单窗 UX——点击「复制报告」只执行复制并在窗内就地反馈
     （按钮变「已复制 ✓」/ 窗内「复制失败」），不弹第二个 modal、
     不关闭主窗；仅「关闭」按钮 / 窗口关闭按钮退出。
+    RW-024（FIX-001）：成功反馈为临时状态——`COPY_FEEDBACK_MS` 后按钮
+    恢复「复制报告」；反馈期内重复复制会刷新计时器；窗口已关闭时
+    after 回调安全跳过（不抛异常、不重建窗口）。
 
     on_copy 由调用方提供（执行 handoff 构建 + 写剪贴板），返回 bool：
     True = 复制成功；False = 复制失败。
@@ -306,7 +313,31 @@ def show_finished(root: tk.Tk, task_id: str, report_path: str, on_copy) -> None:
     copy_btn = tk.Button(btns, text="复制报告", width=12)
     copy_btn.pack(side="left", padx=8)
 
+    feedback_after = {"id": None}  # RW-024 FIX-001：成功反馈计时器（after id）
+
+    def _cancel_feedback_timer() -> None:
+        aid = feedback_after["id"]
+        if aid is None:
+            return
+        feedback_after["id"] = None
+        try:
+            win.after_cancel(aid)
+        except tk.TclError:
+            pass  # 窗口可能已销毁
+
+    def _restore_copy_label() -> None:
+        """反馈到期恢复动作语义；窗口已关闭时不得抛异常 / 重建窗口。"""
+        feedback_after["id"] = None
+        try:
+            if not win.winfo_exists():
+                return
+            copy_btn.config(text="复制报告")
+            feedback.config(text="")
+        except tk.TclError:
+            pass  # 窗口已销毁：after 回调安全退出，不影响 Bridge lifecycle
+
     def do_copy():
+        _cancel_feedback_timer()
         try:
             ok = bool(on_copy())
         except Exception:  # noqa: BLE001 —— 复制回调异常显式显示失败，不弹窗
@@ -314,6 +345,7 @@ def show_finished(root: tk.Tk, task_id: str, report_path: str, on_copy) -> None:
         if ok:
             copy_btn.config(text="已复制 ✓")
             feedback.config(text="已复制 ✓", fg="#1a7f37")
+            feedback_after["id"] = win.after(COPY_FEEDBACK_MS, _restore_copy_label)
         else:
             copy_btn.config(text="复制报告")
             feedback.config(text="复制失败", fg="#b00020")

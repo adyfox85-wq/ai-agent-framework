@@ -6,6 +6,18 @@ from pathlib import Path
 
 from .task_validation import parse_task_fields
 
+# ---------- Blocking Provenance（FIX-001：structured blocking 语义必须可辨识来源） ----------
+# 三种来源，优先级见 agent_result_blocked：
+# - structured：blocking_rework 来自 agent 显式声明的 schema-validated 结构化块
+#   （COMPLETE；explicit reviewer blocking verdict 的权威事实）
+# - framework：Framework 可确定的执行有效性事实（FRAMEWORK_ERROR / required result
+#   缺失或空 / invalid structured blocking data）——优先于 agent 的任何 no-blocking 声明
+# - narrative：legacy narrative keyword fallback / 一致性 guard 交叉验证后的派生值——
+#   永远只是 fallback，不得伪装成 structured authoritative fact
+BLOCKING_PROVENANCE_STRUCTURED = "structured"
+BLOCKING_PROVENANCE_FRAMEWORK = "framework"
+BLOCKING_PROVENANCE_NARRATIVE = "narrative"
+
 
 def _summarize(text: str, limit: int = 6000) -> str:
     text = text.strip()
@@ -28,74 +40,138 @@ def verdict_ok(agent: str, body: str) -> bool:
 def verdict_blocked(agent: str, body: str) -> bool:
     """判定该 Agent 结果是否构成阻断（缺失 / FRAMEWORK_ERROR / 明确 FAILED / FAIL / REQUEST_CHANGE）。
 
-    只认全大写结论标记（FAILED / FAIL / REQUEST_CHANGE）；小写/首字母大写的描述性动词
-    （如 "Failed to read file"）属于工具级错误描述，不构成任务失败。
+    只认显式结论标记；小写/首字母大写的描述性动词（如 "Failed to read file"）属于
+    工具级错误描述，不构成任务失败。
 
     RW-022：FAILED 分支同样允许通过结论逃逸——WorkBuddy PASS_WITH_WARNING / Codex APPROVE
-    正文中的历史 FAILED 引用（如"原 FAILED 项已解决"、"FAILED 场景验证通过"）不是当前阻断；
-    Hermes（无 verdict 语义）与无通过结论的正文仍按 FAILED 阻断（fail-safe）。
+    正文中的历史 FAILED 引用（如"原 FAILED 项已解决"、"FAILED 场景验证通过"）不是当前阻断。
+
+    FIX-001（RW-022 blocker 4）：Hermes（无 verdict 语义）只认**显式失败判定形态**——
+    ``**Result: FAILED**`` / ``Result: FAILED`` / 行首 ``FAILED:`` / ``FAIL:`` /
+    ``REQUEST_CHANGE:`` / 正文仅 FAILED。narrative 中出现的技术性词语
+    （如"previously FAILED test now passes"、"fixed the error"）不是 execution failure
+    / blocking verdict，不得仅凭文本关键词把最终任务变成 WAITING。
     """
     body = body.strip()
     if not body:
         return True
     if body.startswith('FRAMEWORK_ERROR'):
         return True
-    # 显式失败结论（全大写）：任何 agent 都阻断；reviewer agent 已有明确通过结论时，
-    # 正文中的历史/工具级 FAILED 引用不视为当前阻断（RW-022）
-    if re.search(r'\bFAILED\b', body):
-        if agent in ('workbuddy', 'codex') and verdict_ok(agent, body):
-            return False
+    if agent in ('workbuddy', 'codex'):
+        # reviewer：显式失败结论（全大写）任何位置都阻断；已有明确通过结论时，
+        # 正文中的历史/工具级 FAILED 引用不视为当前阻断（RW-022）
+        if re.search(r'\bFAILED\b', body):
+            if verdict_ok(agent, body):
+                return False
+            return True
+        # FAIL / REQUEST_CHANGE：有通过结论（PASS/PASS_WITH_WARNING/APPROVE）时，
+        # 正文中的历史引用（如"原 REQUEST_CHANGE 已关闭"）不视为阻断
+        if re.search(r'\b(FAIL|REQUEST_CHANGE|FRAMEWORK_ERROR)\b', body):
+            if verdict_ok(agent, body):
+                return False
+            return True
+        return False
+    # 无 verdict 语义的 agent（hermes 等）：只认显式失败判定形态
+    return _explicit_failure_marker(body)
+
+
+# 显式失败判定行：Result/Verdict/Status/结论/判定 + FAILED/FAIL/REQUEST_CHANGE
+_RESULT_VERDICT_LINE_RE = re.compile(
+    r'(?im)^[ \t]*(?:\*\*[ \t]*)?(?:Result|Verdict|Status|结论|判定)'
+    r'[ \t]*[:：][ \t]*(?:\*\*[ \t]*)?(FAILED|FAIL|REQUEST_CHANGE)\b'
+)
+# 行首 FAILED:/FAIL:/REQUEST_CHANGE:（显式判定前缀；区分 "FAILED: 实现不完整" 与
+# 句中 "the previously FAILED test now passes"）
+_PREFIX_FAIL_RE = re.compile(r'(?im)^[ \t]*(FAILED|FAIL|REQUEST_CHANGE)[ \t]*[:：]')
+
+
+def _explicit_failure_marker(body: str) -> bool:
+    """无 verdict 语义 agent 的显式失败判定形态（FIX-001）。"""
+    b = body.strip()
+    if not b:
         return True
-    # FAIL / REQUEST_CHANGE：有通过结论（PASS/PASS_WITH_WARNING/APPROVE）时，
-    # 正文中的历史引用（如"原 REQUEST_CHANGE 已关闭"）不视为阻断
-    if re.search(r'\b(FAIL|REQUEST_CHANGE|FRAMEWORK_ERROR)\b', body):
-        if verdict_ok(agent, body):
-            return False
+    if re.fullmatch(r'(FAILED|FAIL)', b):
+        return True
+    if _RESULT_VERDICT_LINE_RE.search(b) or _PREFIX_FAIL_RE.search(b):
         return True
     return False
 
 
-def read_structured_blocking(agent: str, output_dir) -> tuple[bool, bool | None, str]:
-    """读取 ``<agent>_result.json`` 的 blocking 信号（RW-022 structured-first）。
+def read_structured_blocking(agent: str, output_dir) -> tuple[bool, bool | None, str, str]:
+    """读取 ``<agent>_result.json`` 的 blocking 信号 + provenance（RW-022 / FIX-001）。
 
-    返回 (available, blocking, status)：
-    - available=False：JSON 缺失 / 损坏 / 无 blocking_rework 字段 → 调用方走 narrative fallback
-    - available=True：blocking = blocking_rework 字段（bool）；status =
-      structured_summary_status（COMPLETE / CONSISTENCY_VIOLATION / MALFORMED /
-      NOT_PROVIDED …）
+    返回 (available, blocking, status, provenance)：
+    - available=False：JSON 缺失 / 损坏（不可解析）→ 调用方走 legacy narrative fallback
+    - status == 'INVALID'：JSON 可解析但 ``blocking_rework`` 字段存在且非 bool
+      （invalid structured blocking data）→ 调用方必须 fail closed（FIX-001 Req G）
+    - provenance：structured / framework / narrative（见模块常量）；旧 artifact
+      缺少 provenance 字段时按 agent 推断（backward compat）：
+      * reviewer（workbuddy/codex）+ COMPLETE → blocking_rework 来自 agent 显式
+        结构化块 → structured（旧框架只在 COMPLETE 分支采用 structured 值）
+      * hermes → blocking_rework 始终由 narrative 派生 → narrative（防止 narrative
+        keyword 推断被包装成 structured authoritative fact）
     """
     if output_dir is None:
-        return False, None, ''
+        return False, None, '', ''
     path = Path(output_dir) / f'{agent}_result.json'
     if not path.exists():
-        return False, None, ''
+        return False, None, '', ''
     try:
         data = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError):
-        return False, None, ''
-    if not isinstance(data, dict) or not isinstance(data.get('blocking_rework'), bool):
-        return False, None, ''
-    return True, bool(data['blocking_rework']), str(data.get('structured_summary_status') or '')
+        return False, None, '', ''
+    if not isinstance(data, dict):
+        return False, None, '', ''
+    br = data.get('blocking_rework')
+    if 'blocking_rework' in data and not isinstance(br, bool):
+        # 字段存在但类型非法：invalid structured blocking data → fail closed
+        return False, None, 'INVALID', ''
+    if not isinstance(br, bool):
+        # 旧 artifact 缺少新 blocking 字段 → legacy fallback（Req 6 backward compat）
+        return False, None, '', ''
+    status = str(data.get('structured_summary_status') or '')
+    prov = str(data.get('blocking_provenance') or '')
+    if not prov:
+        prov = (
+            BLOCKING_PROVENANCE_STRUCTURED
+            if status == 'COMPLETE' and agent in ('workbuddy', 'codex')
+            else BLOCKING_PROVENANCE_NARRATIVE
+        )
+    return True, bool(br), status, prov
 
 
 def agent_result_blocked(agent: str, body: str, output_dir=None) -> bool:
-    """聚合用阻断判定：structured result 优先，legacy narrative 为 fail-safe fallback（RW-022）。
+    """聚合用阻断判定：framework hard failure > structured 权威 > fail-safe fallback（FIX-001）。
 
-    - structured JSON 存在且 blocking_rework 合法：
-      * summary COMPLETE（经 schema validation + narrative 一致性 guard）→ 直接采用
-        blocking_rework（Agent 显式声明的事实；不再用 narrative 关键词猜测）
-      * 非 COMPLETE（MALFORMED / CONSISTENCY_VIOLATION / 其他）→ 结构化信号与
-        narrative 任一判定阻断即阻断（fail-safe：无法证明无阻断时不得 SUCCESS）
-    - 无 structured JSON（legacy 目录 / 未写入）→ 原 narrative keyword 判定（向后兼容；
-      空结果 / FRAMEWORK_ERROR / 明确 FAILED / FAIL / REQUEST_CHANGE 仍阻断——不 fail-open）
+    优先级（FIX-001 Req 7）：
+    1. Framework-determined hard failure（Req 3，优先于 agent 的任何 no-blocking 声明）：
+       - required result missing / empty
+       - FRAMEWORK_ERROR（required agent execution failure）
+       - invalid structured blocking data（blocking_rework 存在但非 bool）→ fail closed
+    2. explicit structured verdict：JSON 存在、blocking_rework 合法、summary COMPLETE
+       且 provenance=structured → 直接采用 blocking_rework（agent 显式声明的权威事实）。
+       provenance=narrative（narrative keyword 派生）**永远不是** structured authority。
+    3. fail-safe fallback：非 COMPLETE（MALFORMED / CONSISTENCY_VIOLATION / NOT_PROVIDED /
+       legacy 无 JSON）→ 结构化信号与 narrative 任一判定阻断即阻断（无法证明无阻断时
+       不得 SUCCESS；narrative fallback 只作 fallback，不得重新制造
+       narrative → structured-authority laundering）。
     """
-    available, blocking, summary_status = read_structured_blocking(agent, output_dir)
-    if not available:
-        return verdict_blocked(agent, body)
-    if summary_status == 'COMPLETE':
+    stripped = (body or '').strip()
+    # 1) Framework-determined hard failures（最高优先级；COMPLETE 标签不得覆盖 execution validity）
+    if not stripped:
+        return True  # required result missing / empty（required stage not executed）
+    if stripped.startswith('FRAMEWORK_ERROR'):
+        return True  # framework execution failure
+    available, blocking, status, provenance = read_structured_blocking(agent, output_dir)
+    if status == 'INVALID':
+        return True  # invalid structured blocking data → fail closed
+    # 2) explicit structured verdict（唯一权威路径：COMPLETE + provenance=structured）
+    if available and status == 'COMPLETE' and provenance == BLOCKING_PROVENANCE_STRUCTURED:
         return blocking
-    # 非 COMPLETE：fail-safe 交叉验证（任一信号阻断 → 阻断）
-    return blocking or verdict_blocked(agent, body)
+    # 3) fail-safe：任何信号阻断 → 阻断
+    if available:
+        return blocking or verdict_blocked(agent, body)
+    return verdict_blocked(agent, body)
 
 
 def _extract_unresolved(results: dict[str, str], output_dir=None) -> str:

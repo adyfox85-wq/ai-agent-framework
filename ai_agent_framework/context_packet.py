@@ -28,7 +28,12 @@ from datetime import datetime
 from pathlib import Path
 
 from .git_status import SYNC_SYNCED, compute_sync
-from .report import verdict_blocked
+from .report import (
+    BLOCKING_PROVENANCE_FRAMEWORK,
+    BLOCKING_PROVENANCE_NARRATIVE,
+    BLOCKING_PROVENANCE_STRUCTURED,
+    verdict_blocked,
+)
 
 PROTOCOL_VERSION = "packet/1"
 
@@ -38,6 +43,7 @@ STAGE_FIELDS = (
     "status",
     "verdict",
     "blocking_rework",
+    "blocking_provenance",
     "commit",
     "tests",
     "changed_files",
@@ -212,6 +218,10 @@ def build_stage_result(
     - status：result 有效 → SUCCESS，无效（空 / FRAMEWORK_ERROR）→ FAILED
     - verdict / blocking_rework：优先来自 schema-validated 结构化块；未提供时
       由结论词与 report.verdict_blocked 派生（narrative fallback）
+    - blocking_provenance（FIX-001）：blocking_rework 的来源——
+      structured（agent 显式结构化块，经一致性 guard）/ framework（FRAMEWORK_ERROR /
+      空结果等 Framework 可确定的 hard failure）/ narrative（legacy keyword 推断，
+      永远只是 fallback，不得伪装成 structured authoritative fact）
     - commit / changed_files：调用方传入的真实 git 事实（head_before / head_after）
     - findings / warnings：**未知就是未知** —— Agent 未提供结构化块（或块损坏 /
       一致性违规）时为 None（UNKNOWN），绝不伪装为空数组（FIX-002 Req 6）。
@@ -229,13 +239,17 @@ def build_stage_result(
     warnings: list | None = None
     verdict = _derive_verdict(agent, result_text)
     blocking_rework = verdict_blocked(agent, result_text)
+    # Blocking Provenance（FIX-001 Req 1/2）：blocking_rework 的来源必须可辨识——
+    # narrative keyword 推断永远是 narrative（fallback），不得伪装成 structured authority
+    blocking_provenance = BLOCKING_PROVENANCE_NARRATIVE
     summary_complete = False
     status = structured_status
 
     if structured is not None and isinstance(structured, dict):
         if "verdict" in structured and structured["verdict"]:
             verdict = structured["verdict"]
-        if "blocking_rework" in structured:
+        blocking_from_structured = "blocking_rework" in structured
+        if blocking_from_structured:
             blocking_rework = bool(structured["blocking_rework"])
         findings = list(structured.get("findings") or [])
         warnings = list(structured.get("warnings") or [])
@@ -245,9 +259,23 @@ def build_stage_result(
         if violations:
             status = SUMMARY_STATUS_VIOLATION
             summary_complete = False
+            # 一致性违规：structured 值不再可信为权威事实（fail-safe 交叉验证语义）
+            blocking_provenance = BLOCKING_PROVENANCE_NARRATIVE
         else:
             status = SUMMARY_STATUS_COMPLETE
             summary_complete = True
+            # 只有 blocking_rework 真正来自 agent 显式结构化块（如 reviewer schema
+            # 的必填 blocking_rework 字段）才是 structured authoritative fact
+            # （FIX-001 Req 1/2）。hermes 结构化块无 blocking 字段 → blocking_rework
+            # 仍是 narrative 派生值，不得伪装成 structured authority。
+            if blocking_from_structured:
+                blocking_provenance = BLOCKING_PROVENANCE_STRUCTURED
+
+    if not valid:
+        # Framework-determined hard failure（FIX-001 Req 3）：FRAMEWORK_ERROR / 空结果
+        # 优先于 agent 的任何 no-blocking 声明；COMPLETE 标签不得覆盖 execution validity
+        blocking_rework = True
+        blocking_provenance = BLOCKING_PROVENANCE_FRAMEWORK
 
     return {
         "protocol": PROTOCOL_VERSION,
@@ -255,6 +283,7 @@ def build_stage_result(
         "status": "SUCCESS" if valid else "FAILED",
         "verdict": verdict,
         "blocking_rework": blocking_rework,
+        "blocking_provenance": blocking_provenance,
         "commit": head_after,
         "commit_changed": bool(head_before and head_after and head_before != head_after),
         "tests": None,  # 框架不猜测；真实测试证据在 narrative / evidence paths

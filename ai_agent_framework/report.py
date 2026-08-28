@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 from .task_validation import parse_task_fields
+from .verdict_parser import canonical_blocking
 
 # ---------- Blocking Provenance（FIX-001：structured blocking 语义必须可辨识来源） ----------
 # 三种来源，优先级见 agent_result_blocked：
@@ -37,65 +37,57 @@ def _summarize(text: str, limit: int = 6000) -> str:
 
 
 def verdict_ok(agent: str, body: str) -> bool:
-    """该 Agent 是否有明确通过结论（WorkBuddy PASS/PASS_WITH_WARNING/SUCCESS、
-    Codex APPROVE/SUCCESS）。
+    """该 Agent 是否有明确的 canonical 整体通过结论（PASS / PASS_WITH_WARNING /
+    SUCCESS / APPROVE verdict line）。
 
-    有通过结论时，报告内对历史 FAIL / REQUEST_CHANGE 的引用（如"原 REQUEST_CHANGE 已关闭"）
-    不视为当前阻断。Hermes 正常完成即视为通过。
+    FIX-005（RW-022）：只认明确 overall verdict/result 行，不再全文扫描
+    PASS/SUCCESS token——正文中的历史引用 / 示例 / 标题（"PASS 证据"、
+    "SUCCESS path"）不是通过结论，不得覆盖真实 verdict。Hermes 正常完成
+    即视为通过（无 verdict 语义）。
     """
-    if agent == 'workbuddy':
-        return bool(re.search(r'\bPASS_WITH_WARNING\b|\bPASS\b|\bSUCCESS\b', body, re.IGNORECASE))
-    if agent == 'codex':
-        return bool(re.search(r'\bAPPROVE\b|\bSUCCESS\b', body, re.IGNORECASE))
-    return True
+    if agent == 'hermes':
+        return True
+    return canonical_blocking(_strip_structured_block(body or '')) is False
 
 
 def verdict_blocked(agent: str, body: str) -> bool:
-    """判定该 Agent 结果是否构成阻断（缺失 / FRAMEWORK_ERROR / 明确 FAILED / FAIL / REQUEST_CHANGE）。
+    """判定该 Agent 结果是否构成阻断（缺失 / FRAMEWORK_ERROR / canonical 失败 verdict）。
 
-    只认显式结论标记；小写/首字母大写的描述性动词（如 "Failed to read file"）属于
-    工具级错误描述，不构成任务失败。
+    FIX-005（RW-022）：blocking 判定与 verdict 派生使用同一 canonical verdict
+    semantic——只有明确 overall verdict/result 行（VERDICT: FAIL / Result: FAILED /
+    结论：REQUEST_CHANGE / FAILED: 等）才构成阻断；正文任意位置的 FAIL/FAILED/
+    REQUEST_CHANGE token（"test FAILED example"、"previous result was PASS"、
+    quoted 历史 reviewer output）不是结论。
 
-    RW-022：FAILED 分支同样允许通过结论逃逸——WorkBuddy PASS_WITH_WARNING / Codex APPROVE
-    正文中的历史 FAILED 引用（如"原 FAILED 项已解决"、"FAILED 场景验证通过"）不是当前阻断。
-
-    FIX-001（RW-022 blocker 4）：Hermes（无 verdict 语义）只认**显式失败判定形态**——
-    ``**Result: FAILED**`` / ``Result: FAILED`` / 行首 ``FAILED:`` / ``FAIL:`` /
-    ``REQUEST_CHANGE:`` / 正文仅 FAILED。narrative 中出现的技术性词语
-    （如"previously FAILED test now passes"、"fixed the error"）不是 execution failure
-    / blocking verdict，不得仅凭文本关键词把最终任务变成 WAITING。
+    - 空结果 / FRAMEWORK_ERROR → 阻断（framework hard failure）
+    - canonical blocking verdict 行 → 阻断
+    - canonical 通过 verdict 行 → 非阻断（正文中的历史 FAIL/REQUEST_CHANGE
+      引用不视为当前阻断）
+    - 无 canonical verdict 行（ambiguous legacy narrative，Requirement 7）：
+      workbuddy / codex（required reviewer，有 verdict 语义）不得凭正文任意
+      token 猜通过 → fail-safe 阻断（不得 fail-open）
+    - hermes 等无 verdict 语义 agent：只认显式失败判定形态（canonical 失败行 /
+      整行 FAIL / FAILED）
     """
     body = _strip_structured_block(body or '').strip()
     if not body:
         return True
     if body.startswith('FRAMEWORK_ERROR'):
         return True
+    cb = canonical_blocking(body)
+    if cb is not None:
+        return cb
     if agent in ('workbuddy', 'codex'):
-        # reviewer：显式失败结论（全大写）任何位置都阻断；已有明确通过结论时，
-        # 正文中的历史/工具级 FAILED 引用不视为当前阻断（RW-022）
-        if re.search(r'\bFAILED\b', body):
-            if verdict_ok(agent, body):
-                return False
-            return True
-        # FAIL / REQUEST_CHANGE：有通过结论（PASS/PASS_WITH_WARNING/APPROVE）时，
-        # 正文中的历史引用（如"原 REQUEST_CHANGE 已关闭"）不视为阻断
-        if re.search(r'\b(FAIL|REQUEST_CHANGE|FRAMEWORK_ERROR)\b', body):
-            if verdict_ok(agent, body):
-                return False
-            return True
-        return False
+        return True
     # 无 verdict 语义的 agent（hermes 等）：只认显式失败判定形态
     return _explicit_failure_marker(body)
 
 
-# 显式失败判定行：Result/Verdict/Status/结论/判定 + FAILED/FAIL/REQUEST_CHANGE
-_RESULT_VERDICT_LINE_RE = re.compile(
-    r'(?im)^[ \t]*(?:\*\*[ \t]*)?(?:Result|Verdict|Status|结论|判定)'
-    r'[ \t]*[:：][ \t]*(?:\*\*[ \t]*)?(FAILED|FAIL|REQUEST_CHANGE)\b'
-)
-# 行首 FAILED:/FAIL:/REQUEST_CHANGE:（显式判定前缀；区分 "FAILED: 实现不完整" 与
-# 句中 "the previously FAILED test now passes"）
-_PREFIX_FAIL_RE = re.compile(r'(?im)^[ \t]*(FAILED|FAIL|REQUEST_CHANGE)[ \t]*[:：]')
+# 显式失败判定形态已统一到 canonical verdict semantic（FIX-005）：
+# verdict_parser 的行首标签 / 行内整体标签 / 裸 token 行覆盖原
+# _RESULT_VERDICT_LINE_RE（Result/Verdict/Status/结论/判定 + 失败词）与
+# _PREFIX_FAIL_RE（行首 FAILED:/FAIL:/REQUEST_CHANGE:）——单一 parser 复用，
+# 避免多份正则漂移。
 
 _STRUCTURED_BEGIN_MARKER = 'AAF_STRUCTURED_RESULT_BEGIN'
 _STRUCTURED_END_MARKER = 'AAF_STRUCTURED_RESULT_END'
@@ -120,15 +112,17 @@ def _strip_structured_block(text: str) -> str:
 
 
 def _explicit_failure_marker(body: str) -> bool:
-    """无 verdict 语义 agent 的显式失败判定形态（FIX-001）。"""
+    """无 verdict 语义 agent（hermes 等）的显式失败判定形态（FIX-005）。
+
+    统一 canonical verdict semantic：只有明确 verdict/result 行含失败 token
+    （``Result: FAILED`` / ``FAILED: 实现不完整`` / 整行 ``FAILED`` / ``FAIL``）
+    才阻断；句中技术性词语（"the previously FAILED test now passes"）不是
+    execution failure / blocking verdict。
+    """
     b = body.strip()
     if not b:
         return True
-    if re.fullmatch(r'(FAILED|FAIL)', b):
-        return True
-    if _RESULT_VERDICT_LINE_RE.search(b) or _PREFIX_FAIL_RE.search(b):
-        return True
-    return False
+    return canonical_blocking(b) is True
 
 
 def read_structured_blocking(agent: str, output_dir) -> tuple[bool, bool | None, str, str]:
@@ -175,9 +169,10 @@ def read_structured_blocking(agent: str, output_dir) -> tuple[bool, bool | None,
 
 
 def agent_result_blocked(agent: str, body: str, output_dir=None) -> bool:
-    """聚合用阻断判定：framework hard failure > structured 权威 > fail-safe fallback（FIX-001）。
+    """聚合用阻断判定：framework hard failure > structured 权威 > canonical
+    narrative authority > fail-safe fallback（FIX-001 / FIX-005）。
 
-    优先级（FIX-001 Req 7）：
+    优先级（FIX-005 更新，Requirement 3/4/7）：
     1. Framework-determined hard failure（Req 3，优先于 agent 的任何 no-blocking 声明）：
        - required result missing / empty
        - FRAMEWORK_ERROR（required agent execution failure）
@@ -185,10 +180,14 @@ def agent_result_blocked(agent: str, body: str, output_dir=None) -> bool:
     2. explicit structured verdict：JSON 存在、blocking_rework 合法、summary COMPLETE
        且 provenance=structured → 直接采用 blocking_rework（agent 显式声明的权威事实）。
        provenance=narrative（narrative keyword 派生）**永远不是** structured authority。
-    3. fail-safe fallback：非 COMPLETE（MALFORMED / CONSISTENCY_VIOLATION / NOT_PROVIDED /
-       legacy 无 JSON）→ 结构化信号与 narrative 任一判定阻断即阻断（无法证明无阻断时
-       不得 SUCCESS；narrative fallback 只作 fallback，不得重新制造
-       narrative → structured-authority laundering）。
+    3. canonical narrative verdict（明确 overall verdict/result 行）→ legacy narrative
+       authority（Requirement 3：VERDICT: FAIL 后文无论多少 PASS/SUCCESS 仍 FAIL）。
+       structured 部分信号（provenance=narrative / 非 COMPLETE）与 canonical narrative
+       明确冲突 → fail closed（Requirement 4：structured 与 canonical narrative 冲突
+       不得放行）。
+    4. ambiguous legacy narrative（无 canonical verdict 行，Requirement 7）：不得凭
+       正文任意 PASS/FAIL token 猜权威结论——required agent（workbuddy/codex）不得
+       fail-open；hermes 只认显式失败判定形态（FIX-001 保持）。
     """
     stripped = (body or '').strip()
     # 1) Framework-determined hard failures（最高优先级；COMPLETE 标签不得覆盖 execution validity）
@@ -202,10 +201,19 @@ def agent_result_blocked(agent: str, body: str, output_dir=None) -> bool:
     # 2) explicit structured verdict（唯一权威路径：COMPLETE + provenance=structured）
     if available and status == 'COMPLETE' and provenance == BLOCKING_PROVENANCE_STRUCTURED:
         return blocking
-    # 3) fail-safe：任何信号阻断 → 阻断
+    # 3) canonical narrative verdict authority（FIX-005）
+    n_blocking = canonical_blocking(stripped)
+    if n_blocking is not None:
+        # structured 部分信号与 canonical narrative 明确冲突 → fail closed
+        if available and blocking != n_blocking:
+            return True
+        return n_blocking
+    # 4) fail-safe：structured 部分信号可用 → 采用；否则 required reviewer 不 fail-open
     if available:
-        return blocking or verdict_blocked(agent, body)
-    return verdict_blocked(agent, body)
+        return blocking
+    if agent in ('workbuddy', 'codex'):
+        return True
+    return _explicit_failure_marker(stripped)
 
 
 def _extract_unresolved(results: dict[str, str], output_dir=None) -> str:

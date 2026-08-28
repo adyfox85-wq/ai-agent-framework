@@ -44,6 +44,7 @@ from ai_agent_framework.report import (
     agent_result_blocked,
     verdict_blocked,
 )
+from ai_agent_framework.verdict_parser import parse_canonical_verdict
 
 MINIMAL_EXPLICIT_ROUTE_TASK = """# Task ID
 T-RW022-FIX004
@@ -196,9 +197,9 @@ def test_d_success_narrative_invalid_provenance_fail_closed(tmp_path):
 
 def test_d_success_narrative_schema_malformed_claim_not_authoritative(tmp_path):
     # blocking_rework 类型非法 → schema 拒绝整块（MALFORMED）：malformed claim 永远
-    # 不能成为 no-blocking authority；决策回到 narrative（existing fail-safe policy——
-    # narrative 明确 SUCCESS 且无任何阻断信号 → 非阻断；有任一阻断信号仍会阻断）
-    body = ("All checks passed. SUCCESS.\n" + STRUCTURED_RESULT_BEGIN + "\n"
+    # 不能成为 no-blocking authority；决策回到 narrative（FIX-005 canonical
+    # semantic——narrative 明确 overall result SUCCESS 且无任何阻断信号 → 非阻断）
+    body = ("All checks passed.\nOverall result: SUCCESS.\n" + STRUCTURED_RESULT_BEGIN + "\n"
             + json.dumps({"verdict": "PASS", "blocking_rework": "yes",
                           "findings": [], "warnings": []})
             + "\n" + STRUCTURED_RESULT_END)
@@ -209,17 +210,32 @@ def test_d_success_narrative_schema_malformed_claim_not_authoritative(tmp_path):
     assert stage["structured_summary_status"] == "MALFORMED"
     assert stage["summary_complete"] is False
     assert stage["verdict"] == "PASS"
-    assert stage["blocking_rework"] is False  # 来自 narrative（SUCCESS），不是 malformed claim
+    assert stage["blocking_rework"] is False  # 来自 narrative（canonical SUCCESS），不是 malformed claim
     assert stage["blocking_provenance"] == BLOCKING_PROVENANCE_NARRATIVE
     assert blocking_invariant_violations(stage) == []
     # malformed claim 被拒绝（MALFORMED + summary_complete=False）→ 不是 structured authority；
-    # aggregation 走 narrative：narrative 明确 SUCCESS 且无阻断信号 → 非阻断（existing
-    # fail-safe policy）；malformed claim 本身在任何情况下都不能声明权威 no-blocking
+    # aggregation 走 narrative：narrative 明确 overall result SUCCESS 且无阻断信号 → 非阻断
+    # （existing fail-safe policy）；malformed claim 本身在任何情况下都不能声明权威 no-blocking
     out = tmp_path / "out"
     out.mkdir()
     write_stage_result(out, stage)
-    assert agent_result_blocked("workbuddy", "All checks passed. SUCCESS.", out) is False
+    assert agent_result_blocked(
+        "workbuddy", "All checks passed.\nOverall result: SUCCESS.", out) is False
     assert runner_mod._aggregate_status(["workbuddy"], {"workbuddy": body}, out) == "SUCCESS"
+    # FIX-005：无 canonical verdict 行的 ambiguous narrative（"SUCCESS." 是句中
+    # token，不是 verdict 行）→ 不猜 PASS → verdict=None + fail-safe 阻断（不 fail-open）
+    ambiguous = ("All checks passed. SUCCESS.\n" + STRUCTURED_RESULT_BEGIN + "\n"
+                 + json.dumps({"verdict": "PASS", "blocking_rework": "yes",
+                               "findings": [], "warnings": []})
+                 + "\n" + STRUCTURED_RESULT_END)
+    assert parse_canonical_verdict("All checks passed. SUCCESS.") is None
+    data3, status3 = extract_and_validate_structured("workbuddy", ambiguous)
+    assert data3 is None and status3 == "MALFORMED"
+    stage3 = build_stage_result(agent="workbuddy", result_text=ambiguous, output_dir=tmp_path,
+                                structured=data3, structured_status=status3)
+    assert stage3["verdict"] is None
+    assert stage3["blocking_rework"] is True
+    assert blocking_invariant_violations(stage3) == []
     # 同一 rejection 路径下 narrative 带阻断信号 → 仍 fail closed（不因 MALFORMED 而 fail-open）
     fail_body = ("Result: FAILED - implementation incomplete.\n" + STRUCTURED_RESULT_BEGIN + "\n"
                  + json.dumps({"verdict": "PASS", "blocking_rework": "yes",
@@ -301,7 +317,7 @@ def test_violation_narrative_pass_structured_fail_not_mechanical(tmp_path):
     # narrative 明确 PASS + structured 声称 FAIL/blocking=true → violation；
     # narrative-derived verdict 非 blocking → 不因 violation 机械翻转 blocking
     # （structured 声称的 blocking=True 保留——fail-safe 方向不受审查）；provenance=narrative
-    body = ("All items verified. PASS.\n"
+    body = ("All items verified.\n## Result: PASS\n"
             + STRUCTURED_RESULT_BEGIN + "\n"
             + json.dumps({"verdict": "FAIL", "blocking_rework": True,
                           "findings": [], "warnings": []})
@@ -506,9 +522,16 @@ def test_success_with_warning_semantics_preserved(tmp_path):
 
 
 def test_no_false_positive_lowercase_technical_words():
+    # 小写技术词（failed test example / failure handling / error path）不是全大写
+    # 结论 token → 不产生 canonical verdict（FIX-005：正文 token 无权威）
     narrative = ("This test demonstrates a failed test example; the failure handling "
                  "and error path are covered by unit tests.")
-    assert verdict_blocked("workbuddy", narrative) is False
+    assert parse_canonical_verdict(narrative) is None
     assert check_narrative_json_consistency(
         "workbuddy", narrative,
         {"verdict": "PASS", "blocking_rework": False, "findings": [], "warnings": []}) == []
+    # 无 canonical verdict 行的 ambiguous narrative（Requirement 7）：required
+    # agent（workbuddy）不得凭正文 token 猜通过 → fail-safe 阻断（不 fail-open）；
+    # hermes（无 verdict 语义）技术性描述不阻断
+    assert verdict_blocked("workbuddy", narrative) is True
+    assert verdict_blocked("hermes", narrative) is False

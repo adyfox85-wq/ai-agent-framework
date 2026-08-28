@@ -40,6 +40,7 @@ from ai_agent_framework.report import (
     agent_result_blocked,
     verdict_blocked,
 )
+from ai_agent_framework.verdict_parser import parse_canonical_verdict
 
 MINIMAL_EXPLICIT_ROUTE_TASK = """# Task ID
 T-RW022-FIX003
@@ -235,14 +236,20 @@ def test_g_hermes_technical_failed_success_no_false_positive():
 
 
 def test_no_false_positive_lowercase_technical_words():
-    # 小写技术词（failed test example / failure handling / error path）不匹配全大写结论词
+    # 小写技术词（failed test example / failure handling / error path）不是全大写
+    # 结论 token → 不产生 canonical verdict（FIX-005：正文 token 无权威）
     narrative = ("This test demonstrates a failed test example; the failure handling "
                  "and error path are covered by unit tests.")
-    assert verdict_blocked("workbuddy", narrative) is False
+    assert parse_canonical_verdict(narrative) is None
     assert check_narrative_json_consistency(
         "workbuddy", narrative,
         {"verdict": "PASS", "blocking_rework": False, "findings": [], "warnings": []},
     ) == []
+    # 无 canonical verdict 行的 ambiguous narrative（Requirement 7）：required
+    # agent（workbuddy）不得凭正文 token 猜通过 → fail-safe 阻断（不 fail-open）；
+    # hermes（无 verdict 语义）技术性描述不阻断
+    assert verdict_blocked("workbuddy", narrative) is True
+    assert verdict_blocked("hermes", narrative) is False
 
 
 # ============ H: legacy narrative-only FAILED → blocking ============
@@ -331,7 +338,11 @@ def test_derive_verdict_failed_normalization():
         "workbuddy", "previously FAILED test now passes. Overall result: SUCCESS.") == "PASS"
     # codex：REQUEST_CHANGE 不派生成 APPROVE；SUCCESS 归一化为 APPROVE
     assert _derive_verdict("codex", "REQUEST_CHANGE: fix router") == "REQUEST_CHANGE"
-    assert _derive_verdict("codex", "previous REQUEST_CHANGE resolved; APPROVE") == "APPROVE"
+    # FIX-005：正文 token 无权威——行内无标签的 "APPROVE" 不是 verdict 行；
+    # 显式整体结论行（Final verdict: APPROVE）才是 authority
+    assert _derive_verdict("codex", "previous REQUEST_CHANGE resolved; APPROVE") is None
+    assert _derive_verdict(
+        "codex", "previous REQUEST_CHANGE resolved; Final verdict: APPROVE") == "APPROVE"
     assert _derive_verdict("codex", "Overall result: SUCCESS.") == "APPROVE"
     # 无结论词 / FRAMEWORK_ERROR 开头 → None
     assert _derive_verdict("workbuddy", "implemented ok") is None

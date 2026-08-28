@@ -34,6 +34,7 @@ from .report import (
     BLOCKING_PROVENANCE_VALUES,
     verdict_blocked,
 )
+from .verdict_parser import canonical_blocking, normalize_verdict, parse_canonical_verdict
 
 PROTOCOL_VERSION = "packet/1"
 
@@ -215,36 +216,29 @@ def git_changed_files(workspace: Path | str) -> list[str]:
 # ---------- 结构化 stage result ----------
 
 def _derive_verdict(agent: str, body: str) -> str | None:
-    """从 narrative 中提取显式结论标记（全大写）；无 → None。
+    """从 narrative 提取 canonical overall verdict；无明确结论行 → None。
 
     只认官方结论词（WorkBuddy: PASS / PASS_WITH_WARNING / FAIL；
     Codex: APPROVE / REQUEST_CHANGE）；Hermes 是 Executor，无 verdict。
 
-    FIX-003（RW-022 fail-open 缺口）：
+    FIX-005（RW-022 fail-open 根因关闭）：legacy narrative verdict 只从
+    **明确、可识别的 overall conclusion / verdict / result 行**解析
+    （``VERDICT: FAIL`` / ``Result: FAILED`` / ``结论：REQUEST_CHANGE`` /
+    ``Overall result: SUCCESS`` 等，含 Markdown 包裹）；正文任意位置的
+    PASS / SUCCESS / FAIL / FAILED token（"PASS 证据"、"SUCCESS path"、
+    历史引用、示例、code block）只是内容，不是结论——不再全文扫描关键词。
+
     - 只考察纯 narrative（结构化块 JSON 中的结论词不是 narrative 证据）；
-    - FAILED 必须识别（\bFAIL\b 词边界会漏掉 FAILED），并归一化为 FAIL；
-      显式 FAILED 结论（如 "Result: FAILED"）不得派生成 PASS / PASS_WITH_WARNING。
-    - 显式通过结论（PASS / PASS_WITH_WARNING / APPROVE / SUCCESS）优先：
-      narrative 中历史 / 技术性 FAIL / FAILED / REQUEST_CHANGE 引用
-      （如 "previously FAILED test now passes"）不覆盖整体通过结论；
-      SUCCESS 归一化为该 agent 的官方通过词（PASS / APPROVE）。
+    - FAILED 归一化为 FAIL（\\bFAIL\\b 词边界会漏掉 FAILED——FIX-003 保持）；
+    - SUCCESS / APPROVE 归一化为 agent 官方通过词（FIX-003 保持）；
+    - 无 canonical conclusion 行 → None（Requirement 7：不凭正文 token 猜权威
+      verdict；调用方按 UNKNOWN / fail-safe policy 处理）。
     """
     body = _strip_structured_tail(body or "").strip()
     if not body or body.lstrip().startswith("FRAMEWORK_ERROR"):
         return None
-    if agent == "workbuddy":
-        m = re.search(r"\b(PASS_WITH_WARNING|PASS|SUCCESS)\b", body)
-        if m:
-            return "PASS" if m.group(1) == "SUCCESS" else m.group(1)
-        m = re.search(r"\b(FAILED|FAIL)\b", body)
-        return "FAIL" if m else None
-    if agent == "codex":
-        m = re.search(r"\b(APPROVE|SUCCESS)\b", body)
-        if m:
-            return "APPROVE" if m.group(1) == "SUCCESS" else m.group(1)
-        m = re.search(r"\bREQUEST_CHANGE\b", body)
-        return "REQUEST_CHANGE" if m else None
-    return None
+    c = parse_canonical_verdict(body)
+    return normalize_verdict(agent, c.token if c else None)
 
 
 def _summarize(text: str, limit: int = _SUMMARY_LIMIT) -> str:
@@ -471,9 +465,6 @@ def extract_and_validate_structured(agent: str, text: str) -> tuple[dict | None,
 _NARRATIVE_WARNING_RE = re.compile(
     r"(?im)^[ \t]*(?:W\d+[ \t]*[:：]|WARNING[ \t]*[:：]|⚠|warning[ \t]*[:：])"
 )
-# FIX-003（RW-022）：guard 必须识别全部显式失败语义——FAIL / FAILED / REQUEST_CHANGE /
-# FRAMEWORK_ERROR；\bFAIL\b 词边界会漏掉 FAILED，故 FAILED 必须显式列出。
-_NARRATIVE_FAIL_RE = re.compile(r"\b(REQUEST_CHANGE|FAILED|FAIL|FRAMEWORK_ERROR)\b")
 
 # ---------- Blocking Verdict Invariant（FIX-004 / RW-022 最后 blocker） ----------
 # blocking verdict 集合（agent 无关）：consistency violation 恢复 narrative verdict
@@ -535,10 +526,14 @@ def narrative_warning_count(text: str) -> int:
 
 def check_narrative_json_consistency(agent: str, narrative: str, structured: dict) -> list[str]:
     """一致性 guard：structured summary 声明 complete 时，narrative 中显式的
-    blocking finding / warning / REQUEST_CHANGE / FAIL 不得在 JSON 中消失。
+    blocking finding / warning / canonical verdict 不得在 JSON 中消失。
 
-    返回违规列表（空 = 一致）。检测到违规 → 调用方标记 CONSISTENCY_VIOLATION /
-    summary_complete=False（下游必须读 narrative，不得把空 JSON 当完整事实）。
+    FIX-005（RW-022）：guard 只考察 canonical verdict semantic（明确 overall
+    verdict/result 行，与 context_packet._derive_verdict / report 复用同一
+    parser）——正文任意位置的 FAIL/FAILED/REQUEST_CHANGE token 不是结论，
+    structured 声称通过 + narrative 有 canonical blocking verdict → 违规
+    （fail closed）。返回违规列表（空 = 一致）。检测到违规 → 调用方标记
+    CONSISTENCY_VIOLATION / summary_complete=False。
     """
     violations: list[str] = []
     if not isinstance(structured, dict):
@@ -546,6 +541,13 @@ def check_narrative_json_consistency(agent: str, narrative: str, structured: dic
     # FIX-003：guard 只考察纯 narrative——结构化块 JSON 中的结论词
     # （{"verdict": "PASS"}）不是 narrative 证据，不得掩盖 prose 中的 FAILED。
     narrative = _strip_structured_tail(narrative or "")
+
+    # 0) FRAMEWORK_ERROR：framework hard failure 优先于任何 no-blocking 声明
+    if narrative.lstrip().startswith("FRAMEWORK_ERROR"):
+        violations.append(
+            "narrative 为 FRAMEWORK_ERROR（framework hard failure），"
+            "structured 不得声明为通过"
+        )
 
     # 1) warnings：narrative 显式 warning 标记不得在 structured warnings 消失
     n_warn = narrative_warning_count(narrative)
@@ -560,36 +562,22 @@ def check_narrative_json_consistency(agent: str, narrative: str, structured: dic
                 f"narrative warning 标记数（{n_warn}）> structured warnings 数（{len(s_warn)}）"
             )
 
-    # 2) verdict / blocking：narrative 显式失败结论不得在 JSON 消失
+    # 2) verdict / blocking：canonical narrative verdict 不得在 JSON 消失
     if agent in ("workbuddy", "codex"):
         n_verdict = _derive_verdict(agent, narrative)
         s_verdict = structured.get("verdict")
         if n_verdict and s_verdict and n_verdict != s_verdict:
             violations.append(f"narrative verdict {n_verdict} != structured verdict {s_verdict}")
-        has_fail = bool(_NARRATIVE_FAIL_RE.search(narrative))
-        if has_fail and not _narrative_has_positive_verdict(agent, narrative):
-            # narrative 有显式 REQUEST_CHANGE/FAIL 且无通过结论 → structured 必须反映 blocking
+        n_blocking = canonical_blocking(narrative)
+        if n_blocking is True:
+            # narrative 有 canonical blocking verdict → structured 必须反映 blocking
             blocking = structured.get("blocking_rework")
-            if s_verdict not in ("REQUEST_CHANGE", "FAIL") or blocking is not True:
+            if blocking is not True:
                 violations.append(
-                    "narrative 有显式 REQUEST_CHANGE/FAIL 且无通过结论，"
-                    "但 structured 未反映 blocking"
+                    "narrative 有 canonical blocking verdict，"
+                    "但 structured blocking_rework != True"
                 )
     return violations
-
-
-def _narrative_has_positive_verdict(agent: str, narrative: str) -> bool:
-    """narrative 是否有明确通过结论（PASS/PASS_WITH_WARNING/APPROVE/SUCCESS）——
-    此时 narrative 中的历史 FAIL/FAILED/REQUEST_CHANGE 引用不视为当前阻断。
-
-    FIX-003：SUCCESS 与 PASS/APPROVE 同属显式整体通过结论（与 report.verdict_ok
-    语义对齐）——技术性 FAILED 字样 + 明确 overall result SUCCESS 不得误判阻断。
-    """
-    if agent == "workbuddy":
-        return bool(re.search(r"\bPASS_WITH_WARNING\b|\bPASS\b|\bSUCCESS\b", narrative))
-    if agent == "codex":
-        return bool(re.search(r"\bAPPROVE\b|\bSUCCESS\b", narrative))
-    return False
 
 
 # ---------- Remote Sync 语义（FIX-002 Req 4 / 5） ----------

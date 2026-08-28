@@ -244,7 +244,9 @@ def test_resume_non_terminal_running_reuses_results(tmp_path, monkeypatch):
 
     def fake_agent(agent, prompt, workspace):
         calls.append(agent)
-        return "ok" if agent == "workbuddy" else "implemented ok"
+        # FIX-005：workbuddy 夹具用 canonical verdict 行（"ok" 无 verdict 行 →
+        # ambiguous → required agent fail-safe 阻断）；hermes 无 verdict 语义
+        return "**Result: PASS**\nverified" if agent == "workbuddy" else "implemented ok"
 
     monkeypatch.setattr(runner_mod, "run_agent", fake_agent)
     # route 派生与残留 route.json 保持一致（FIX-005 Req 2：evidence 必须一致）

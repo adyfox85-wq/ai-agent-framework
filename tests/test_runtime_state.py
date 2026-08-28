@@ -130,7 +130,9 @@ def test_runner_integration_writes_stage_phases(tmp_path, monkeypatch):
     def fake_run(args, cwd, input, text, encoding, errors, capture_output, timeout, env, **kwargs):
         class P:
             returncode = 0
-            stdout = "PASS fake"
+            # FIX-005：agent 夹具使用 canonical verdict 行（"PASS fake" 无 verdict
+            # 行 → ambiguous → required agent fail-safe 阻断）
+            stdout = "**Result: PASS**\nfake ok"
             stderr = ""
         return P()
 

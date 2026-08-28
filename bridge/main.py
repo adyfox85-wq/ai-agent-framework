@@ -73,6 +73,21 @@ LISTENER_READY_TIMEOUT = 3.0  # 秒
 #   仍 alive 但未 ready）不 reset recovery/backoff、不报告 healthy。
 # - 健康判定区分 alive / ready / error：thread alive != hotkey usable。
 
+# RW-012 FIX-003（atomic delayed-exit recovery，单一 lifecycle authority）：
+# - _poll_health 的 delayed-exit check-and-clear 是受 _lifecycle_lock 保护的原子
+#   单元（_delayed_exit_cleanup）：check pending exited → 锁内重新确认 identity
+#   （self._pending_stop is old、self.listener is old、old not alive）→ 才清理。
+#   关闭 FIX-002 遗留的 TOCTOU：lock 外 check → 锁内另一路创建 replacement →
+#   lock 外 clear 清掉新 listener reference 的合法交错路径。
+# - 清理 = ownership release 的真实 lifecycle 状态变化 → HotkeyRecovery.rearm()
+#   开启一次新的有界 recovery epoch（epoch+1，_stopped/backoff/失败计数复位）。
+#   这不是无限预算重置：每次 delayed-exit 事件只 rearm 一次（identity-safe
+#   clear 只发生一次），replacement 失败仍受 max_failures/backoff 有界约束，
+#   不会每 poll tick 重置、不会 tight loop。
+# - 所有 self.listener / _pending_stop / ownership-clear / rearm 的 transition
+#   都在 _lifecycle_lock 内（_apply_hotkey / _delayed_exit_cleanup /
+#   _try_recover_hotkey 异常路径 / shutdown），无 lock 外 mutation。
+
 # 单实例 mutex（Restart 交接 / 防双开）
 _SINGLE_INSTANCE_MUTEX = "Local\\AAF_Bridge_SingleInstance_v0_4"
 _RESTART_RETRIES = 10  # 重启时旧实例退出后新实例获取 mutex 的重试次数
@@ -205,6 +220,10 @@ class HotkeyRecovery:
         self._next_attempt_at = 0.0
         self._recovering = False
         self._stopped = False
+        # RW-012 FIX-003：recovery epoch 计数。每次 delayed-exit ownership
+        # release（rearm）+1，用于验证「每个真实 lifecycle 变化只 rearm 一次、
+        # 不每 poll 无限重置」（可观测 / 可单测）。
+        self.epoch = 0
 
     # ---------- 只读状态 ----------
 
@@ -252,6 +271,26 @@ class HotkeyRecovery:
             return
         idx = min(self.consecutive_failures - 1, len(self.backoff) - 1)
         self._next_attempt_at = now + self.backoff[idx]
+
+    def rearm(self) -> None:
+        """RW-012 FIX-003：delayed-exit ownership release → 开启一次新的有界
+        recovery epoch。
+
+        语义：`_stopped` / backoff / 失败计数全部复位，epoch += 1。表示
+        「旧的 unresolved ownership blocker 已真实解除（pending old listener
+        确认退出）」，允许一次新的有界 replacement recovery opportunity——
+        这不是无限 retry，而是新的 lifecycle condition（Requirement 5/6B）。
+
+        与 reset() 的区别：reset 表示「当前 listener 成功」（不产生新 epoch）；
+        rearm 表示「ownership blocker 已解除」这一真实状态变化，只应在
+        identity-safe delayed-exit clear 内调用一次。replacement 失败仍受
+        max_failures / backoff 有界约束，不会每 poll tick 重置（Requirement 7）。
+        """
+        self.consecutive_failures = 0
+        self._next_attempt_at = 0.0
+        self._recovering = False
+        self._stopped = False
+        self.epoch += 1
 
     def note(self) -> str:
         """面向用户的可观察说明（失败必须可见：状态窗口 / Tray Tooltip / 日志）。"""
@@ -399,6 +438,51 @@ class Bridge:
             )
         return exited
 
+    def _clear_pending_ownership_locked(self, old) -> bool:
+        """RW-012 FIX-003：identity-safe delayed-exit ownership clear。
+
+        调用方必须已持有 _lifecycle_lock（本方法自身不获取锁）。在锁内
+        重新确认以下全部成立才清理（Requirement 2/3/12）：
+        - self._pending_stop is old（pending 身份未变）
+        - self.listener is old（self.listener 仍是同一个旧 listener——
+          如果已被 replacement 接管则绝不清掉 replacement）
+        - old 已确认退出（not alive 由调用方在同一个锁内检查）
+
+        清理 = ownership release 的真实 lifecycle 状态变化 → recovery rearm
+        一次（新有界 epoch）。返回是否发生了清理。
+        """
+        if self._pending_stop is not old:
+            return False  # pending 已变化（另一路已处理）→ 不做任何事
+        if self.listener is not old:
+            return False  # self.listener 已是 replacement → 绝不清掉它
+        self.listener = None
+        self._pending_stop = None
+        # ownership blocker 已真实解除 → 开启一次新的有界 recovery epoch
+        self._recovery.rearm()
+        return True
+
+    def _delayed_exit_cleanup(self) -> bool:
+        """RW-012 FIX-003：受 lifecycle lock 保护的 delayed-exit check-and-clear
+        原子单元（Requirement 1/2）。
+
+        check（pending 存在且已退出）→ clear（identity 重验证）在同一个
+        _lifecycle_lock 临界区内完成，不存在 lock 外 check → 锁内另一路创建
+        replacement → lock 外 clear 的 TOCTOU 窗口（Requirement 11）。
+
+        返回是否发生了清理（并 rearm 一次 recovery epoch）。
+        """
+        with self._lifecycle_lock:
+            pending = self._pending_stop
+            if pending is None or pending.is_alive():
+                return False  # 无 pending / 旧 listener 仍存活 → 不清理
+            if self._clear_pending_ownership_locked(pending):
+                _log(
+                    "AAF Bridge: 旧热键监听线程已确认退出（迟延退出），"
+                    "清理 ownership reference，恢复策略 rearm 一次。"
+                )
+                return True
+            return False
+
     def _apply_hotkey(self, show_error: bool = True) -> None:
         """应用热键配置（启动 / 配置热加载 / 自动恢复）：stop-before-replace。
 
@@ -466,13 +550,22 @@ class Bridge:
         try:
             self._apply_hotkey(show_error=False)
         except Exception:
-            # 异常路径不盲目清空引用（orphan prevention）：仅当旧 listener 已
-            # 确认退出（is_alive False ⟹ thread-owned unregister 已完成）才允许
-            # 解绑；仍存活 → 保留引用，由下一轮 recovery 继续处理
-            cur = self.listener
-            if cur is not None and not cur.is_alive():
-                self.listener = None
-                self._pending_stop = None
+            # 异常路径不盲目清空引用（orphan prevention）：仅当确认退出
+            # （is_alive False ⟹ thread-owned unregister 已完成）才允许解绑；
+            # 仍存活 → 保留引用，由下一轮 recovery 继续处理。
+            # RW-012 FIX-003：引用清理同样必须在 _lifecycle_lock 内做 identity
+            # 重验证（lock 外 check → lock 外 clear 的 TOCTOU 路径关闭）——
+            # 锁内确认 pending/listener 身份与退出状态后才清，绝不清掉
+            # 并发路径已安装的 replacement。
+            with self._lifecycle_lock:
+                pending = self._pending_stop
+                if pending is not None and not pending.is_alive():
+                    self._clear_pending_ownership_locked(pending)
+                elif self.listener is not None and not self.listener.is_alive():
+                    # 无 pending 但当前 listener 已退出（异常发生在 stop 后 /
+                    # 新 listener 未就绪即死）→ 锁内确认后移除死引用
+                    self.listener = None
+                    self._pending_stop = None
             return False
         status, _ = classify_bridge_health(self.listener, self._pending_stop is not None)
         return status == HEALTH_OK
@@ -534,13 +627,12 @@ class Bridge:
         """
         try:
             if not self._shutting_down:
-                if self._pending_stop is not None and not self._pending_stop.is_alive():
-                    _log(
-                        "AAF Bridge: 旧热键监听线程已确认退出（迟延退出），"
-                        "清理 ownership reference。"
-                    )
-                    self.listener = None
-                    self._pending_stop = None
+                # RW-012 FIX-003：delayed-exit check-and-clear 是受 lifecycle
+                # lock 保护的原子单元（锁内 identity 重验证 + rearm）；即使恢复
+                # 策略处于 backoff / 已停止，旧 listener 一旦确认退出也必须清理
+                # ownership reference（不留死引用、不伪装 healthy），随后按正常
+                # 恢复策略决定是否启动 exactly one replacement（不永久卡死）
+                self._delayed_exit_cleanup()
                 status, detail = classify_bridge_health(
                     self.listener, self._pending_stop is not None
                 )
@@ -603,7 +695,10 @@ class Bridge:
         if self.listener is not None:
             # RW-012 FIX-001：请求 listener stop（thread-owned unregister + 有界 join），
             # 主线程不直接 UnregisterHotKey；进程随后退出，kernel 释放残余 registration
-            self._stop_listener()
+            # RW-012 FIX-003：stop/ownership transition 与其余 lifecycle 路径共用
+            # 同一 _lifecycle_lock（单一 transition authority）
+            with self._lifecycle_lock:
+                self._stop_listener()
         argv = build_restart_argv()
         try:
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
@@ -645,9 +740,13 @@ class Bridge:
         - 请求 listener stop → listener-owned unregister → 有界 join
         - 不触发任何恢复（_shutting_down 已置位，恢复被策略拒绝，不复活）
         - 幂等：可安全重复调用
+        RW-012 FIX-003：stop/ownership transition 在 _lifecycle_lock 内执行
+        （与 _apply_hotkey / delayed-exit cleanup 同一 transition authority）；
+        shutdown 不 rearm、不启动 replacement（Requirement 16）。
         """
         self._shutting_down = True
-        self._stop_listener()
+        with self._lifecycle_lock:
+            self._stop_listener()
 
     # ---------- Phase E / TASK-005-C：Stop / Force 动作（req 3/4/5/7） ----------
 

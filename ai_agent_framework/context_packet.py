@@ -268,7 +268,10 @@ def build_stage_result(
     只记录 Framework 可验证的事实，不解析 / 不虚构 LLM 正文语义：
     - status：result 有效 → SUCCESS，无效（空 / FRAMEWORK_ERROR）→ FAILED
     - verdict / blocking_rework：优先来自 schema-validated 结构化块；未提供时
-      由结论词与 report.verdict_blocked 派生（narrative fallback）
+      由结论词与 report.verdict_blocked 派生（narrative fallback）。
+      FIX-004（RW-022）：consistency violation 恢复 narrative-derived verdict 时
+      blocking_rework 同步为 True（blocking verdict 不得对应 blocking_rework=false）；
+      final invariant 兜底所有路径（blocking verdict → blocking_rework 必须 True）。
     - blocking_provenance（FIX-001 / FIX-002）：blocking_rework 的来源——structured
       仅当 agent 结构化块**显式声明** blocking_provenance=structured（且经一致性 guard）；
       framework（FRAMEWORK_ERROR / 空结果 / 非法 provenance 等 Framework 可确定的
@@ -320,6 +323,16 @@ def build_stage_result(
             derived_verdict = _derive_verdict(agent, result_text)
             if derived_verdict:
                 verdict = derived_verdict
+                # FIX-004（RW-022 最后 blocker）：consistency violation 恢复
+                # narrative-derived verdict 时，blocking_rework 必须同步——
+                # narrative-derived blocking verdict（FAIL / FAILED / REQUEST_CHANGE /
+                # FRAMEWORK_ERROR）不得与 blocking_rework=false 并存
+                # （verdict=FAIL / blocking_rework=false 是内部语义矛盾，
+                #   下游可能据此 fail-open）。provenance 保持 narrative：
+                # 该 blocking 由 narrative consistency recovery 得出，不得伪装为
+                # structured authority（Requirement 2）。
+                if is_blocking_verdict(derived_verdict):
+                    blocking_rework = True
         else:
             status = SUMMARY_STATUS_COMPLETE
             summary_complete = True
@@ -348,6 +361,13 @@ def build_stage_result(
         # 优先于 agent 的任何 no-blocking 声明；COMPLETE 标签不得覆盖 execution validity
         blocking_rework = True
         blocking_provenance = BLOCKING_PROVENANCE_FRAMEWORK
+
+    # FIX-004 internal invariant（Requirement 4，fail-closed 兜底）：blocking verdict
+    # → blocking_rework 必须 True——覆盖所有路径（含 structured-only 自相矛盾声明
+    # verdict=FAIL + blocking_rework=false 且 narrative 无显式结论词的边角情况）。
+    # framework hard failure 侧已在上面强制 blocking=True；此处只补 blocking-verdict 侧。
+    if is_blocking_verdict(verdict) and not blocking_rework:
+        blocking_rework = True
 
     return {
         "protocol": PROTOCOL_VERSION,
@@ -454,6 +474,58 @@ _NARRATIVE_WARNING_RE = re.compile(
 # FIX-003（RW-022）：guard 必须识别全部显式失败语义——FAIL / FAILED / REQUEST_CHANGE /
 # FRAMEWORK_ERROR；\bFAIL\b 词边界会漏掉 FAILED，故 FAILED 必须显式列出。
 _NARRATIVE_FAIL_RE = re.compile(r"\b(REQUEST_CHANGE|FAILED|FAIL|FRAMEWORK_ERROR)\b")
+
+# ---------- Blocking Verdict Invariant（FIX-004 / RW-022 最后 blocker） ----------
+# blocking verdict 集合（agent 无关）：consistency violation 恢复 narrative verdict
+# 或 structured 直接声明时，这些 verdict 值必须对应 blocking_rework=True——
+# verdict=FAIL / blocking_rework=false 是内部语义矛盾，下游可能据此 fail-open。
+BLOCKING_VERDICTS = frozenset(("FAIL", "FAILED", "REQUEST_CHANGE", "FRAMEWORK_ERROR"))
+
+
+def is_blocking_verdict(verdict: str | None) -> bool:
+    """verdict 是否构成 blocking failure（FIX-004 internal invariant）。
+
+    覆盖 Requirement 4 的 blocking verdict 集合：FAIL / FAILED / REQUEST_CHANGE /
+    FRAMEWORK_ERROR 及 equivalent explicit blocking result。非字符串 / None → False。
+    """
+    return isinstance(verdict, str) and verdict in BLOCKING_VERDICTS
+
+
+def blocking_invariant_violations(stage: dict) -> list[str]:
+    """FIX-004 internal invariant：stage result 内部一致性（blocking verdict ↔ blocking_rework）。
+
+    Requirement 4 的三条不变量：
+    - blocking verdict（FAIL / FAILED / REQUEST_CHANGE / FRAMEWORK_ERROR）
+      → blocking_rework 必须 True（blocking verdict 不得对应 no-blocking）
+    - framework hard failure（status=FAILED，即 FRAMEWORK_ERROR / 空 / 缺失 required
+      result 等 Framework 确定的执行失败）→ blocking_rework 必须 True，
+      无论 agent 是否声称 no-blocking
+    - non-blocking verdict → blocking_rework=False 仅在无 framework hard failure
+      时允许（上一条已覆盖禁止侧）
+
+    注意：agent **显式声明** blocking_provenance=framework（FIX-002 声明语义）不是
+    framework hard failure——status=SUCCESS + provenance=framework + blocking=False
+    是合法声明组合，不违反 invariant（现有 test_build_stage_result_declared_framework_provenance）。
+
+    返回违规列表（空 = stage 满足 invariant）。build_stage_result 产物满足此
+    invariant（fail-closed 强制）；本函数供 downstream 只读验证。
+    """
+    problems: list[str] = []
+    verdict = stage.get("verdict")
+    blocking = stage.get("blocking_rework")
+    hard_failure = stage.get("status") == "FAILED"
+    if blocking is not True:
+        if is_blocking_verdict(verdict):
+            problems.append(
+                f"blocking verdict {verdict!r} 但 blocking_rework={blocking!r}"
+                "（blocking verdict → blocking_rework 必须 True）"
+            )
+        if hard_failure:
+            problems.append(
+                f"framework hard failure（status=FAILED）但 blocking_rework={blocking!r}"
+                "（framework hard failure → blocking_rework 必须 True）"
+            )
+    return problems
 
 
 def narrative_warning_count(text: str) -> int:

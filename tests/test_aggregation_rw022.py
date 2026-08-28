@@ -34,7 +34,8 @@ hermes -> workbuddy -> codex
 
 
 def _write_stage_json(out: Path, agent: str, *, blocking: bool, status: str = "COMPLETE",
-                      verdict: str | None = None, warnings: list | None = None) -> None:
+                      verdict: str | None = None, warnings: list | None = None,
+                      provenance: str | None = None) -> None:
     data = {
         "protocol": "packet/1",
         "agent": agent,
@@ -53,6 +54,8 @@ def _write_stage_json(out: Path, agent: str, *, blocking: bool, status: str = "C
         "summary": "",
         "narrative_path": str(out / f"{agent}_result.md"),
     }
+    if provenance is not None:
+        data["blocking_provenance"] = provenance
     (out / f"{agent}_result.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
@@ -289,18 +292,20 @@ def test_structured_malformed_narrative_fail_blocks(tmp_path):
 # --- agent_result_blocked / unresolved 结构化一致性 ---
 
 def test_agent_result_blocked_structured_first(tmp_path):
+    # FIX-002：structured authority 需显式 provenance=structured（legacy 无 provenance
+    # 已不推断 structured）；此测试保持"structured verdict 优先于 narrative"优先级
     out = tmp_path / "out"
     out.mkdir()
-    _write_stage_json(out, 'workbuddy', blocking=False)
+    _write_stage_json(out, 'workbuddy', blocking=False, provenance='structured')
     assert agent_result_blocked('workbuddy', '**Result: FAIL**\nold text', out) is False
-    _write_stage_json(out, 'workbuddy', blocking=True, verdict='REQUEST_CHANGE')
+    _write_stage_json(out, 'workbuddy', blocking=True, verdict='REQUEST_CHANGE', provenance='structured')
     assert agent_result_blocked('workbuddy', 'PASS', out) is True
 
 
 def test_unresolved_structured_first(tmp_path):
     out = tmp_path / "out"
     out.mkdir()
-    _write_stage_json(out, 'workbuddy', blocking=False)
+    _write_stage_json(out, 'workbuddy', blocking=False, provenance='structured')
     report = build_report(
         task='T', route=['hermes', 'workbuddy'], output_dir=out,
         results={'hermes': 'ok', 'workbuddy': '**Result: FAIL**\n历史文本'}, status='SUCCESS',

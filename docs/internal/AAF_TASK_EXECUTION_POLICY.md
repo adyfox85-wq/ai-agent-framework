@@ -361,6 +361,30 @@ same-parent / same-risk 的 blockers 能否先 **batch-closed**
 - 只有真实观察到上述问题才允许重开维护：先登记 AAF_MASTER_BACKLOG，
   再以最小 FIX 关闭；不得以预防性理由重新设计。
 
+## 15. Self-Hosting Observation（Framework 自我托管 artifact 时效性观察）
+
+（2026-08-28，AAF-v0.4-TASK-007-FIX-002 正式登记；operational/self-hosting observation）
+
+**现象**：Framework task 在运行中修改其自身的 artifact-generation / aggregation 代码
+（context_packet / report / adapters 等）时，**当前 runner process 继续使用任务启动时
+已加载的旧代码**，因此同一 TASK 的后续 runtime artifact（`<agent>_result.json` /
+REPORT 聚合）不一定代表刚提交的新实现——可能缺失新字段（如 `blocking_provenance`）、
+沿用旧推断语义、或把常驻 untracked 项写入 `changed_files`。
+
+**证据**：AAF-v0.4-TASK-007-FIX-002 的 runner（PID 22676）启动于 2026-08-28 20:12:54，
+早于本次代码 commit；其生成的本任务 stage artifacts 由 FIX-001 时代的旧代码路径产生。
+
+**操作规则**（本观察不开发 hot reload / runner self-restart architecture）：
+1. 验证"新实现已生效"必须以 **fresh-process 证据**为准（全新 python 进程跑
+   targeted/full tests、fresh runner 复跑、或显式 smoke 矩阵），不得以同 TASK
+   后续 runtime artifact 反推新代码已生效。
+2. 同一 TASK 中新提交代码生成的历史 artifacts 属于旧代码路径产物，如实记录来源，
+   不得手工修补冒充新实现产物（保持真实 self-hosting execution evidence）。
+3. `changed_files` 字段的权威事实 = agent 结构化块显式声明的 commit 文件；runner
+   生成值（旧代码 raw porcelain）只作可观测性，不一致时以 commit 实况为准并登记。
+4. 若未来需要"修改自身代码的任务自身的 artifacts 反映新实现"，须由 Planner 立项
+   fresh-process re-run 或 restart 机制，不在本观察范围内实现。
+
 ---
 
 *Policy 变更须经 Planner 评审 + WorkBuddy/Codex 复核后落盘；本文件本身同样遵守

@@ -8,8 +8,9 @@ from .task_validation import parse_task_fields
 
 # ---------- Blocking Provenance（FIX-001：structured blocking 语义必须可辨识来源） ----------
 # 三种来源，优先级见 agent_result_blocked：
-# - structured：blocking_rework 来自 agent 显式声明的 schema-validated 结构化块
-#   （COMPLETE；explicit reviewer blocking verdict 的权威事实）
+# - structured：blocking_rework 来自 agent 显式声明的 schema-validated 结构化块且
+#   结构化块**显式声明** blocking_provenance=structured（FIX-002：explicit field 才是
+#   structured authority；key 存在性 / COMPLETE 标签都不得反推来源）
 # - framework：Framework 可确定的执行有效性事实（FRAMEWORK_ERROR / required result
 #   缺失或空 / invalid structured blocking data）——优先于 agent 的任何 no-blocking 声明
 # - narrative：legacy narrative keyword fallback / 一致性 guard 交叉验证后的派生值——
@@ -17,6 +18,17 @@ from .task_validation import parse_task_fields
 BLOCKING_PROVENANCE_STRUCTURED = "structured"
 BLOCKING_PROVENANCE_FRAMEWORK = "framework"
 BLOCKING_PROVENANCE_NARRATIVE = "narrative"
+
+# FIX-002 Req 3/5：structured authority 只来自 agent 结构化块中**显式声明**的合法
+# blocking_provenance 字段值；blocking_rework key 存在与否、structured_summary_status
+# 是否为 COMPLETE，都不得用于反推来源（legacy 兼容规则：缺字段 → narrative）。
+BLOCKING_PROVENANCE_VALUES = frozenset(
+    (
+        BLOCKING_PROVENANCE_STRUCTURED,
+        BLOCKING_PROVENANCE_FRAMEWORK,
+        BLOCKING_PROVENANCE_NARRATIVE,
+    )
+)
 
 
 def _summarize(text: str, limit: int = 6000) -> str:
@@ -98,18 +110,17 @@ def _explicit_failure_marker(body: str) -> bool:
 
 
 def read_structured_blocking(agent: str, output_dir) -> tuple[bool, bool | None, str, str]:
-    """读取 ``<agent>_result.json`` 的 blocking 信号 + provenance（RW-022 / FIX-001）。
+    """读取 ``<agent>_result.json`` 的 blocking 信号 + provenance（RW-022 / FIX-001 / FIX-002）。
 
     返回 (available, blocking, status, provenance)：
     - available=False：JSON 缺失 / 损坏（不可解析）→ 调用方走 legacy narrative fallback
-    - status == 'INVALID'：JSON 可解析但 ``blocking_rework`` 字段存在且非 bool
-      （invalid structured blocking data）→ 调用方必须 fail closed（FIX-001 Req G）
-    - provenance：structured / framework / narrative（见模块常量）；旧 artifact
-      缺少 provenance 字段时按 agent 推断（backward compat）：
-      * reviewer（workbuddy/codex）+ COMPLETE → blocking_rework 来自 agent 显式
-        结构化块 → structured（旧框架只在 COMPLETE 分支采用 structured 值）
-      * hermes → blocking_rework 始终由 narrative 派生 → narrative（防止 narrative
-        keyword 推断被包装成 structured authoritative fact）
+    - status == 'INVALID'：结构化 blocking 数据非法 → 调用方必须 fail closed（FIX-001 Req G）：
+      * ``blocking_rework`` 字段存在且非 bool
+      * ``blocking_provenance`` 字段存在但类型 / 值不合法（FIX-002 Req 9-D）
+    - provenance：structured / framework / narrative（见模块常量）。
+      FIX-002 Req 3/4：``blocking_provenance`` 缺失 = legacy artifact → **一律** narrative
+      fallback——不得凭 ``blocking_rework`` key 存在或 status==COMPLETE 推断 structured
+      authority（旧框架的 COMPLETE 推断语义已移除；blocking 决策值仍 backward compatible）。
     """
     if output_dir is None:
         return False, None, '', ''
@@ -130,13 +141,14 @@ def read_structured_blocking(agent: str, output_dir) -> tuple[bool, bool | None,
         # 旧 artifact 缺少新 blocking 字段 → legacy fallback（Req 6 backward compat）
         return False, None, '', ''
     status = str(data.get('structured_summary_status') or '')
-    prov = str(data.get('blocking_provenance') or '')
+    prov = data.get('blocking_provenance')
+    if prov is not None and not (isinstance(prov, str) and prov in BLOCKING_PROVENANCE_VALUES):
+        # 显式 provenance 字段存在但非法（类型 / 值）→ invalid structured data → fail closed
+        return False, None, 'INVALID', ''
     if not prov:
-        prov = (
-            BLOCKING_PROVENANCE_STRUCTURED
-            if status == 'COMPLETE' and agent in ('workbuddy', 'codex')
-            else BLOCKING_PROVENANCE_NARRATIVE
-        )
+        # FIX-002 Req 3/4：provenance 缺失 = legacy artifact → narrative（backward
+        # compat）；绝不自动升级为 structured authority
+        prov = BLOCKING_PROVENANCE_NARRATIVE
     return True, bool(br), status, prov
 
 

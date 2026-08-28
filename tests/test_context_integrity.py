@@ -722,9 +722,9 @@ def test_context_size_fixture_exact_numbers():
 
         # 可复算精确值（与 docs/internal 记录的测量证据一致）
         assert old_chain == 26211
-        assert new_chain == 5379
+        assert new_chain == 5824
         cmp = compare_packet_sizes(old_chain, new_chain)
-        assert cmp["reduction_ratio"] == pytest.approx(0.7948, abs=1e-4)  # 约 80% reduction
+        assert cmp["reduction_ratio"] == pytest.approx(0.7778, abs=1e-4)  # 约 78% reduction
         assert m1["embedded_artifact_count"] == 0 and m2["embedded_artifact_count"] == 0
         assert m1["referenced_artifact_count"] == 1 and m2["referenced_artifact_count"] == 2
     finally:

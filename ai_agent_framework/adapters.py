@@ -64,9 +64,12 @@ def _structured_contract_block(agent: str) -> str:
         fields = ('status（SUCCESS/FAILED）', 'commit（真实 git sha 或 null）',
                   'changed_files（真实路径列表）', 'warnings（显式报告时列出；确认没有则为 []）')
     else:
-        example = '{"verdict": "PASS_WITH_WARNING", "blocking_rework": false, "findings": ["..."], "warnings": ["..."]}'
+        example = ('{"verdict": "PASS_WITH_WARNING", "blocking_rework": false, '
+                   '"blocking_provenance": "structured", "findings": ["..."], "warnings": ["..."]}')
         verdict_opt = 'PASS / PASS_WITH_WARNING / FAIL' if agent == 'workbuddy' else 'APPROVE / REQUEST_CHANGE'
         fields = (f'verdict（{verdict_opt}）', 'blocking_rework（true/false）',
+                  'blocking_provenance（blocking_rework 的来源声明：structured / framework / '
+                  'narrative；不声明 = legacy narrative fallback，不会获得 structured authority）',
                   'findings（字符串数组）', 'warnings（字符串数组）')
     lines = [
         '# STRUCTURED RESULT CONTRACT（必读）',
@@ -112,6 +115,7 @@ def _upstream_summary_block(agent: str, output_dir: Path, workspace: Path) -> st
         f'- status: {stage.get("status")}',
         f'- verdict: {stage.get("verdict")}',
         f'- blocking_rework: {stage.get("blocking_rework")}',
+        f'- blocking_provenance: {stage.get("blocking_provenance")}',
         f'- summary_complete: {stage.get("summary_complete")}',
         f'- structured_summary_status: {stage.get("structured_summary_status")}',
     ]

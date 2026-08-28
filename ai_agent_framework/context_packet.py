@@ -31,7 +31,7 @@ from .git_status import SYNC_SYNCED, compute_sync
 from .report import (
     BLOCKING_PROVENANCE_FRAMEWORK,
     BLOCKING_PROVENANCE_NARRATIVE,
-    BLOCKING_PROVENANCE_STRUCTURED,
+    BLOCKING_PROVENANCE_VALUES,
     verdict_blocked,
 )
 
@@ -79,7 +79,12 @@ _STRUCTURED_SCHEMAS: dict[str, dict] = {
     },
     "workbuddy": {
         "required": ("verdict", "blocking_rework", "findings", "warnings"),
-        "optional": (),
+        # blocking_provenance 是 optional（FIX-002 Req 4/5）：legacy 结构化块缺该字段
+        # 仍通过 schema（backward compat）→ 按 legacy narrative 处理；显式声明时
+        # 其合法性由 build_stage_result 判定（非法值 → fail closed），故 schema
+        # 不约束类型——必须放行到 build_stage_result 才能 fail closed，而不是在
+        # schema 层静默降级为 narrative fallback。
+        "optional": ("blocking_provenance",),
         "types": {
             "verdict": str,
             "blocking_rework": bool,
@@ -89,7 +94,7 @@ _STRUCTURED_SCHEMAS: dict[str, dict] = {
     },
     "codex": {
         "required": ("verdict", "blocking_rework", "findings", "warnings"),
-        "optional": (),
+        "optional": ("blocking_provenance",),
         "types": {
             "verdict": str,
             "blocking_rework": bool,
@@ -164,14 +169,25 @@ def git_head(workspace: Path | str) -> str | None:
 
 
 def git_changed_files(workspace: Path | str) -> list[str]:
-    """workspace git status --porcelain 行；非 git 仓库 / 失败 → []。"""
+    """workspace git status --porcelain 行（排除预允许 untracked 常驻 artifact）；
+    非 git 仓库 / 失败 → []。
+
+    FIX-002 Req 8：stage 的 changed_files 字段不得被常驻 untracked 项污染——
+    .aaf/、AAF_TASK004_PROCESS_CHECK.txt、scripts/start_bridge_hidden.vbs 等
+    PRE_ALLOWED_UNTRACKED 条目不是本任务的 tracked change，必须过滤。
+    用 -uall 逐文件列出 untracked（否则目录折叠如 '?? scripts/' 会掩盖预允许项）。
+    提交后工作区干净 → []（真实 commit 文件由 agent 在结构化块中显式声明）。
+    """
     try:
         r = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain", "-uall"],
             cwd=str(workspace), capture_output=True, text=True, timeout=15,
         )
         if r.returncode == 0:
-            return [line.strip() for line in r.stdout.splitlines() if line.strip()]
+            return [
+                line.strip() for line in r.stdout.splitlines()
+                if line.strip() and not _is_pre_allowed_untracked(line.strip())
+            ]
     except Exception:
         pass
     return []
@@ -218,9 +234,10 @@ def build_stage_result(
     - status：result 有效 → SUCCESS，无效（空 / FRAMEWORK_ERROR）→ FAILED
     - verdict / blocking_rework：优先来自 schema-validated 结构化块；未提供时
       由结论词与 report.verdict_blocked 派生（narrative fallback）
-    - blocking_provenance（FIX-001）：blocking_rework 的来源——
-      structured（agent 显式结构化块，经一致性 guard）/ framework（FRAMEWORK_ERROR /
-      空结果等 Framework 可确定的 hard failure）/ narrative（legacy keyword 推断，
+    - blocking_provenance（FIX-001 / FIX-002）：blocking_rework 的来源——structured
+      仅当 agent 结构化块**显式声明** blocking_provenance=structured（且经一致性 guard）；
+      framework（FRAMEWORK_ERROR / 空结果 / 非法 provenance 等 Framework 可确定的
+      hard failure）；narrative（legacy：结构化块缺 provenance 字段或由 keyword 推断，
       永远只是 fallback，不得伪装成 structured authoritative fact）
     - commit / changed_files：调用方传入的真实 git 事实（head_before / head_after）
     - findings / warnings：**未知就是未知** —— Agent 未提供结构化块（或块损坏 /
@@ -264,12 +281,25 @@ def build_stage_result(
         else:
             status = SUMMARY_STATUS_COMPLETE
             summary_complete = True
-            # 只有 blocking_rework 真正来自 agent 显式结构化块（如 reviewer schema
-            # 的必填 blocking_rework 字段）才是 structured authoritative fact
-            # （FIX-001 Req 1/2）。hermes 结构化块无 blocking 字段 → blocking_rework
-            # 仍是 narrative 派生值，不得伪装成 structured authority。
-            if blocking_from_structured:
-                blocking_provenance = BLOCKING_PROVENANCE_STRUCTURED
+            # FIX-002 Req 3/5：structured authority 只来自 agent 结构化块中
+            # **显式声明**的 blocking_provenance 字段（合法值 structured /
+            # framework / narrative）。blocking_rework key 存在 ≠ structured
+            # authority——legacy 结构化块缺 provenance 字段 → 保持 narrative
+            # （backward compat），绝不按字段存在性反推来源。hermes 结构化块
+            # 无 blocking 字段 → blocking_rework 仍是 narrative 派生值。
+            declared_prov = structured.get("blocking_provenance")
+            if declared_prov is not None:
+                if declared_prov in BLOCKING_PROVENANCE_VALUES:
+                    blocking_provenance = declared_prov
+                else:
+                    # 非法 provenance（类型 / 值）→ invalid structured result
+                    # → fail closed（FIX-002 Req 6 / Req 9-D）：framework hard
+                    # failure 语义，优先于 agent 的任何 no-blocking 声明；
+                    # 下游读到 MALFORMED + framework provenance 即阻断
+                    blocking_rework = True
+                    blocking_provenance = BLOCKING_PROVENANCE_FRAMEWORK
+                    status = SUMMARY_STATUS_MALFORMED
+                    summary_complete = False
 
     if not valid:
         # Framework-determined hard failure（FIX-001 Req 3）：FRAMEWORK_ERROR / 空结果

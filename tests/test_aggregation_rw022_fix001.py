@@ -81,11 +81,17 @@ def _write_stage_json(out: Path, agent: str, *, blocking: bool, status: str = "C
 
 
 def _block(text: str, agent: str) -> str:
-    """narrative + 结构化块（Agent 答复形状）。"""
+    """narrative + 结构化块（Agent 答复形状）。
+
+    FIX-002：reviewer 结构化块显式声明 blocking_provenance=structured（新契约，
+    structured authority 只来自显式字段；缺声明 = legacy narrative fallback）。
+    """
     structured = {
         "workbuddy": {"verdict": "PASS_WITH_WARNING", "blocking_rework": False,
+                      "blocking_provenance": "structured",
                       "findings": [], "warnings": ["W1: 文档瑕疵"]},
-        "codex": {"verdict": "APPROVE", "blocking_rework": False, "findings": [], "warnings": []},
+        "codex": {"verdict": "APPROVE", "blocking_rework": False,
+                  "blocking_provenance": "structured", "findings": [], "warnings": []},
         "hermes": {"status": "SUCCESS", "changed_files": [], "warnings": []},
     }[agent]
     return (text + "\nAAF_STRUCTURED_RESULT_BEGIN\n"
@@ -427,7 +433,25 @@ def test_a_full_runner_hermes_technical_failed_success(tmp_path, monkeypatch):
 # ============ Provenance 完整性（Req 1/2/7） ============
 
 def test_build_stage_result_provenance_structured(tmp_path):
-    # agent 显式结构化块（PASS_WITH_WARNING + blocking=false）→ provenance=structured
+    # agent 显式结构化块显式声明 blocking_provenance=structured → provenance=structured
+    # （FIX-002：structured authority 只来自显式字段，不是 blocking_rework key 存在性）
+    stage = build_stage_result(
+        agent='workbuddy',
+        result_text='**Result: PASS_WITH_WARNING**\nW1: 文档瑕疵',
+        output_dir=tmp_path,
+        structured={'verdict': 'PASS_WITH_WARNING', 'blocking_rework': False,
+                    'blocking_provenance': 'structured',
+                    'findings': [], 'warnings': ['W1: 文档瑕疵']},
+        structured_status='OK',
+    )
+    assert stage['blocking_rework'] is False
+    assert stage['blocking_provenance'] == BLOCKING_PROVENANCE_STRUCTURED
+    assert stage['structured_summary_status'] == 'COMPLETE'
+
+
+def test_build_stage_result_blocking_rework_key_without_provenance_is_narrative(tmp_path):
+    # FIX-002 Req 3：结构化块有 blocking_rework 但**无** blocking_provenance 字段
+    # （legacy 形状）→ provenance=narrative，绝不按 key 存在性推断 structured
     stage = build_stage_result(
         agent='workbuddy',
         result_text='**Result: PASS_WITH_WARNING**\nW1: 文档瑕疵',
@@ -436,8 +460,8 @@ def test_build_stage_result_provenance_structured(tmp_path):
                     'findings': [], 'warnings': ['W1: 文档瑕疵']},
         structured_status='OK',
     )
-    assert stage['blocking_rework'] is False
-    assert stage['blocking_provenance'] == BLOCKING_PROVENANCE_STRUCTURED
+    assert stage['blocking_rework'] is False  # 决策值仍 backward compatible
+    assert stage['blocking_provenance'] == BLOCKING_PROVENANCE_NARRATIVE
     assert stage['structured_summary_status'] == 'COMPLETE'
 
 
@@ -489,16 +513,17 @@ def test_build_stage_result_hermes_narrative_laundering_prevented(tmp_path):
     assert agent_result_blocked('hermes', stage['summary'], out) is False
 
 
-def test_read_structured_blocking_legacy_inference(tmp_path):
-    # 旧 artifact 无 provenance 字段：reviewer COMPLETE → structured（旧框架语义）；
-    # hermes COMPLETE → narrative（其 blocking_rework 始终由 narrative 派生）
+def test_read_structured_blocking_legacy_no_provenance_narrative(tmp_path):
+    # FIX-002 Req 3/4：旧 artifact 无 blocking_provenance 字段 → 一律 narrative
+    # （legacy fallback）。旧框架"reviewer COMPLETE → structured"的推断语义已移除——
+    # blocking_rework key 存在 / COMPLETE 标签都不得升级为 structured authority。
     out = tmp_path / "out"
     out.mkdir()
     _write_stage_json(out, 'workbuddy', blocking=False, status='COMPLETE')  # 无 provenance
     _write_stage_json(out, 'hermes', blocking=False, status='COMPLETE')     # 无 provenance
     _, _, _, prov_wb = read_structured_blocking('workbuddy', out)
     _, _, _, prov_h = read_structured_blocking('hermes', out)
-    assert prov_wb == BLOCKING_PROVENANCE_STRUCTURED
+    assert prov_wb == BLOCKING_PROVENANCE_NARRATIVE
     assert prov_h == BLOCKING_PROVENANCE_NARRATIVE
 
 

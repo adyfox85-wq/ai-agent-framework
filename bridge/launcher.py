@@ -667,10 +667,12 @@ class FrameworkLauncher:
         )
         if req is None:
             return False, "NO_SOFT_CANCEL_REQUEST"
-        req_ts = cancel_mod.parse_requested_at(req.requested_at)
-        if req_ts is None:
+        # FIX-001（005-C-FIX-001）：elapsed 统一走 canonical UTC/aware contract——
+        # 合法 offset-aware（+08:00 / +00:00 / Z）与 legacy naive 均正确换算，
+        # malformed → None → fail closed（不产生 force eligibility）。
+        elapsed = cancel_mod.requested_at_elapsed_seconds(req.requested_at)
+        if elapsed is None:
             return False, "CANCEL_REQUEST_BAD_TIMESTAMP"
-        elapsed = (datetime.now() - req_ts).total_seconds()
         if elapsed < timeout:
             return False, f"SOFT_CANCEL_TIMEOUT_NOT_REACHED: {elapsed:.1f}s < {timeout:.1f}s"
         return True, f"soft cancel timeout reached ({elapsed:.1f}s >= {timeout:.1f}s)"

@@ -258,9 +258,10 @@ def collect_cancel_ui(
     has_req = req is not None
     age: float | None = None
     if req is not None:
-        ts = cancel_mod.parse_requested_at(req.requested_at)
-        if ts is not None:
-            age = max(0.0, (datetime.now() - ts).total_seconds())
+        # FIX-001（005-C-FIX-001）：elapsed 统一走 canonical UTC/aware contract——
+        # 合法 offset-aware（+08:00 / +00:00 / Z）与 legacy naive 均正确换算，
+        # malformed → None（fail closed：不产生 force eligibility）。
+        age = cancel_mod.requested_at_elapsed_seconds(req.requested_at)
     timeout = soft_timeout
     if timeout is None:
         timeout = float(cfg_mod.load_config().get("force_cancel_soft_timeout", 30.0))

@@ -1,8 +1,9 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E COMPLETE（E-Core / Soft Cancel COMPLETE — 005-A + FIX-001/002/003；E-Ownership / Force Cancel 已交付 — 005-B + 005-B-FIX-001（canonical force authority + successful termination proof，Codex 两个 blocker 已闭合）；005-C Status Window Cancel UX + Real Windows E2E Closure 已交付——实现 + 测试 + 真实 Windows 正负 E2E 全量通过，Phase E 正式标记 COMPLETE；route 阶段 WorkBuddy / Codex 独立复核按项目惯例由 route 执行并记录于任务 REPORT，若发现 blocking 则按惯例开 FIX）；Phase F NOT STARTED；当前唯一 Next Step = Planner Phase E Stage Retrospective（不自动进入 Phase F））**\
-> Last Updated: 2026-08-28（AAF-v0.4-TASK-005-C — Phase E Status Window Cancel UX + Real Windows E2E Closure：状态窗口「停止当前任务」soft cancel 入口 + 「强制停止」二次确认 + CancelUi 状态机（UI/control 态，§6A.3 不进入 task.json）+ force eligibility 需 ownership VERIFIED（fail closed）+ UI Authority 边界（窗口只发请求）+ canonical winner 跟随 + artifacts 恢复；真实 Windows 正负 E2E A–G 全过；666 passed（630 基线 + 36 新增）；Phase E = COMPLETE / Phase F = NOT STARTED / Next Step = Planner Phase E Retrospective）\
+> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E COMPLETE（E-Core / Soft Cancel COMPLETE — 005-A + FIX-001/002/003；E-Ownership / Force Cancel 已交付 — 005-B + 005-B-FIX-001（canonical force authority + successful termination proof，Codex 两个 blocker 已闭合）；005-C Status Window Cancel UX + Real Windows E2E Closure 已交付——实现 + 测试 + 真实 Windows 正负 E2E 全量通过，Phase E 正式标记 COMPLETE；005-C-FIX-001（Cancel Timestamp Timezone Compatibility Fix）已交付——canonical UTC/aware elapsed contract 统一 cancel elapsed 计算，合法 offset-aware（+08:00 / +00:00 / Z）与 legacy naive 均不再因 naive/aware 混算而破坏 Cancel UI / force eligibility，malformed fail closed，Codex 原 timezone blocker 已闭合；route 阶段 WorkBuddy / Codex 独立复核按项目惯例由 route 执行并记录于任务 REPORT，若发现 blocking 则按惯例开 FIX）；Phase F NOT STARTED；当前唯一 Next Step = Planner Phase E Stage Retrospective（不自动进入 Phase F））**\
+> Last Updated: 2026-08-28（AAF-v0.4-TASK-005-C-FIX-001 — Cancel Timestamp Timezone Compatibility Fix：修复 Codex 唯一 blocker——`cancel.parse_requested_at` 可返回 offset-aware datetime，但 status_window / launcher 用 naive `datetime.now()` 与其相减 → TypeError 破坏 Cancel UI（降级 unknown_snapshot）/ force eligibility；新增 canonical `cancel_mod.requested_at_elapsed_seconds`（UTC/aware contract：aware 统一到 UTC、legacy naive 明确按本地时间解释、malformed → None fail closed、未来时间戳钳制 0），status_window.collect_cancel_ui 与 launcher.force_eligible 统一走该入口；新增 22 项回归测试（+08:00 / +00:00 / Z / legacy naive / malformed / 超时前后 / collect_cancel_ui 与 force_eligible 不抛异常 / restart-reopen 推导不降级）；688 passed（666 基线 + 22 新增，零下降）；Phase E = COMPLETE / Phase F = NOT STARTED / Next Step = Planner Phase E Retrospective）\
+> 2026-08-28（AAF-v0.4-TASK-005-C — Phase E Status Window Cancel UX + Real Windows E2E Closure：状态窗口「停止当前任务」soft cancel 入口 + 「强制停止」二次确认 + CancelUi 状态机（UI/control 态，§6A.3 不进入 task.json）+ force eligibility 需 ownership VERIFIED（fail closed）+ UI Authority 边界（窗口只发请求）+ canonical winner 跟随 + artifacts 恢复；真实 Windows 正负 E2E A–G 全过；666 passed（630 基线 + 36 新增）；Phase E = COMPLETE / Phase F = NOT STARTED / Next Step = Planner Phase E Retrospective）\
 > 2026-08-28（AAF-v0.4-TASK-005-B-FIX-001 — Force Recovery Authority and Successful Termination Proof Closure：Core finalizer 由 canonical Bridge registry root + launch_id 推导 registry/evidence 路径（官方 read contract，evidence.registry_path 只作 proof）、evidence 绑定 canonical Bridge location、termination_exit_status == 0 才授权 CANCELLED、registry durable force 字段逐项核对、三方 identity 全量交叉；新增 32 项 authority 正负矩阵测试；Obsidian Handoff = VERIFIED（新 Planner 对话经 CURRENT_HANDOFF + PROJECT_STATE 恢复项目状态成功））\
 > 2026-08-28（AAF-MAINT-CONTEXT-001-FIX-003 — Explicit Route Authority + Snapshot Reference Closure：`Route:` canonical machine 字段优先于关键词 heuristic、Route Completeness Guard（required Codex 缺失不得 SUCCESS）、manifest 区分 intake_task（provenance）/ execution_task（authority）、REPORT 统一引用 immutable snapshot；唯一 Next Step 保持 = AAF-v0.4-TASK-005-B-FIX-001）\
 > 2026-08-28（AAF-MAINT-HANDOFF-001 — Obsidian Conversation Handoff Pilot + 阶段收口）：\
@@ -52,7 +53,13 @@ Phase: A — Runtime State Foundation: COMPLETE
             AAF-v0.4-TASK-005-C（状态窗口「停止当前任务」soft cancel 入口 + 二次确认
             「强制停止」+ CancelUi 状态机 + force eligibility fail closed + UI Authority
             边界 + canonical winner + artifacts 恢复；真实 Windows 正负 E2E A–G 全过；
-            666 passed；见下方 Phase E 段落）——Phase E 正式标记 COMPLETE（route 阶段
+            666 passed；见下方 Phase E 段落）
+            + 005-C-FIX-001（Cancel Timestamp Timezone Compatibility Fix：canonical
+            UTC/aware elapsed contract——cancel elapsed 统一经
+            cancel_mod.requested_at_elapsed_seconds，合法 offset-aware（+08:00 / +00:00 /
+            Z）与 legacy naive 均正确换算，malformed fail closed；status_window 与
+            launcher.force_eligible 不再 naive/aware 混算；新增 22 项回归；688 passed；
+            Codex 原 timezone blocker 已闭合）——Phase E 正式标记 COMPLETE（route 阶段
             WorkBuddy / Codex 独立复核按惯例执行并记录于任务 REPORT，若 blocking 则
             按惯例开 FIX））
 Direction: Desktop Shell MVP / Runtime Observability & Control
@@ -303,11 +310,37 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
 - Next Phase Candidate: Phase E — Safe Cancel Lifecycle（已由 Planner 正式启动为 AAF-v0.4-TASK-005-A，
   E-Core / Soft Cancel 交付完成；Phase E 未 COMPLETE，见下方 Phase E 段落）
 
-### 0.2 Phase E — Safe Cancel Lifecycle（COMPLETE — 2026-08-28，TASK-005-C 交付收口）
+### 0.2 Phase E — Safe Cancel Lifecycle（COMPLETE — 2026-08-28，TASK-005-C-FIX-001 收口）
 
+- **TASK-005-C-FIX-001（AAF-v0.4-TASK-005-C-FIX-001，2026-08-28）：Cancel Timestamp
+  Timezone Compatibility Fix（关闭 Codex 唯一 blocker）**：
+  - 根因：`cancel.parse_requested_at()` 可返回 offset-aware datetime，但
+    `bridge/status_window.py`（Cancel UI elapsed）与 `bridge/launcher.py`
+    （force_eligible）用 naive `datetime.now()` 与其相减 → `TypeError: can't
+    subtract offset-naive and offset-aware datetimes` → Cancel UI 降级
+    unknown_snapshot / force eligibility 异常
+  - 修复：`ai_agent_framework/cancel.py` 新增 canonical UTC/aware elapsed contract
+    ——`requested_at_elapsed_seconds(requested_at, now=None)`：aware（+08:00 /
+    +00:00 / Z）统一到 UTC 后计算；legacy naive 明确按本地时间解释（与历史
+    write_cancel_request 默认语义一致，req 4）；malformed / 非字符串 → None（fail
+    closed，req 5）；未来时间戳钳制 0.0；`normalize_aware` / `_local_timezone`
+    辅助；`parse_requested_at` 语义不变（recovery evidence 校验契约不破坏）
+  - `status_window.collect_cancel_ui` 与 `launcher.force_eligible` 统一走该入口；
+    安全不变量零改动（soft cancel first / force 二次确认 / ownership verification /
+    canonical registry/evidence / Core terminal authority / terminal precedence /
+    无关进程安全）
+  - 测试：`tests/test_phase_e_cancel_fix_001.py` 新增 22 项回归（+08:00 / +00:00 /
+    Z / legacy naive / malformed / 超时前 / 超时后 / collect_cancel_ui 不抛异常 /
+    force_eligible 不抛异常（真实 FrameworkLauncher + registry artifact，不启动
+    进程）/ restart-reopen 推导不降级 unknown_snapshot）；**688 passed**（666 基线
+    + 22 新增，零下降）
+  - 边界遵守：无 Phase F / 无 aggregation（RW-022）/ 无 Context Compaction redesign /
+    无 cancel.request schema 或 writer 默认格式变更（artifact 字节兼容）
+  - route 阶段：WorkBuddy / Codex 独立复核按项目惯例由 route 执行（verdict 记录于
+    任务 REPORT；若 blocking 则按惯例开 FIX）
 - TASK: AAF-v0.4-TASK-005-A（2026-08-27）；范围：Phase E Core Cancel Foundation + Soft Cancel
   （冻结设计 §6 / §6A / §6B 的 E-Core 部分；Force Cancel / ownership / UI 分离到后续 TASK）
-- 状态：**COMPLETE（实现 + 测试 + 真实 Windows 正负 E2E 全部通过；666 passed；**\
+- 状态：**COMPLETE（实现 + 测试 + 真实 Windows 正负 E2E 全部通过；688 passed；**\
   **route 阶段 WorkBuddy / Codex 独立复核按项目惯例由 route 执行并记录于任务 REPORT，**\
   **若发现 blocking 则按惯例开 FIX——在此之前本标记按「已交付、正式关闭」对待）**
 - 实现内容：
@@ -623,10 +656,17 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
     真实任务目录未动（本任务运行目录由 Framework 自己管理）
   - route 阶段：WorkBuddy / Codex 独立复核按项目惯例由 route 执行（verdict 记录于
     任务 REPORT.md；若 blocking 则按惯例开 FIX）
+  - 005-C-FIX-001（2026-08-28）：关闭 Codex 唯一 timezone blocker——canonical
+    UTC/aware elapsed contract 统一 cancel elapsed 计算（合法 offset-aware 与
+    legacy naive 均兼容，malformed fail closed）；22 项回归，688 passed——
+    详见上方 0.2 Phase E 段落
 - **Phase E 收口结论（2026-08-28）**：E-Core / Soft Cancel（005-A + FIX-001/002/003）+
   E-Ownership / Force Cancel（005-B + 005-B-FIX-001）+ Status Window Cancel UX +
-  Real Windows E2E Closure（005-C）全部交付 → **Phase E = COMPLETE；Phase F = NOT
-  STARTED；Next Step = Planner Phase E Stage Retrospective（不自动进入 Phase F）**
+  Real Windows E2E Closure（005-C）+ Cancel Timestamp Timezone Compatibility Fix
+  （005-C-FIX-001：canonical UTC/aware elapsed contract 关闭 Codex 唯一 timezone
+  blocker——688 passed，666 基线 + 22 新增零下降）全部交付 → **Phase E = COMPLETE；
+  Phase F = NOT STARTED；Next Step = Planner Phase E Stage Retrospective（不自动
+  进入 Phase F）**
 
 ### 0.2 Maintenance — Context Compaction / Stage Packet Protocol（AAF-MAINT-CONTEXT-001，2026-08-28）
 

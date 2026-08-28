@@ -36,13 +36,21 @@ FIX-003（AAF-v0.4-TASK-005-A-FIX-003）— cancel.request mutation 锁序列化
 - 锁获取失败（超时 / OS 错误）：抛 ``LockTimeout`` / ``LockError``（显式错误），
   不写 request、不 consume、不 fallback 成无锁写（§6B.19 同规则）
 - 读取（inspect / read）保持无锁：非权威读；recovery 的权威验证在其锁内完成
+
+FIX-001（AAF-v0.4-TASK-005-C-FIX-001）— canonical time semantics：
+- ``requested_at`` 合法取值：offset-aware ISO 8601（+08:00 / +00:00 / Z 等）
+  或 legacy naive（本地墙上时间，历史 writer 默认格式）
+- elapsed-time 计算**唯一**入口 = ``requested_at_elapsed_seconds``：
+  统一规范化到 aware（UTC）后再做算术，杜绝 naive/aware 直接相减
+  （TypeError: can't subtract offset-naive and offset-aware datetimes）
+- malformed / 非法 → None（fail closed：不得产生 force eligibility）
 """
 from __future__ import annotations
 
 import json
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .lock_utils import task_state_lock
@@ -78,6 +86,53 @@ def parse_requested_at(requested_at: str) -> datetime | None:
         return datetime.fromisoformat(requested_at)
     except ValueError:
         return None
+
+
+def _local_timezone() -> timezone:
+    """本机本地时区 tzinfo（固定 offset；Windows / 无 tz 数据库环境同样可用）。
+
+    legacy naive timestamp 的明确解释：与历史 ``write_cancel_request`` 默认
+    ``datetime.now().isoformat()``（本地墙上时间）语义一致（FIX-001 req 4）。
+    """
+    return datetime.now().astimezone().tzinfo
+
+
+def normalize_aware(dt: datetime) -> datetime:
+    """规范化 datetime：aware → 原样；naive → 明确解释为本地时间（附本地 offset）。
+
+    - 返回 aware datetime；不改变时刻（naive 本地墙上时间 = 本地时区同一时刻）
+    - 杜绝 naive / aware 直接混算（FIX-001 req 1：canonical UTC/aware elapsed
+      contract 的唯一入口）
+    """
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        return dt.replace(tzinfo=_local_timezone())
+    return dt
+
+
+def requested_at_elapsed_seconds(requested_at: str | None, now: datetime | None = None) -> float | None:
+    """cancel.request ``requested_at`` → 已流逝秒数（FIX-001 canonical elapsed contract）。
+
+    Canonical 语义（§6A.15 / FIX-001 req 1）：
+    - 所有算术在 aware（统一到 UTC）上进行；绝不与 naive now 直接相减
+      （修复：TypeError: can't subtract offset-naive and offset-aware datetimes）
+    - 合法 ISO 8601（aware：+08:00 / +00:00 / Z 等 UTC equivalent；legacy naive）→
+      ``max(0.0, elapsed)``（未来时间戳 → 0.0，不产生负年龄）
+    - legacy naive → 明确解释为本地时间（与历史 writer 默认语义一致，req 4）
+    - 非法 / malformed / 非字符串 → None（fail closed：调用方不得据此产生
+      force eligibility，req 5）
+    - ``now`` 仅供确定性测试注入（aware 或 naive 均可；naive 同样按本地解释）
+    """
+    if not isinstance(requested_at, str) or not requested_at:
+        return None
+    ts = parse_requested_at(requested_at)
+    if ts is None:
+        return None
+    now_dt = now if now is not None else datetime.now(timezone.utc)
+    elapsed = (
+        normalize_aware(now_dt).astimezone(timezone.utc)
+        - normalize_aware(ts).astimezone(timezone.utc)
+    ).total_seconds()
+    return max(0.0, elapsed)
 
 
 @dataclass

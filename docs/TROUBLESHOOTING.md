@@ -140,33 +140,42 @@ pythonw 无控制台，启动异常（如导入错误）会：
 
 **状态窗口会不会改任务状态？**
 
-不会。窗口只读取产物（task.json / route.json / boundary.json / REPORT.md / last_run.json / config.json），
-不写任何文件；任务状态由 Framework（runner）自己写。窗口只读，所以**关闭它不会中断任务**。
+不会直接改。窗口只读取产物（task.json / route.json / boundary.json / REPORT.md /
+last_run.json / config.json）；**停止当前任务**只写 `cancel.request`（外部请求，
+非终态裁决），**强制停止**（必须二次确认）只终止已通过 11 项 ownership 三方验证的
+任务进程树——两种操作都**不写 task.json / run.json / REPORT.md 终态**，最终状态
+永远由 Framework（Core）裁决。关闭窗口不会中断任务。
 
 **任务状态显示「已取消」（CANCELLED）是什么意思？**
 
 - CANCELLED 是 v0.4 Phase E 的**合法终态**（cooperative soft cancel 收敛结果），表示任务被
   主动取消：已完成阶段的 Agent 结果保留，后续阶段未执行；`task.json / run.json / REPORT.md`
   三处状态一致为 CANCELLED。
-- 触发方式（当前）：在任务输出目录 `.aaf/<Task-ID>/` 写入 `cancel.request`
+- 触发方式（TASK-005-C 起）：状态窗口 [停止当前任务]（中文确认窗）→ 在任务输出目录
+  `.aaf/<Task-ID>/` 写入 `cancel.request`
   （JSON：`{"task_id": "<Task-ID>", "requested_at": "<ISO 时间>", "request": "soft_cancel"}`）。
   Runner 在安全检查点读到后收敛；`cancel.request` 只是**外部请求，不是终态裁决**
-  （最终状态由 Core 根据 `task.json` 裁决）。
+  （最终状态由 Core 根据 `task.json` 裁决）。也可 CLI / 手动写文件触发。
 - **状态窗口显示 CANCELLED 时**：查看 `task.json` 的 `terminal_reason`（CANCEL_REQUESTED /
   FORCE_CANCELLED）与 `cancel_mode`（soft / force）；确认已完成阶段的 `<agent>_result.md`
   仍保留。
 - **late cancel 不会覆盖已完成任务**：任务已 SUCCESS / WAITING / FAILED 后再写
-  cancel.request 会被吸收 / 忽略，终态不变。
-- **Force Cancel（TASK-005-B 已交付，程序化能力）**：`FrameworkLauncher.request_force_cancel(task_id)`
-  是唯一 force 入口——必须先有 soft cancel.request 且超过 `force_cancel_soft_timeout`
+  cancel.request 会被吸收 / 忽略，终态不变（窗口显示「任务已先完成」）。
+- **停止状态行怎么看**：窗口「停止状态」区分 正在运行 / 请求停止（等待安全退出）/
+  正在取消（软取消超时仍未退出）/ 已取消 / 已完成 / 无法安全停止——这些是
+  UI/control 状态（§6A.3），**不是** task.json 的合法 status。
+- **Force Cancel（TASK-005-B API + TASK-005-C 用户按钮）**：
+  `FrameworkLauncher.request_force_cancel(task_id)` 是唯一 force 入口；用户从状态窗口
+  [强制停止] 按钮（仅当 backend 明确 force eligible 时出现）→ 红色风险确认窗二次
+  确认后才调用——必须先有 soft cancel.request 且超过 `force_cancel_soft_timeout`
   （默认 30s）→ ownership verification（registry + control + live process 三方，11 项）
   全部通过 → 才执行 `taskkill /T /F`（只对 verified runner 进程树）→ 结构化 force
   evidence → Core recovery finalizer 收敛 CANCELLED。
   - **ownership 未验证（PID / creation time / 命令行 / workspace / task_id 任一不匹配、
     任务已终态、registry 已 SUPERSEDED / EXITED、进程已消失）→ REFUSE**，绝不降级成
-    "看起来像"就杀（`refusal_reason` 以 `OWNERSHIP_` 开头）。
-  - **soft timeout 不会自动 taskkill**（设计 §6A.11：必须显式 force 请求；005-C 才交付
-    最终用户按钮 / 确认窗）——不要期望当前 UI 有停止按钮。
+    "看起来像"就杀（`refusal_reason` 以 `OWNERSHIP_` 开头）；窗口相应显示
+    「无法安全停止」且不提供强制停止。
+  - **soft timeout 不会自动 taskkill**（设计 §6A.11：必须显式 force 请求 + 二次确认）。
   - **force 收敛门槛（FIX-001）**：`request_force_cancel` 只把 `taskkill /T /F` 的
     **exit 0** 视为 verified successful termination（128 = 进程已不存在，不算成功 →
     fail closed，不调 finalizer）；Launcher 把 termination 关键事实（requested /

@@ -3,7 +3,7 @@
 > Project: AI Agent Framework
 > Document Type: **Living Long-Term Backlog / 长期问题与恢复登记**
 > Established: 2026-08-27（AAF-MAINT-001-FIX-002）
-> Last Updated: 2026-08-28（AAF-v0.4-TASK-005-B-FIX-001 — §5.4 更新：Obsidian Conversation Handoff Pilot 验证完成，PILOT / EXPERIMENTAL → **VERIFIED**；此前更新：AAF-MAINT-HANDOFF-001 — §5.2/§5.4 更新：Obsidian 双角色模型 + GitHub/Obsidian 分工规则）
+> Last Updated: 2026-08-28（AAF-v0.4-TASK-005-C — Phase E Status Window Cancel UX + Real Windows E2E Closure：RW-014 由 OPEN → PARTIAL（Phase E 交付主体：状态窗口停止/强制停止 UX；剩余 Tray 菜单停止项按 §12.2 登记为后续阶段范围边界）；Phase E = COMPLETE / Phase F = NOT STARTED；此前更新：AAF-v0.4-TASK-005-B-FIX-001 — §5.4 更新：Obsidian Conversation Handoff Pilot 验证完成，PILOT / EXPERIMENTAL → **VERIFIED**）
 > Location: `docs/internal/AAF_MASTER_BACKLOG.md`
 
 ## Purpose
@@ -302,15 +302,15 @@ P3
 | ID | RW-014 |
 | Title | Task Stop / Cancel Capability |
 | Category | Runtime UX / Lifecycle Control |
-| Status | OPEN |
+| Status | PARTIAL（Phase E 已交付主体；剩余：Tray 菜单停止项（设计 §12.2，不在 005-C 范围）留待后续阶段） |
 | Priority | P1 |
 | Evidence / Origin | 真实执行 AAF 任务过程中，用户发现 Execute 后若需要中断当前任务，现有产品没有明确的 Stop / Cancel 操作入口。当前只能借助外部进程管理方式处理，这对日常用户不友好，也容易造成状态与实际进程不一致 |
-| Current Implementation | 当前 Bridge / Framework 具备任务启动与运行链，但没有正式面向用户的 Current Task Cancel 控制 |
-| Remaining Gap | 未来需要设计正式取消语义，至少考虑：<br>- 停止当前 Framework runner<br>- 停止与当前 TASK 对应的 agent chain<br>- 不影响 Bridge 本身继续工作<br>- 不误伤其他独立 Hermes / WorkBuddy / Codex 会话<br>- 保留已有 .aaf 任务证据<br>- 明确记录取消后的 task lifecycle 状态<br>- UI 中提供明确的"停止当前任务"操作<br>- 防止重复点击和状态竞争<br>- 必要时提供确认步骤<br>- 能区分正常取消、执行失败和外部进程异常终止 |
-| Decision | 当前先登记。后续与 Runtime Status / Tray / Desktop Shell 设计一起规划。不能仅做一个粗暴 kill-process 按钮 |
-| Target | 未来 Desktop Shell / Runtime UX implementation phase |
+| Current Implementation | Phase E（2026-08-28，TASK-005-A + 005-B + 005-B-FIX-001 + 005-C）已交付：soft cancel（cancel.request 契约 + 检查点收敛 + CANCELLED 终态）、force cancel（verified ownership 进程树终止 + 结构化 evidence + Core recovery finalizer）、状态窗口「停止当前任务」+ 二次确认「强制停止」+ 停止状态机（正在运行/请求停止/正在取消/已取消/已完成/无法安全停止）。Stop Current Task 与 Exit AAF 明确分离。 |
+| Remaining Gap | - Tray 菜单「停止当前任务」项（设计 §12.2 Tray 菜单含停止项；005-C 范围仅为状态窗口，Tray 项留待后续阶段）<br>- 其余（runner 停止 / agent chain 停止 / 不影响 Bridge / 不误伤独立会话 / 保留证据 / 明确 lifecycle 终态 / UI 停止入口 / 防重复点击 / 确认步骤 / 区分正常取消·失败·异常终止）已在 Phase E 全部闭合（见 PROJECT_STATE.md Phase E 段落与冻结设计 §6/§6A/§6B） |
+| Decision | Phase E 已按冻结设计 §6/§6A/§6B 交付（非粗暴 kill-process 按钮）；Tray 停止项按 §12.2 登记为后续阶段范围边界，不自动实现 |
+| Target | 未来 Desktop Shell / Runtime UX implementation phase（Tray 停止项） |
 | Do Not Forget | 用户需要的是"安全停止当前 TASK"，而不是"关闭整个 AAF"——Stop Current Task 与 Exit AAF 必须明确区分 |
-| Design Reference | `docs/design/AAF-DESKTOP-SHELL-MINIMAL-DESIGN.md`（AAF-DESIGN-001：Desktop Shell 最小设计完成，实现未开始） |
+| Design Reference | `docs/design/AAF-DESKTOP-SHELL-MINIMAL-DESIGN.md`（§6 / §6A / §6B / §12.2） |
 
 ---
 
@@ -813,7 +813,7 @@ Obsidian working knowledge → stable conclusion → Framework task → 提升�
 | RW-011 | Router local constraint classification incident | SOLVED | P1 |
 | RW-012 | Bridge hotkey listener runtime reliability | OPEN | P1 |
 | RW-013 | Router self-triggering reference trap | OPEN | P1 |
-| RW-014 | Task Stop / Cancel Capability | OPEN | P1 |
+| RW-014 | Task Stop / Cancel Capability | PARTIAL | P1 |
 | RW-015 | Chinese-first Desktop / Tray User Interface | OPEN | P2 |
 | RW-016 | Duplicate Task Status UX | OPEN | P1 |
 | RW-017 | .aaf Runtime Artifact Git Ignore Consistency | OBSERVATION | P3 |

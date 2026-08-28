@@ -839,18 +839,27 @@ def test_al_last_run_mirrors_canonical_cancelled(tmp_path, monkeypatch):
 
 
 def test_am_no_ui_stop_button_leakage():
-    """005-B 不交付最终 Stop UX（005-C 范围）：status_window / tray / main 无
-    「停止当前任务」按钮、无 force-cancel UI 调用（TASK req 30/31）。
-
-    注意：status_window.py 的 docstring 明确声明「停止当前任务 属 TASK-005-C，
-    本窗口不实现」——这是边界声明，不是泄漏；断言只针对实际按钮与 UI 调用。"""
-    for rel in ("bridge/status_window.py", "bridge/tray.py", "bridge/main.py"):
-        text = (REPO_ROOT / rel).read_text(encoding="utf-8")
-        assert 'text="停止当前任务"' not in text, f"{rel} 出现 Stop 按钮"
-        assert "request_force_cancel(" not in text, f"{rel} 直接调用 force cancel API（005-C 接入）"
-        assert "force_eligible(" not in text, f"{rel} 直接使用 force-eligible 状态（005-C 接入）"
-        assert ".request_force_cancel" not in text and "force_cancel" not in text.replace("force_cancel_soft_timeout", ""), \
-            f"{rel} 出现 force-cancel UI 接入"
+    """005-B 时不交付最终 Stop UX；005-C 交付后边界改为：Status Window 有 Stop
+    按钮（005-C 交付物），但按钮层（status_window.py）不直接调用 force API /
+    不写 terminal——force/eligible 接线只存在于 main.py 控制代理层（req 7）；
+    Tray 菜单不在 005-C 范围（§12.2 Tray 停止项留待后续阶段）。"""
+    # 005-C 交付物：Status Window 有中文 Stop 按钮（req 1）
+    sw_text = (REPO_ROOT / "bridge" / "status_window.py").read_text(encoding="utf-8")
+    assert 'text="停止当前任务"' in sw_text
+    # 按钮层 authority 边界：force eligibility 只读判定允许（req 6），但无直接
+    # force 终止调用 / 无 terminal 写 / 无 taskkill / 无 cancel 写入
+    assert "force_eligible(" in sw_text  # 只读 backend 判定（req 6）
+    for forbidden in ("request_force_cancel(", "finalize_terminal",
+                      "update_status", "taskkill", "write_cancel_request("):
+        assert forbidden not in sw_text, f"status_window.py 不得直接 {forbidden}"
+    # Tray：005-C 不改 Tray 菜单（无 Stop 项；docstring 边界声明不计入）
+    tray_text = (REPO_ROOT / "bridge" / "tray.py").read_text(encoding="utf-8")
+    assert 'text="停止当前任务"' not in tray_text
+    # main.py：控制代理层接线 launcher backend（合法）；不直接写 terminal
+    main_text = (REPO_ROOT / "bridge" / "main.py").read_text(encoding="utf-8")
+    assert "request_force_cancel" in main_text  # force 动作接线在 main（控制代理层）
+    for forbidden in ("finalize_terminal", "update_status", "taskkill"):
+        assert forbidden not in main_text, f"main.py 不得直接 {forbidden}"
 
 
 def test_an_no_project_switching_leakage():

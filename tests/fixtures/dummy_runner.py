@@ -12,6 +12,9 @@ argv，ownership verification 的命令行比较是真实闭环。
 - --spawn-child：派生一个子进程（验证 taskkill /T 进程树包含关系）
 - --commit-success-no-*：提交 SUCCESS canonical 但故意缺 run.json / REPORT.md
   （验证 wait thread → Core reconciliation 恢复派生产物）
+- --cancel-aware（AAF_DUMMY_MODE=cancel-aware）：软取消检查点语义——轮询
+  cancel.request，检测到 → Core finalizer 收敛 CANCELLED 全套产物（真实 runner
+  检查点行为的确定性替身；TASK-005-C UI E2E 用）
 - 默认：DUMMY_READY 后 sleep --sleep 秒（等待 force kill）
 """
 import argparse
@@ -87,6 +90,35 @@ def main() -> int:
             json.dumps({"status": "SUCCESS", "task_id": task_id}), encoding="utf-8")
         print("COMMITTED_SUCCESS_NO_REPORT", flush=True)
         return 0
+    if mode == "cancel-aware":
+        # 软取消检查点语义（TASK-005-C UI E2E）：轮询 cancel.request（真实 runner
+        # 检查点读取的外部可见等价物），检测到 → **等待 cancel.gate 门闩文件**（测试
+        # 用它把「中间 UI 状态观察」与「收敛」解耦，杜绝时序竞态）→ 经 Core
+        # finalizer 收敛 CANCELLED 全套产物（task.json / run.json / REPORT.md）。
+        poll = float(os.environ.get("AAF_DUMMY_CANCEL_POLL", "0.1"))
+        deadline = time.monotonic() + float(os.environ.get("AAF_DUMMY_CANCEL_WAIT", "120"))
+        while time.monotonic() < deadline:
+            if (output_dir / "cancel.request").exists():
+                gate_deadline = time.monotonic() + 30.0
+                while time.monotonic() < gate_deadline:
+                    if (output_dir / "cancel.gate").exists():
+                        break
+                    time.sleep(0.05)
+                finalize_terminal(output_dir, task_id=task_id, status="CANCELLED",
+                                  task_path=args.task, workspace=args.workspace,
+                                  report_path=str(output_dir / "REPORT.md"),
+                                  cancel_mode="soft", terminal_reason="CANCEL_REQUESTED")
+                (output_dir / "run.json").write_text(
+                    json.dumps({"status": "CANCELLED", "task_id": task_id,
+                                "terminal_generation": 1}), encoding="utf-8")
+                (output_dir / "REPORT.md").write_text(
+                    "# REPORT\n\n## Current Status\nCANCELLED\n## 任务已取消\n取消请求时间: 软取消收敛\n",
+                    encoding="utf-8")
+                print("CANCELLED_SOFT", flush=True)
+                return 0
+            time.sleep(poll)
+        print("CANCEL_AWARE_TIMEOUT", flush=True)
+        return 1
 
     sleep = float(os.environ.get("AAF_DUMMY_SLEEP", str(args.sleep)))
     print("DUMMY_READY", flush=True)

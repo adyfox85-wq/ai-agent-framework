@@ -110,6 +110,109 @@ def ask_exit_aaf(root: tk.Tk) -> bool:
     return result["value"]
 
 
+def ask_stop_task(root: tk.Tk, task_id: str) -> bool:
+    """停止确认（设计 §12.3）：[确认停止] [取消]。
+
+    确认后调用方只写 cancel.request（soft cancel，req 3）——不 kill、不写终态。
+    """
+    win = tk.Toplevel(root)
+    win.title("停止确认 — AAF Bridge")
+    win.attributes("-topmost", True)
+    win.resizable(False, False)
+
+    tk.Label(
+        win, text="停止当前任务？", font=("Segoe UI", 10, "bold")
+    ).pack(padx=16, pady=(14, 6), anchor="w")
+    tk.Label(
+        win,
+        text=f"Task ID: {task_id}\n"
+        "将发送停止请求（soft cancel）。\n"
+        "任务会在当前阶段自然结束后停止，已完成的结果会保留。",
+        font=("Segoe UI", 9),
+        justify="left",
+        wraplength=400,
+    ).pack(padx=16, anchor="w")
+
+    result = {"value": False}
+
+    def on_yes():
+        result["value"] = True
+        win.destroy()
+
+    def on_no():
+        result["value"] = False
+        win.destroy()
+
+    btns = tk.Frame(win)
+    btns.pack(pady=12)
+    tk.Button(btns, text="确认停止", width=12, command=on_yes).pack(side="left", padx=8)
+    tk.Button(btns, text="取消", width=12, command=on_no).pack(side="left", padx=8)
+
+    win.grab_set()
+    win.update_idletasks()
+    x = root.winfo_screenwidth() // 2 - win.winfo_width() // 2
+    y = root.winfo_screenheight() // 2 - win.winfo_height() // 2
+    win.geometry(f"+{max(0, x)}+{max(0, y)}")
+    win.focus_force()
+    root.wait_window(win)
+    return result["value"]
+
+
+def ask_force_stop(root: tk.Tk, task_id: str, detail: str = "") -> bool:
+    """强制停止确认（设计 §12.3）：[确认强制停止] [取消] + 红色警示文案。
+
+    只有用户第二次明确确认才返回 True；调用方随后才走 verified force-cancel
+    backend（req 4/5：ownership verification + 进程树终止 + evidence + Core finalizer）。
+    """
+    win = tk.Toplevel(root)
+    win.title("强制停止确认 — AAF Bridge")
+    win.attributes("-topmost", True)
+    win.resizable(False, False)
+
+    tk.Label(
+        win, text="强制停止？", font=("Segoe UI", 11, "bold"), fg="#b00020"
+    ).pack(padx=16, pady=(14, 6), anchor="w")
+    tk.Label(
+        win,
+        text=f"Task ID: {task_id}\n"
+        "强制停止会立即终止任务进程及其子进程树，无法撤销。\n"
+        "仅在任务长时间未退出时使用；已完成的结果会保留，\n"
+        "任务最终将以「已取消」结束。",
+        font=("Segoe UI", 9),
+        fg="#b00020",
+        justify="left",
+        wraplength=420,
+    ).pack(padx=16, anchor="w")
+    if detail:
+        tk.Label(
+            win, text=detail, font=("Segoe UI", 8), fg="#666666", justify="left", wraplength=420
+        ).pack(padx=16, pady=(2, 0), anchor="w")
+
+    result = {"value": False}
+
+    def on_yes():
+        result["value"] = True
+        win.destroy()
+
+    def on_no():
+        result["value"] = False
+        win.destroy()
+
+    btns = tk.Frame(win)
+    btns.pack(pady=12)
+    tk.Button(btns, text="确认强制停止", width=13, command=on_yes).pack(side="left", padx=8)
+    tk.Button(btns, text="取消", width=12, command=on_no).pack(side="left", padx=8)
+
+    win.grab_set()
+    win.update_idletasks()
+    x = root.winfo_screenwidth() // 2 - win.winfo_width() // 2
+    y = root.winfo_screenheight() // 2 - win.winfo_height() // 2
+    win.geometry(f"+{max(0, x)}+{max(0, y)}")
+    win.focus_force()
+    root.wait_window(win)
+    return result["value"]
+
+
 def show_bridge_status(root: tk.Tk, rows: list[tuple[str, str]]) -> tk.Toplevel:
     """最小 Bridge 信息窗口（Phase B 占位；Phase C 预留接入点）。
 

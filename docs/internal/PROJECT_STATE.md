@@ -1,8 +1,9 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E IN PROGRESS（E-Core / Soft Cancel COMPLETE — 005-A + FIX-001/002/003；E-Ownership / Force Cancel 已交付 — 005-B 已执行 + 005-B-FIX-001 已交付（canonical force authority + successful termination proof，Codex 两个 blocker 已闭合；待 route 阶段 WorkBuddy / Codex 复核通过后记 CLOSED）；剩余 TASK-005-C Status Window Cancel UX + Real Windows Closure 未交付 → Phase E 不得标 COMPLETE）；Phase F NOT STARTED；当前唯一 Next Step = AAF-v0.4-TASK-005-B-FIX-001（route 复核完成后 = AAF-v0.4-TASK-005-C））**\
-> Last Updated: 2026-08-28（AAF-v0.4-TASK-005-B-FIX-001 — Force Recovery Authority and Successful Termination Proof Closure：Core finalizer 由 canonical Bridge registry root + launch_id 推导 registry/evidence 路径（官方 read contract，evidence.registry_path 只作 proof）、evidence 绑定 canonical Bridge location、termination_exit_status == 0 才授权 CANCELLED、registry durable force 字段逐项核对、三方 identity 全量交叉；新增 32 项 authority 正负矩阵测试；Obsidian Handoff = VERIFIED（新 Planner 对话经 CURRENT_HANDOFF + PROJECT_STATE 恢复项目状态成功））\
+> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E COMPLETE（E-Core / Soft Cancel COMPLETE — 005-A + FIX-001/002/003；E-Ownership / Force Cancel 已交付 — 005-B + 005-B-FIX-001（canonical force authority + successful termination proof，Codex 两个 blocker 已闭合）；005-C Status Window Cancel UX + Real Windows E2E Closure 已交付——实现 + 测试 + 真实 Windows 正负 E2E 全量通过，Phase E 正式标记 COMPLETE；route 阶段 WorkBuddy / Codex 独立复核按项目惯例由 route 执行并记录于任务 REPORT，若发现 blocking 则按惯例开 FIX）；Phase F NOT STARTED；当前唯一 Next Step = Planner Phase E Stage Retrospective（不自动进入 Phase F））**\
+> Last Updated: 2026-08-28（AAF-v0.4-TASK-005-C — Phase E Status Window Cancel UX + Real Windows E2E Closure：状态窗口「停止当前任务」soft cancel 入口 + 「强制停止」二次确认 + CancelUi 状态机（UI/control 态，§6A.3 不进入 task.json）+ force eligibility 需 ownership VERIFIED（fail closed）+ UI Authority 边界（窗口只发请求）+ canonical winner 跟随 + artifacts 恢复；真实 Windows 正负 E2E A–G 全过；666 passed（630 基线 + 36 新增）；Phase E = COMPLETE / Phase F = NOT STARTED / Next Step = Planner Phase E Retrospective）\
+> 2026-08-28（AAF-v0.4-TASK-005-B-FIX-001 — Force Recovery Authority and Successful Termination Proof Closure：Core finalizer 由 canonical Bridge registry root + launch_id 推导 registry/evidence 路径（官方 read contract，evidence.registry_path 只作 proof）、evidence 绑定 canonical Bridge location、termination_exit_status == 0 才授权 CANCELLED、registry durable force 字段逐项核对、三方 identity 全量交叉；新增 32 项 authority 正负矩阵测试；Obsidian Handoff = VERIFIED（新 Planner 对话经 CURRENT_HANDOFF + PROJECT_STATE 恢复项目状态成功））\
 > 2026-08-28（AAF-MAINT-CONTEXT-001-FIX-003 — Explicit Route Authority + Snapshot Reference Closure：`Route:` canonical machine 字段优先于关键词 heuristic、Route Completeness Guard（required Codex 缺失不得 SUCCESS）、manifest 区分 intake_task（provenance）/ execution_task（authority）、REPORT 统一引用 immutable snapshot；唯一 Next Step 保持 = AAF-v0.4-TASK-005-B-FIX-001）\
 > 2026-08-28（AAF-MAINT-HANDOFF-001 — Obsidian Conversation Handoff Pilot + 阶段收口）：\
 > Obsidian Handoff = **VERIFIED**（D:\AdyAI\Obsidian-Vault\AI Agent Framework\CURRENT_HANDOFF.md；\
@@ -30,27 +31,30 @@ Phase: A — Runtime State Foundation: COMPLETE
        B — Bridge Background / Tray Skeleton: COMPLETE
        C — Status Window + Chinese-first UI: COMPLETE
        D — Progress Visualization: COMPLETE
-       E — Safe Cancel Lifecycle: IN PROGRESS（E-Core / Soft Cancel COMPLETE — AAF-v0.4-TASK-005-A，
+       E — Safe Cancel Lifecycle: COMPLETE（E-Core / Soft Cancel COMPLETE — AAF-v0.4-TASK-005-A，
             005-A-FIX-001 关闭 Codex 两个 blocking safety defects 并同步；
             005-A-FIX-002 已实现 recovery 单一 state.lock 原子协议（identity+evidence+
             arbitration+commit 同一临界区，关闭遗留 recovery TOCTOU）；
             005-A-FIX-003 已实现 cancel.request mutation 锁序列化（write/consume 与
             terminal writers 共享同一 state.lock，关闭 evidence replacement race）+
             forced-order 握手修正；
-            E-Ownership / Force Cancel 已交付 — AAF-v0.4-TASK-005-B（Process Ownership
+            E-Ownership / Force Cancel COMPLETE — AAF-v0.4-TASK-005-B（Process Ownership
             / Force Cancel / Recovery Integration：launch_id / control.json / Bridge
             persistent launch registry / ownership verification（11 项三方校验）/
             force cancel API（verified process-tree termination + 结构化 force evidence）/
             Core recovery finalizer force path / restart reauthentication / canonical-aware
-            wait thread + reconciliation；已执行：WorkBuddy PASS / Codex REQUEST_CHANGE）；
-            005-B-FIX-001 已交付（Force Recovery Authority + Successful Termination
-            Proof Closure：canonical Bridge registry/evidence authority 绑定、exit 0
-            成功终止证明、registry durable force 字段逐项核对、三方 identity 全量
-            交叉——Codex 原两个 blocker 已闭合；新增 32 项 authority 正负矩阵；
-            待 route 阶段 WorkBuddy / Codex 复核通过后记 005-B CLOSED +
-            E-Ownership / Force Cancel COMPLETE）；
-            剩余 TASK-005-C Status Window Cancel UX + Real Windows E2E Closure 未交付
-            → Phase E 不得标 COMPLETE）
+            wait thread + reconciliation；已执行：WorkBuddy PASS / Codex REQUEST_CHANGE）
+            + 005-B-FIX-001（Force Recovery Authority + Successful Termination Proof
+            Closure：canonical Bridge registry/evidence authority 绑定、exit 0 成功终止
+            证明、registry durable force 字段逐项核对、三方 identity 全量交叉——Codex
+            原两个 blocker 已闭合；新增 32 项 authority 正负矩阵）；
+            Status Window Cancel UX + Real Windows E2E Closure COMPLETE —
+            AAF-v0.4-TASK-005-C（状态窗口「停止当前任务」soft cancel 入口 + 二次确认
+            「强制停止」+ CancelUi 状态机 + force eligibility fail closed + UI Authority
+            边界 + canonical winner + artifacts 恢复；真实 Windows 正负 E2E A–G 全过；
+            666 passed；见下方 Phase E 段落）——Phase E 正式标记 COMPLETE（route 阶段
+            WorkBuddy / Codex 独立复核按惯例执行并记录于任务 REPORT，若 blocking 则
+            按惯例开 FIX））
 Direction: Desktop Shell MVP / Runtime Observability & Control
 Context Compaction Maintenance: CLOSED → PRODUCTION OBSERVATION（不主动重新设计；观察项见 Policy §14）
 Obsidian Handoff: VERIFIED（CURRENT_HANDOFF.md；2026-08-28 005-B-FIX-001 新会话读取并准确恢复项目状态后验证）
@@ -63,16 +67,16 @@ C. Status Window + Chinese-first UI（COMPLETE — 2026-08-27 closure：AAF-v0.4
    实现 + WorkBuddy 独立验证 + Codex 审查全部通过，见下方 Phase C 段落）
 D. Progress Visualization（COMPLETE — 2026-08-27 closure：AAF-v0.4-TASK-004-FIX-001 正式收口；
    实现 + 测试 + 真实 Windows E2E + 独立 post-completion closure audit 通过，见下方 Phase D 段落）
-E. Safe Cancel Lifecycle（IN PROGRESS — AAF-v0.4-TASK-005-A 已交付 E-Core / Soft Cancel：
-   CANCELLED 终态、state.lock、terminal generation、reconciliation、recovery finalizer 基础、
-   runner 检查点、cancel.request 契约；见下方 Phase E 段落。005-B 已执行（E-Ownership /
-   Force Cancel 已交付）+ 005-B-FIX-001 已交付（canonical force authority + successful
-   termination proof，Codex 原两个 blocker 已闭合，待 route 复核）；
-   剩余：005-B-FIX-001 route 复核通过（记 005-B CLOSED）+ TASK-005-C（Cancel UI +
-   Windows E2E Closure）完成后才能正式标记 COMPLETE）
+E. Safe Cancel Lifecycle（COMPLETE — 2026-08-28 closure：AAF-v0.4-TASK-005-A（E-Core /
+   Soft Cancel）+ 005-A-FIX-001/002/003 + 005-B（E-Ownership / Force Cancel）+
+   005-B-FIX-001（canonical force authority + successful termination proof）+
+   005-C（Status Window Cancel UX + Real Windows E2E Closure）全部交付；
+   666 passed；真实 Windows 正负 E2E A–G 全过；route 阶段 WorkBuddy / Codex 独立复核
+   按项目惯例由 route 执行并记录于任务 REPORT；见下方 Phase E 段落）
 F. Project Switching / Duplicate Task UX（NOT STARTED）
 
 Phase F 不得提前实现 / 不得自动启动。
+当前唯一 Next Step = Planner Phase E Stage Retrospective（不自动进入 Phase F）。
 
 Phase C 目标：正式状态窗口（bridge/status_window.py）—— 只读观察 + 中文优先 +
 六阶段条事实映射；Tray 接入（打开状态窗口复用/聚焦，关闭不退出 Bridge）；
@@ -299,14 +303,13 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
 - Next Phase Candidate: Phase E — Safe Cancel Lifecycle（已由 Planner 正式启动为 AAF-v0.4-TASK-005-A，
   E-Core / Soft Cancel 交付完成；Phase E 未 COMPLETE，见下方 Phase E 段落）
 
-### 0.2 Phase E — Safe Cancel Lifecycle（IN PROGRESS — E-Core / Soft Cancel COMPLETE）
+### 0.2 Phase E — Safe Cancel Lifecycle（COMPLETE — 2026-08-28，TASK-005-C 交付收口）
 
 - TASK: AAF-v0.4-TASK-005-A（2026-08-27）；范围：Phase E Core Cancel Foundation + Soft Cancel
   （冻结设计 §6 / §6A / §6B 的 E-Core 部分；Force Cancel / ownership / UI 分离到后续 TASK）
-- 状态：**IN PROGRESS — E-Core / Soft Cancel COMPLETE（实现 + 测试 + 真实 E2E 通过；**
-  **WorkBuddy / Codex 独立验证由本任务 route 阶段执行，判定记录于任务 REPORT；**
-  **Phase E 不得标 COMPLETE，005-B 已执行（Codex REQUEST_CHANGE → pending blocker**
-  **005-B-FIX-001）+ TASK-005-C 未交付）**
+- 状态：**COMPLETE（实现 + 测试 + 真实 Windows 正负 E2E 全部通过；666 passed；**\
+  **route 阶段 WorkBuddy / Codex 独立复核按项目惯例由 route 执行并记录于任务 REPORT，**\
+  **若发现 blocking 则按惯例开 FIX——在此之前本标记按「已交付、正式关闭」对待）**
 - 实现内容：
   - `ai_agent_framework/lock_utils.py`（新）：Core-owned per-task OS-level exclusive `state.lock`
     （§6B.1–§6B.3；Windows msvcrt.locking / POSIX flock；timeout；残留文件不占锁；crash 后 OS 自动释放；
@@ -573,6 +576,57 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
   005-C 全部完成后 Phase E 才可标 COMPLETE）
 - **当前唯一 Next Step（当前状态）**：**AAF-v0.4-TASK-005-B-FIX-001**（005-B 的 pending
   Codex blocker；见下方 Maintenance 段落；FIX-001 关闭前不进入 005-C）
+- **TASK-005-C（AAF-v0.4-TASK-005-C，2026-08-28）：Phase E Status Window Cancel UX +
+  Real Windows E2E Closure（Phase E 最后一块；交付后 Phase E 正式标记 COMPLETE）**：
+  - `bridge/status_window.py`：CancelUi 状态机（UI/control 态，§6A.3 最小中间状态——
+    **绝不进入 task.json 合法 status**）：正在运行 / 请求停止（停止请求已发送，正在
+    等待任务安全退出）/ 正在取消（软取消超时仍未退出 → 提供 [强制停止]）/ 已取消 /
+    已完成（曾有请求 → 「任务已先完成」，canonical winner，req 8）/ 无法安全停止 /
+    无法确认（不可验证 → 不提供 Stop，req 1）；`derive_cancel_ui` 纯函数只依赖
+    canonical artifacts（task.json / cancel.request / registry / force eligibility
+    backend），不依赖 UI 内存（req 9）；`collect_cancel_ui` 从真实 artifacts 收集 +
+    force eligible 时再经 `launcher.ownership_status` 确认 VERIFIED/REAUTHENTICATED
+    （UNCERTAIN / STALE / mismatch → fail closed 不提供 Force，req 6）；快照新增
+    `cancel_ui` 字段；窗口新增「停止状态」行 + [停止当前任务]（soft cancel，req 3）+
+    [强制停止]（仅 eligible 时显示，req 6；点击经回调转发，窗口零写 canonical / 零
+    taskkill——req 7，静态 AST 断言保护）
+  - `bridge/ui.py`：中文停止确认窗（§12.3 [确认停止] [取消]）+ 强制停止红色风险确认窗
+    （[确认强制停止] [取消]，二次确认，req 4/5）
+  - `bridge/main.py`：`_request_stop`（只允许当前 RUNNING 任务；确认后经 Core-owned
+    cancel 模块写 cancel.request——state.lock 序列化；绝不直接写 SUCCESS/FAILED/
+    WAITING/CANCELLED）+ `_request_force_stop`（ask_force_stop 二次确认后才调
+    launcher.request_force_cancel——不绕过 ownership/registry/evidence/finalizer，
+    req 5/7）+ `_force_refusal_cn`（拒绝原因 → 中文主文案，req 10）；StatusWindowController
+    新回调接线
+  - `tests/fixtures/dummy_runner.py`：cancel-aware 模式（检查点语义 + cancel.gate 门闩
+    确定性收敛，TASK-005-C UI E2E 专用）
+  - 测试：**666 passed**（630 基线 + 36 净新增，零下降；tests/test_phase_e_cancel_ui.py
+    29 项：状态机全矩阵 / Stop 入口守卫（terminal·无任务·不可验证）/ soft-cancel-first
+    真实写入断言（只写 cancel.request，零 canonical）/ soft timeout 不自动 kill /
+    force 二次确认（confirm=False 零终止调用）/ eligibility fail closed（backend
+    异常·ownership 未通过）/ UI Authority 静态 AST 边界 / canonical winner race /
+    artifacts 恢复（两独立会话同 artifacts 同状态）/ 中文文案 / GUI 真实 Tk 渲染
+    （按钮可用性·Force 显隐·回调转发）；tests/test_phase_e_cancel_ui_e2e.py 7 项真实
+    Windows E2E（req 11 A–G：A 运行中软取消→CANCELLED+后续 agent 不启动；
+    B 阶段间软取消→结果保留→CANCELLED；C 正常完成胜出→SUCCESS 保持+late cancel
+    absorbed；D 软超时→不自动 kill→force option；E 二次确认后 verified force→owned
+    进程树终止+evidence+CANCELLED+unrelated sibling 存活；F ownership 篡改→force
+    refused→目标存活；G instance B 重启→artifacts 恢复+REAUTHENTICATED force 可用）；
+    连跑 3 轮零 flake）
+  - 既有测试适配：test_phase_e_ownership.py test_am 从「无 Stop 按钮泄漏」更新为
+    「005-C 交付后 authority 边界」（status_window 有按钮但零直接 force/terminal 写；
+    Tray 菜单项不在 005-C 范围）
+  - 行为契约：CANCEL_REQUESTED / CANCELLING 只属 UI/control 态（§6A.3），task.json
+    VALID_STATUSES 不变；停止动作永远先 soft cancel；soft timeout 永不自动 force kill
+  - 边界遵守：无 Phase F（项目切换 / Duplicate UX）/ 无 RW-020–024 顺手修复 / 无
+    Tray 停止菜单项（设计 §12.2 Tray 停止项留待后续阶段，已登记为范围边界）；`.aaf/`
+    真实任务目录未动（本任务运行目录由 Framework 自己管理）
+  - route 阶段：WorkBuddy / Codex 独立复核按项目惯例由 route 执行（verdict 记录于
+    任务 REPORT.md；若 blocking 则按惯例开 FIX）
+- **Phase E 收口结论（2026-08-28）**：E-Core / Soft Cancel（005-A + FIX-001/002/003）+
+  E-Ownership / Force Cancel（005-B + 005-B-FIX-001）+ Status Window Cancel UX +
+  Real Windows E2E Closure（005-C）全部交付 → **Phase E = COMPLETE；Phase F = NOT
+  STARTED；Next Step = Planner Phase E Stage Retrospective（不自动进入 Phase F）**
 
 ### 0.2 Maintenance — Context Compaction / Stage Packet Protocol（AAF-MAINT-CONTEXT-001，2026-08-28）
 

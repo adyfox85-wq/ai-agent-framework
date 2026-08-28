@@ -36,6 +36,7 @@ from . import handoff
 from . import task_io
 from . import tray as tray_mod
 from . import ui
+from ai_agent_framework import cancel as cancel_mod
 from .launcher import (
     AlreadyRunningError,
     FrameworkLauncher,
@@ -43,8 +44,9 @@ from .launcher import (
     RESULT_FAILED_TO_START,
     RESULT_FINISHED,
     RESULT_REPORT_NOT_FOUND,
+    RUNNING,
 )
-from .status_window import StatusWindowController, collect_status
+from .status_window import StatusWindowController, collect_status, overall_status_label
 from .win32 import HotkeyConflictError, HotkeyListener, unregister_hotkey
 
 CONFIG_CHECK_INTERVAL = 2.0  # 秒：热键触发时检查配置变化（无需重启 Bridge）
@@ -209,6 +211,10 @@ class Bridge:
             on_restart=self._restart_bridge,
             on_exit=self._exit_aaf,
             on_close=None,
+            # Phase E / TASK-005-C：Stop / Force 动作接线（只发请求；不直接 kill /
+            # 不写 canonical terminal——req 7）
+            on_stop_request=self._request_stop,
+            on_force_request=self._request_force_stop,
         )
         self._last_health: str | None = None
         self._cfg_mtime = self._config_mtime()
@@ -324,7 +330,7 @@ class Bridge:
         """重启 Bridge 宿主：注销热键 → 启动新实例（pythonw）→ 本实例立即退出。
 
         - 不修改正在执行 Task 的 canonical terminal state（不写 task.json / run.json）
-        - 不实现 Phase E（无 ownership verification / cancel / taskkill）
+        - 重启本身不触发 cancel / force kill（Phase E 停止动作只在用户从状态窗口显式触发）
         - 单实例 mutex 保证新旧不双开：旧实例退出后新实例取得所有权
         """
         if self.listener is not None:
@@ -359,6 +365,77 @@ class Bridge:
         confirm = ui.ask_exit_aaf(self.root)
         if confirm:
             self.root.quit()
+
+    # ---------- Phase E / TASK-005-C：Stop / Force 动作（req 3/4/5/7） ----------
+
+    def _request_stop(self, task_id: str, output_dir: str | None) -> None:
+        """[停止当前任务]：确认 → 只写 cancel.request（soft cancel 优先，req 3）。
+
+        - 只允许对当前 RUNNING 任务（req 1：terminal / 无任务 / 不可验证不提供）
+        - 写入走 Core-owned cancel 模块（state.lock 序列化，§6B.19/FIX-003）
+        - UI 绝不直接写 SUCCESS / FAILED / WAITING / CANCELLED（req 3/7）
+        """
+        if self.launcher.state != RUNNING or self.launcher.current is None:
+            ui.show_error("无法停止", "当前没有正在执行的任务。")
+            return
+        if self.launcher.current.task_id != task_id:
+            ui.show_error("无法停止", "任务已变化，请刷新后重试。")
+            return
+        if not output_dir:
+            ui.show_error("无法停止", "找不到任务输出目录，无法发送停止请求。")
+            return
+        if not ui.ask_stop_task(self.root, task_id):
+            return  # 用户取消
+        try:
+            cancel_mod.write_cancel_request(Path(output_dir), task_id)
+        except cancel_mod.CancelRequestIdentityError as exc:
+            ui.show_error("无法停止", f"任务身份不匹配，停止请求未发送：{exc}")
+            return
+        except Exception as exc:  # noqa: BLE001 —— 锁超时/OS 错误显式失败，不静默
+            ui.show_error("无法停止", f"停止请求发送失败：{type(exc).__name__}: {exc}")
+            return
+        ui.show_info("停止请求已发送", "停止请求已发送，正在等待任务安全退出。\n任务会在当前阶段自然结束后停止。")
+
+    @staticmethod
+    def _force_refusal_cn(reason: str) -> str:
+        """request_force_cancel 拒绝原因 → 中文主文案（技术代码附括号作诊断，req 10）。"""
+        r = reason or ""
+        if r.startswith("OWNERSHIP_"):
+            return f"无法安全强制停止：任务所有权无法确认（可能已结束、已被接管或进程已退出）。未执行终止操作。（{r[:120]}）"
+        if r.startswith("NOT_ELIGIBLE"):
+            return f"尚不能强制停止：任务仍在软取消等待期内或取消请求无效。（{r[:120]}）"
+        if r.startswith("TERMINATION_FAILED"):
+            return "强制终止失败：任务进程未能被终止。"
+        if r.startswith("EVIDENCE_WRITE_FAILED"):
+            return "强制终止失败：无法记录终止证据。"
+        if r.startswith("CONTROL_UPDATE_FAILED"):
+            return "强制停止失败：无法更新任务控制记录。"
+        if r.startswith("NO_ACTIVE_LAUNCH"):
+            return "无法强制停止：找不到该任务的启动记录。"
+        return f"无法安全强制停止：{r[:200]}"
+
+    def _request_force_stop(self, task_id: str) -> None:
+        """[强制停止]：第二次明确中文确认（req 4/5）→ verified force-cancel backend。
+
+        不绕过：ownership verification / canonical registry / force evidence /
+        recovery finalizer（全部由 launcher.request_force_cancel 强制，§6B.17）。
+        """
+        if not ui.ask_force_stop(self.root, task_id):
+            return  # 用户取消第二次确认 → 不执行任何终止
+        try:
+            res = self.launcher.request_force_cancel(task_id)
+        except Exception as exc:  # noqa: BLE001 —— 动作异常显式失败
+            ui.show_error("强制停止失败", f"强制停止调用失败：{type(exc).__name__}: {exc}")
+            return
+        if res.ok:
+            status_cn = overall_status_label(res.canonical_status) if res.canonical_status else "已终止"
+            ui.show_info(
+                "已强制停止",
+                f"任务已强制停止，最终状态：{status_cn}。\n"
+                "终止证据与已取消终态由任务框架收敛。",
+            )
+        else:
+            ui.show_error("无法安全强制停止", self._force_refusal_cn(res.refusal_reason or ""))
 
     # ---------- 事件 ----------
 

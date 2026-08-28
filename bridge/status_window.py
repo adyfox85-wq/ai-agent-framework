@@ -20,8 +20,20 @@ Core / UI 边界（设计 §14）：
   绝不写 task.json / run.json / route.json / boundary.json / REPORT.md
 - 不复制 Router / Runner / Lifecycle / Agent 逻辑
 - Phase E：CANCELLED 作为合法终态已进入状态映射（§11.1 CANCELLED → 已取消）与
-  进度收敛（§4.1.5 停在取消时刻权重和）；最终 [停止当前任务] 按钮与取消状态机
-  属 TASK-005-C，本窗口不实现
+  进度收敛（§4.1.5 停在取消时刻权重和）
+- Phase E / TASK-005-C（本文件主体）：Status Window Cancel UX
+  - [停止当前任务]：只写 cancel.request（§6.1 控制代理契约，经 Core-owned
+    cancel 模块原子写 + state.lock 序列化）；**UI 绝不直接写任何 terminal 状态**
+  - [强制停止]：只有 backend（launcher.force_eligible）明确返回 force eligible
+    才显示/启用（req 6）；点击后必须第二次明确中文确认（req 4/5），才调用
+    launcher.request_force_cancel（verified ownership + 进程树终止 + 结构化
+    force evidence + Core recovery finalizer；§6B.17）
+  - CANCEL_REQUESTED / CANCELLING 等中间态**只属于 UI/control 状态**（§6A.3），
+    绝不进入 task.json 合法 status 集合（VALID_STATUSES 不变）
+  - canonical terminal 是最终结果来源：任务先完成 vs 取消请求竞争 → UI 跟随
+    canonical（任务已先完成 / 已取消），不猜测（req 8）
+  - 窗口/重启后从 canonical artifacts + cancel.request + registry 恢复 UI 状态，
+    不依赖 UI 内存（req 9）
 - 不实现 Phase F（项目切换 / Duplicate UX）；stuck 仅提示，不做 definitive
   dead-runner 判定（RW-020 边界）
 
@@ -40,7 +52,9 @@ from . import config as cfg_mod
 from . import task_io
 from . import progress as progress_mod
 from . import stuck as stuck_mod
+from ai_agent_framework import cancel as cancel_mod
 from ai_agent_framework import runtime_state as runtime_state_mod
+from ai_agent_framework.task_lifecycle import TERMINAL_STATUSES
 
 REFRESH_INTERVAL_MS = 1000  # 刷新频率：约 1 秒（只读轻量刷新，TASK req 16）
 
@@ -84,6 +98,197 @@ LAUNCHER_RESULT_LABELS = {
     "FAILED_TO_START": "启动失败",
     "CANCELLED": "已取消",
 }
+
+# ---------------------------------------------------------------------------
+# Phase E / TASK-005-C：Stop / Cancel UX 状态机（UI/control 态；§6A.3）
+# ---------------------------------------------------------------------------
+# 这些状态**只属于 Status Window / Launcher 控制语义**（§6A.3 最小中间状态：
+# CANCEL_REQUESTED / CANCELLING 允许作为 UI/内存态 + control.json 字段），
+# **绝不写入 task.json**（VALID_STATUSES 不变；terminal 只有 CANCELLED）。
+#
+# 推导只依赖 canonical artifacts（task.json / cancel.request / launch registry /
+# force eligibility backend），不依赖 UI 内存——窗口/重启后从 artifacts 恢复（req 9）。
+#
+# 状态表（req 2 至少区分：正在运行 / 请求停止 / 正在取消 / 已取消 / 已完成 /
+# 停止失败 / 无法安全停止）：
+#   RUNNING        正在运行    可停止（无 cancel.request 的非终态任务）
+#   STOP_REQUESTED 请求停止    停止请求已发送，正在等待任务安全退出（软取消窗口内）
+#   CANCELLING     正在取消    软取消超时任务仍未退出 → 提供 [强制停止]（force eligible 时）
+#   CANCELLED      已取消      canonical terminal = CANCELLED
+#   COMPLETED      已完成      其他 canonical terminal（曾有请求 → 任务已先完成）
+#   STOP_UNSAFE    无法安全停止 force 不可用（ownership UNCERTAIN/STALE 等）→ 不提供 Force
+#   UNKNOWN        无法确认    任务状态不可验证 → 不提供 Stop（req 1：不可验证不提供误导 Stop）
+CANCEL_UI_RUNNING = "RUNNING"
+CANCEL_UI_STOP_REQUESTED = "STOP_REQUESTED"
+CANCEL_UI_CANCELLING = "CANCELLING"
+CANCEL_UI_CANCELLED = "CANCELLED"
+CANCEL_UI_COMPLETED = "COMPLETED"
+CANCEL_UI_STOP_UNSAFE = "STOP_UNSAFE"
+CANCEL_UI_UNKNOWN = "UNKNOWN"
+
+# 用户反馈文案（req 10：中文、不裸露 technical internal states 为主要文案）
+MSG_STOP_SENT = "停止请求已发送，正在等待任务安全退出"
+MSG_WAITING_EXIT = "停止请求已发送，正在等待任务安全退出"
+MSG_FORCE_OPTION = "任务仍未退出，可选择强制停止"
+MSG_FORCE_CONFIRM = "强制停止确认"
+MSG_CANCELLED = "任务已取消"
+MSG_COMPLETED_FIRST = "任务已先完成（取消请求已被吸收）"
+MSG_COMPLETED = "任务已完成"
+MSG_UNSAFE_FORCE = "无法安全强制停止：当前无法确认任务状态（可能已结束或无法安全终止）"
+MSG_STOP_CONFIRM = "停止确认"
+
+# 非终态（等待软取消收敛 / 未发请求）时显示的用户文案（防止暴露原始技术原因）
+_CANCEL_UI_LABELS = {
+    CANCEL_UI_RUNNING: "正在运行",
+    CANCEL_UI_STOP_REQUESTED: "请求停止",
+    CANCEL_UI_CANCELLING: "正在取消",
+    CANCEL_UI_CANCELLED: "已取消",
+    CANCEL_UI_COMPLETED: "已完成",
+    CANCEL_UI_STOP_UNSAFE: "无法安全停止",
+    CANCEL_UI_UNKNOWN: "无法确认",
+}
+
+
+@dataclass(frozen=True)
+class CancelUi:
+    """Status Window 的 Stop / Cancel UX 状态（UI/control 态，绝不写入 task.json）。
+
+    - state：CANCEL_UI_* 代码（§6A.3 最小中间状态；非 task.json status）
+    - label / message：中文用户文案（req 10；technical detail 只进 force_detail）
+    - can_stop / can_force：按钮可用性（req 1/6——只有 backend 明确 eligible 才 True）
+    - force_detail：force 不可用时的诊断原因（次要信息，不裸露为主要文案）
+    """
+
+    state: str
+    label: str
+    message: str
+    can_stop: bool = False
+    can_force: bool = False
+    force_detail: str = ""
+
+
+def _force_detail_cn(detail: str | None) -> str:
+    """backend force eligibility 原因 → 中文摘要（技术代码保留在括号内作诊断）。"""
+    if not detail:
+        return ""
+    d = str(detail)
+    if d.startswith("OWNERSHIP_") or d.startswith("REGISTRY_") or "STALE" in d or "UNCERTAIN" in d:
+        return f"任务状态无法安全确认（{d[:120]}）"
+    if d.startswith("NO_ACTIVE_LAUNCH"):
+        return "找不到该任务的启动记录"
+    if d.startswith("NO_SOFT_CANCEL_REQUEST"):
+        return "未找到有效的取消请求"
+    if d.startswith("SOFT_CANCEL_TIMEOUT_NOT_REACHED"):
+        return "仍在等待任务安全退出"
+    if d.startswith("CANCEL_REQUEST"):
+        return "取消请求无效或异常"
+    return d[:200]
+
+
+def derive_cancel_ui(
+    *,
+    runtime_status: str | None,
+    has_cancel_request: bool,
+    request_age: float | None,
+    soft_timeout: float,
+    force_eligible: bool | None = None,
+    force_detail: str | None = None,
+) -> CancelUi:
+    """纯函数：由 canonical 事实推导 Stop / Cancel UX 状态（无副作用、无 UI 内存）。
+
+    规则（req 7/8：canonical terminal 优先；UI 不裁决）：
+    - canonical terminal = CANCELLED → 已取消（无论 cancel.request 是否残留）
+    - canonical terminal = SUCCESS/WAITING/FAILED → 已完成；若曾有取消请求 →
+      「任务已先完成」（late cancel absorbed，req 8）
+    - 无 canonical（不可验证）→ 不提供 Stop（req 1）
+    - 非终态 + 无 cancel.request → 正在运行（可停止）
+    - 非终态 + 有请求 + 软取消窗口内 → 请求停止（等待安全退出；不提供 Force）
+    - 非终态 + 有请求 + 超时：force eligible（backend 明确返回）→ 正在取消 +
+      [强制停止]；否则 → 无法安全停止（fail closed，req 5/6）
+    """
+    if runtime_status is None:
+        return CancelUi(CANCEL_UI_UNKNOWN, _CANCEL_UI_LABELS[CANCEL_UI_UNKNOWN], "", False, False, "")
+    if runtime_status == "CANCELLED":
+        return CancelUi(CANCEL_UI_CANCELLED, _CANCEL_UI_LABELS[CANCEL_UI_CANCELLED], MSG_CANCELLED, False, False, "")
+    if runtime_status in TERMINAL_STATUSES:
+        msg = MSG_COMPLETED_FIRST if has_cancel_request else MSG_COMPLETED
+        return CancelUi(CANCEL_UI_COMPLETED, _CANCEL_UI_LABELS[CANCEL_UI_COMPLETED], msg, False, False, "")
+    # 非终态（RUNNING / CREATED …）
+    if not has_cancel_request:
+        return CancelUi(CANCEL_UI_RUNNING, _CANCEL_UI_LABELS[CANCEL_UI_RUNNING], "", True, False, "")
+    if request_age is None or request_age < soft_timeout:
+        return CancelUi(
+            CANCEL_UI_STOP_REQUESTED, _CANCEL_UI_LABELS[CANCEL_UI_STOP_REQUESTED],
+            MSG_WAITING_EXIT, False, False, "",
+        )
+    # soft timeout 已到，任务仍未退出（req 4：不自动 kill；UI 明确说明 + 提供 Force）
+    if force_eligible:
+        return CancelUi(
+            CANCEL_UI_CANCELLING, _CANCEL_UI_LABELS[CANCEL_UI_CANCELLING],
+            MSG_FORCE_OPTION, False, True, "",
+        )
+    return CancelUi(
+        CANCEL_UI_STOP_UNSAFE, _CANCEL_UI_LABELS[CANCEL_UI_STOP_UNSAFE],
+        MSG_UNSAFE_FORCE, False, False, _force_detail_cn(force_detail),
+    )
+
+
+def collect_cancel_ui(
+    launcher,
+    task_id: str,
+    output_dir: Path | None,
+    runtime_status: str | None,
+    *,
+    soft_timeout: float | None = None,
+) -> CancelUi | None:
+    """从真实 artifacts 收集 Cancel UI 事实（只读；force eligibility 经 launcher backend）。
+
+    - 无 launcher / 无任务 / 无输出目录 → None（不提供 Stop）
+    - runtime_status 为 None（canonical 缺失/不可验证）→ UNKNOWN（不提供 Stop）
+    - cancel.request 存在 → 计算请求年龄；软取消超时后才询问 backend
+      force_eligible（backend 明确返回 True 才允许 Force，req 6），且 force
+      可用时再经 launcher.ownership_status 确认 ownership VERIFIED/REAUTHENTICATED
+      ——UNCERTAIN / STALE / mismatch → 不提供 Force（fail closed）
+    """
+    if launcher is None or not task_id or output_dir is None:
+        return None
+    if runtime_status is None:
+        return CancelUi(CANCEL_UI_UNKNOWN, _CANCEL_UI_LABELS[CANCEL_UI_UNKNOWN], "", False, False, "")
+    req, _warning = cancel_mod.inspect_cancel_request(output_dir)
+    has_req = req is not None
+    age: float | None = None
+    if req is not None:
+        ts = cancel_mod.parse_requested_at(req.requested_at)
+        if ts is not None:
+            age = max(0.0, (datetime.now() - ts).total_seconds())
+    timeout = soft_timeout
+    if timeout is None:
+        timeout = float(cfg_mod.load_config().get("force_cancel_soft_timeout", 30.0))
+    eligible: bool | None = None
+    why: str | None = None
+    if runtime_status not in TERMINAL_STATUSES and has_req and age is not None and age >= timeout:
+        try:
+            eligible, why = launcher.force_eligible(task_id)
+            if eligible:
+                # req 6：force 只对 backend 明确验证过 ownership 的 launch 提供
+                # （UNCERTAIN / STALE / mismatch → 不显示/不启用 Force，fail closed）。
+                # ownership_status 是 launcher 只读诊断 API（TASK-005-B req 31）。
+                if hasattr(launcher, "ownership_status"):
+                    verdict = launcher.ownership_status(task_id)
+                    if verdict is None or not verdict.ok():
+                        vresult = getattr(verdict, "result", "NO_VERDICT")
+                        eligible = False
+                        why = f"OWNERSHIP_{vresult}: force eligibility 需要 verified ownership"
+        except Exception as exc:  # noqa: BLE001 —— backend 检查失败 → fail closed 不提供 Force
+            eligible, why = False, f"force eligibility 检查失败: {type(exc).__name__}: {exc}"
+    return derive_cancel_ui(
+        runtime_status=runtime_status,
+        has_cancel_request=has_req,
+        request_age=age,
+        soft_timeout=timeout,
+        force_eligible=eligible,
+        force_detail=why,
+    )
 
 # Bridge 健康 → 中文（与 bridge/main.py 的展示层一致；状态码仍是技术字段）
 HEALTH_LABELS = {"OK": "正常运行", "DEGRADED": "异常"}
@@ -406,6 +611,8 @@ class StatusSnapshot:
     log_dir: str | None = None
     report_path: str | None = None
     empty_hint: str | None = None
+    # Phase E / TASK-005-C：Stop / Cancel UX（UI/control 态；None = 不提供 Stop）
+    cancel_ui: CancelUi | None = None
 
 
 def _empty_stage_strip() -> dict:
@@ -495,6 +702,7 @@ def collect_status(cfg: dict, health: tuple, launcher) -> StatusSnapshot:
             log_dir=None,
             report_path=None,
             empty_hint="当前没有任务。\n使用 Ctrl+Alt+A 粘贴 TASK 后开始执行。",
+            cancel_ui=None,
         )
 
     task_name = _read_task_name(ref.task_path) if ref.task_path else ""
@@ -509,6 +717,11 @@ def collect_status(cfg: dict, health: tuple, launcher) -> StatusSnapshot:
     stuck, stuck_warning, stuck_detail = stuck_mod.suspected_stuck(runtime)
     progress_text = progress_mod.progress_text(est.percent, status=status, has_info=runtime is not None)
     share_text = progress_mod.stage_share_text(strip)
+
+    # --- Phase E / TASK-005-C：Stop / Cancel UX（只读 artifacts + launcher backend） ---
+    cancel_ui = collect_cancel_ui(
+        launcher, ref.task_id or "", ref.output_dir, status,
+    )
 
     if runtime is not None:
         elapsed = format_elapsed(runtime.elapsed_seconds())
@@ -555,6 +768,7 @@ def collect_status(cfg: dict, health: tuple, launcher) -> StatusSnapshot:
         log_dir=str(log_dir) if log_dir else None,
         report_path=report_path,
         empty_hint=None,
+        cancel_ui=cancel_ui,
     )
 
 
@@ -585,17 +799,24 @@ class StatusWindow(tk.Toplevel):
     - 关闭（WM_DELETE_WINDOW / [关闭]）只销毁本窗口，不退出 Bridge
     """
 
-    def __init__(self, root, provider, on_close=None, on_restart=None, on_exit=None):
+    def __init__(self, root, provider, on_close=None, on_restart=None, on_exit=None,
+                 on_stop_request=None, on_force_request=None):
         super().__init__(root)
         self._provider = provider
         self._on_close = on_close
         self._on_restart_cb = on_restart
         self._on_exit_cb = on_exit
+        # Phase E / TASK-005-C：Stop / Force 动作回调（由 Bridge main 接线到 launcher
+        # backend——本窗口只发请求，不直接 kill / 不写 canonical terminal，req 7）
+        self._on_stop_cb = on_stop_request
+        self._on_force_cb = on_force_request
         self._after_id = None
         self._closed = False
         self._empty_shown = True
         self._log_dir = None
         self._task_dir = None
+        self._cancel_task_id = None
+        self._force_shown = False
 
         self.title("AAF 状态窗口 — AI Agent Framework")
         self.resizable(False, False)
@@ -642,11 +863,19 @@ class StatusWindow(tk.Toplevel):
         self._lbl_activity = self._field_in_frame(self._task_frame, 6, "最近活动：")
         self._lbl_overall = self._field_in_frame(self._task_frame, 7, "整体结果：")
 
+        # Phase E / TASK-005-C：停止状态（UI/control 态；只读展示，不写 canonical）
+        self._lbl_cancel_state = self._field_in_frame(self._task_frame, 8, "停止状态：")
+        self._lbl_cancel_msg = tk.Label(
+            self._task_frame, text="", font=("Segoe UI", 8), fg="#666666",
+            wraplength=300, justify="left",
+        )
+        self._lbl_cancel_msg.grid(row=9, column=1, columnspan=3, sticky="w", padx=8, pady=0)
+
         # 整体进度（Phase D：只读估算；设计 §12.1 文案 + 进度条）
         self._lbl_progress = tk.Label(
             self._task_frame, text=progress_mod.NO_INFO_TEXT, font=("Segoe UI", 9, "bold")
         )
-        self._lbl_progress.grid(row=8, column=0, columnspan=2, sticky="w", padx=8, pady=(4, 1))
+        self._lbl_progress.grid(row=10, column=0, columnspan=2, sticky="w", padx=8, pady=(4, 1))
         self._progress_canvas = tk.Canvas(
             self._task_frame,
             width=PROGRESS_BAR_WIDTH,
@@ -655,14 +884,14 @@ class StatusWindow(tk.Toplevel):
             highlightthickness=1,
             highlightbackground="#bbbbbb",
         )
-        self._progress_canvas.grid(row=8, column=2, columnspan=2, sticky="ew", padx=8, pady=(4, 1))
+        self._progress_canvas.grid(row=10, column=2, columnspan=2, sticky="ew", padx=8, pady=(4, 1))
         self._progress_fill = None
 
         # 当前阶段占比（Phase D req 6：允许附加；仅进行中阶段显示）
         self._lbl_stage_share = tk.Label(
             self._task_frame, text="", font=("Segoe UI", 8), fg="#666666"
         )
-        self._lbl_stage_share.grid(row=9, column=0, columnspan=4, sticky="w", padx=8, pady=0)
+        self._lbl_stage_share.grid(row=11, column=0, columnspan=4, sticky="w", padx=8, pady=0)
 
         # suspected-stuck 提示横幅（Phase D：只观察、不改 canonical state；默认隐藏）
         self._lbl_stuck = tk.Label(
@@ -677,7 +906,7 @@ class StatusWindow(tk.Toplevel):
         self._lbl_stuck.grid_remove()
 
         tk.Frame(self._task_frame, height=1, bg="#cccccc").grid(
-            row=10, column=0, columnspan=4, sticky="ew", padx=4, pady=4
+            row=12, column=0, columnspan=4, sticky="ew", padx=4, pady=4
         )
 
         # 阶段条（六阶段：Validation … Report；进行中阶段高亮）
@@ -694,7 +923,7 @@ class StatusWindow(tk.Toplevel):
                 padx=4,
                 pady=4,
             )
-            cell.grid(row=11, column=i, padx=3, pady=4)
+            cell.grid(row=13, column=i, padx=3, pady=4)
             self._cells[stage] = cell
             self._cell_default_bg[stage] = str(cell.cget("bg"))
 
@@ -717,13 +946,18 @@ class StatusWindow(tk.Toplevel):
         self.btn_log.pack(side="left", padx=5)
         self.btn_task_dir = tk.Button(btns, text="查看任务目录", width=12, command=self._on_open_task_dir)
         self.btn_task_dir.pack(side="left", padx=5)
+        # Phase E / TASK-005-C：[停止当前任务] 只发 soft cancel 请求；[强制停止] 只在
+        # backend 明确 force eligible 时显示（req 6），点击后经二次中文确认才触发
+        self.btn_stop = tk.Button(btns, text="停止当前任务", width=12, command=self._on_stop)
+        self.btn_stop.pack(side="left", padx=5)
+        self.btn_force = tk.Button(btns, text="强制停止", width=9, command=self._on_force)
         tk.Button(btns, text="关闭", width=10, command=self.close).pack(side="left", padx=5)
         tk.Button(btns, text="重启 Bridge", width=12, command=self._on_restart).pack(side="left", padx=5)
         tk.Button(btns, text="退出 AAF", width=12, command=self._on_exit).pack(side="left", padx=5)
 
         tk.Label(
             self,
-            text="状态窗口为只读观察界面；关闭窗口不会退出 Bridge。",
+            text="停止/强制停止仅发送控制请求，最终任务状态由任务框架决定；关闭窗口不会退出 Bridge。",
             font=("Segoe UI", 8),
             fg="#666666",
         ).grid(row=task_row + 2, column=0, columnspan=4, padx=12, pady=(2, 8))
@@ -791,6 +1025,8 @@ class StatusWindow(tk.Toplevel):
             self._task_frame.grid_remove()
             self._empty_frame.grid()
             self._empty_lbl.config(text=snap.empty_hint or "")
+            self._cancel_task_id = None
+            self._update_cancel_buttons(None)
             return
 
         self._empty_shown = False
@@ -803,6 +1039,19 @@ class StatusWindow(tk.Toplevel):
         self._lbl_elapsed.config(text=snap.elapsed)
         self._lbl_activity.config(text=snap.last_activity)
         self._lbl_overall.config(text=f"{snap.overall}（{snap.overall_raw}）" if snap.overall_raw else snap.overall)
+
+        # Phase E / TASK-005-C：停止状态（UI/control 态展示 + 按钮可用性）
+        cu = getattr(snap, "cancel_ui", None)
+        if cu is not None:
+            self._lbl_cancel_state.config(text=cu.label)
+            self._lbl_cancel_msg.config(text=cu.message)
+            self._lbl_cancel_state.grid()
+            self._lbl_cancel_msg.grid()
+        else:
+            self._lbl_cancel_state.grid_remove()
+            self._lbl_cancel_msg.grid_remove()
+        self._cancel_task_id = snap.task_id if cu is not None else None
+        self._update_cancel_buttons(cu)
 
         # Phase D：整体进度（只读估算；防御性读取兼容旧 provider 快照）
         self._lbl_progress.config(
@@ -847,6 +1096,38 @@ class StatusWindow(tk.Toplevel):
             0, 0, width, 14, fill="#4caf50", outline=""
         )
 
+    # ---------- Phase E / TASK-005-C：停止/强制停止按钮状态 ----------
+
+    def _update_cancel_buttons(self, cu: CancelUi | None) -> None:
+        """按 CancelUi 状态更新 [停止当前任务] / [强制停止]（设计 §6.9 状态机）。
+
+        - can_stop → 「停止当前任务」可用
+        - 请求停止 / 正在取消 / 无法安全停止 → 按钮变灰文案「正在取消…」（§6.9）
+        - terminal / 无任务 / 不可验证 → 禁用
+        - [强制停止] 只在 backend 明确 force eligible 时显示（req 6）
+        """
+        if cu is not None and cu.can_stop:
+            self.btn_stop.config(text="停止当前任务", state="normal")
+        elif cu is not None and cu.state in (
+            CANCEL_UI_STOP_REQUESTED, CANCEL_UI_CANCELLING, CANCEL_UI_STOP_UNSAFE,
+        ):
+            self.btn_stop.config(text="正在取消…", state="disabled")
+        else:
+            self.btn_stop.config(text="停止当前任务", state="disabled")
+
+        if cu is not None and cu.can_force:
+            if not self._force_shown:
+                self.btn_force.pack(side="left", padx=5, before=self.btn_stop)
+                self._force_shown = True
+            self.btn_force.config(state="normal")
+        else:
+            if self._force_shown:
+                try:
+                    self.btn_force.pack_forget()
+                except tk.TclError:
+                    pass
+                self._force_shown = False
+
     # ---------- 操作 ----------
 
     def _on_open_log(self) -> None:
@@ -856,6 +1137,33 @@ class StatusWindow(tk.Toplevel):
     def _on_open_task_dir(self) -> None:
         if getattr(self, "_task_dir", None):
             open_directory(self._task_dir)
+
+    def _on_stop(self) -> None:
+        """[停止当前任务]：只发送 soft cancel 请求（req 3；UI 不写 terminal）。
+
+        实际写入经 main.py 接线到 Core-owned cancel 模块（state.lock 序列化）；
+        本窗口只转发当前任务的 task_id / output_dir。
+        """
+        task_id = self._cancel_task_id
+        if not task_id or self._on_stop_cb is None:
+            return
+        try:
+            self._on_stop_cb(task_id, getattr(self, "_task_dir", None))
+        except Exception:  # noqa: BLE001 —— 单次动作异常不崩溃窗口
+            pass
+
+    def _on_force(self) -> None:
+        """[强制停止]：只在 force eligible 时可达（按钮可见性由 _update_cancel_buttons
+        控制，req 6）；二次中文确认由 main.py 的对话框负责（req 4/5），确认后才调用
+        launcher.request_force_cancel（verified ownership + evidence + Core finalizer）。
+        """
+        task_id = self._cancel_task_id
+        if not task_id or self._on_force_cb is None:
+            return
+        try:
+            self._on_force_cb(task_id)
+        except Exception:  # noqa: BLE001 —— 单次动作异常不崩溃窗口
+            pass
 
     def _on_restart(self) -> None:
         if self._on_restart_cb is not None:
@@ -900,12 +1208,16 @@ class StatusWindowController:
     - 窗口关闭 → 引用清空，下次 open() 新建
     """
 
-    def __init__(self, root, provider, on_restart=None, on_exit=None, on_close=None):
+    def __init__(self, root, provider, on_restart=None, on_exit=None, on_close=None,
+                 on_stop_request=None, on_force_request=None):
         self.root = root
         self.provider = provider
         self.on_restart = on_restart
         self.on_exit = on_exit
         self.on_close = on_close
+        # Phase E / TASK-005-C：Stop / Force 动作回调（Bridge main 接线 launcher backend）
+        self.on_stop_request = on_stop_request
+        self.on_force_request = on_force_request
         self.window: StatusWindow | None = None
 
     def open(self) -> StatusWindow:
@@ -922,6 +1234,8 @@ class StatusWindowController:
             on_close=self._on_window_closed,
             on_restart=self.on_restart,
             on_exit=self.on_exit,
+            on_stop_request=self.on_stop_request,
+            on_force_request=self.on_force_request,
         )
         return self.window
 

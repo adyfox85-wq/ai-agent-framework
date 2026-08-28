@@ -1,8 +1,9 @@
 # PROJECT_STATE.md
 
 > Project: AI Agent Framework\
-> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E COMPLETE（E-Core / Soft Cancel COMPLETE — 005-A + FIX-001/002/003；E-Ownership / Force Cancel 已交付 — 005-B + 005-B-FIX-001（canonical force authority + successful termination proof，Codex 两个 blocker 已闭合）；005-C Status Window Cancel UX + Real Windows E2E Closure 已交付——实现 + 测试 + 真实 Windows 正负 E2E 全量通过，Phase E 正式标记 COMPLETE；005-C-FIX-001（Cancel Timestamp Timezone Compatibility Fix）已交付——canonical UTC/aware elapsed contract 统一 cancel elapsed 计算，合法 offset-aware（+08:00 / +00:00 / Z）与 legacy naive 均不再因 naive/aware 混算而破坏 Cancel UI / force eligibility，malformed fail closed，Codex 原 timezone blocker 已闭合；route 阶段 WorkBuddy / Codex 独立复核按项目惯例由 route 执行并记录于任务 REPORT，若发现 blocking 则按惯例开 FIX）；Phase F NOT STARTED；当前唯一 Next Step = Planner Phase E Stage Retrospective（不自动进入 Phase F））**\
-> Last Updated: 2026-08-28（AAF-v0.4-TASK-005-C-FIX-001 — Cancel Timestamp Timezone Compatibility Fix：修复 Codex 唯一 blocker——`cancel.parse_requested_at` 可返回 offset-aware datetime，但 status_window / launcher 用 naive `datetime.now()` 与其相减 → TypeError 破坏 Cancel UI（降级 unknown_snapshot）/ force eligibility；新增 canonical `cancel_mod.requested_at_elapsed_seconds`（UTC/aware contract：aware 统一到 UTC、legacy naive 明确按本地时间解释、malformed → None fail closed、未来时间戳钳制 0），status_window.collect_cancel_ui 与 launcher.force_eligible 统一走该入口；新增 22 项回归测试（+08:00 / +00:00 / Z / legacy naive / malformed / 超时前后 / collect_cancel_ui 与 force_eligible 不抛异常 / restart-reopen 推导不降级）；688 passed（666 基线 + 22 新增，零下降）；Phase E = COMPLETE / Phase F = NOT STARTED / Next Step = Planner Phase E Retrospective）\
+> Current Version: **v0.4（IN PROGRESS — Phase A/B/C/D COMPLETE；Phase E COMPLETE（E-Core / Soft Cancel COMPLETE — 005-A + FIX-001/002/003；E-Ownership / Force Cancel 已交付 — 005-B + 005-B-FIX-001（canonical force authority + successful termination proof，Codex 两个 blocker 已闭合）；005-C Status Window Cancel UX + Real Windows E2E Closure 已交付——实现 + 测试 + 真实 Windows 正负 E2E 全量通过，Phase E 正式标记 COMPLETE；005-C-FIX-001（Cancel Timestamp Timezone Compatibility Fix）已交付——canonical UTC/aware elapsed contract 统一 cancel elapsed 计算，合法 offset-aware（+08:00 / +00:00 / Z）与 legacy naive 均不再因 naive/aware 混算而破坏 Cancel UI / force eligibility，malformed fail closed，Codex 原 timezone blocker 已闭合；route 阶段 WorkBuddy / Codex 独立复核按项目惯例由 route 执行并记录于任务 REPORT，若发现 blocking 则按惯例开 FIX）；Phase F IMPLEMENTATION DELIVERED（AAF-v0.4-TASK-006：Project Switching + Duplicate Task UX 实现 + 72 项新测试（63 单元 + 9 真实 Windows E2E A–I）+ 760 passed；RW-003 / RW-016 / RW-006 按真实交付证据收口 SOLVED；正式 COMPLETE 判定留待 WorkBuddy 独立验证 + Codex 审查后由 Planner 确认，本任务不自行宣布 Phase F COMPLETE）；当前唯一 Next Step = Planner v0.4 Remaining-Issues Retrospective → Runtime Integrity batch planning（不自动进入最终封装））**\
+> Last Updated: 2026-08-28（AAF-v0.4-TASK-006 — Phase F Project Switching and Duplicate Task UX Implementation：Bridge 从 canonical TASK Workspace 识别目标 workspace（不依赖聊天上下文）；workspace 分类驱动提交流程——SAME 无额外确认 / KNOWN（recent_projects）显式确认切换 / UNKNOWN 首次出现 fail-safe 暂停 + 明确确认 / INVALID fail closed 拒绝并给出明确原因；切换持久化唯一入口 config.update_project（current_project / current_workspace + recent_projects 上限 5）；RUNNING 任务拒绝跨 workspace 切换；duplicate 状态卡片（running 不启动第二 runner / completed 需新 Task ID / abnormal / unknown，中文展示 + 不覆盖 artifacts）；restart 恢复 current project + duplicate protection；真实 Windows E2E A–I 全过；760 passed（688 基线 + 72 新增，零下降）；RW-003 / RW-016 → SOLVED（设计 §9/§10 全量落地）；RW-006 → SOLVED（仅按 Phase C/D/E/F 真实交付证据校正状态，不重新开发）；RW-009 / RW-014 状态核对保持 PARTIAL（无新交付）；Phase F 正式 COMPLETE 判定留待 WorkBuddy 独立验证 + Codex 审查；Next Step = Planner v0.4 Remaining-Issues Retrospective → Runtime Integrity batch）\
+> 2026-08-28（AAF-v0.4-TASK-005-C-FIX-001 — Cancel Timestamp Timezone Compatibility Fix：修复 Codex 唯一 blocker——`cancel.parse_requested_at` 可返回 offset-aware datetime，但 status_window / launcher 用 naive `datetime.now()` 与其相减 → TypeError 破坏 Cancel UI（降级 unknown_snapshot）/ force eligibility；新增 canonical `cancel_mod.requested_at_elapsed_seconds`（UTC/aware contract：aware 统一到 UTC、legacy naive 明确按本地时间解释、malformed → None fail closed、未来时间戳钳制 0），status_window.collect_cancel_ui 与 launcher.force_eligible 统一走该入口；新增 22 项回归测试（+08:00 / +00:00 / Z / legacy naive / malformed / 超时前后 / collect_cancel_ui 与 force_eligible 不抛异常 / restart-reopen 推导不降级）；688 passed（666 基线 + 22 新增，零下降）；Phase E = COMPLETE / Phase F = NOT STARTED / Next Step = Planner Phase E Retrospective）\
 > 2026-08-28（AAF-v0.4-TASK-005-C — Phase E Status Window Cancel UX + Real Windows E2E Closure：状态窗口「停止当前任务」soft cancel 入口 + 「强制停止」二次确认 + CancelUi 状态机（UI/control 态，§6A.3 不进入 task.json）+ force eligibility 需 ownership VERIFIED（fail closed）+ UI Authority 边界（窗口只发请求）+ canonical winner 跟随 + artifacts 恢复；真实 Windows 正负 E2E A–G 全过；666 passed（630 基线 + 36 新增）；Phase E = COMPLETE / Phase F = NOT STARTED / Next Step = Planner Phase E Retrospective）\
 > 2026-08-28（AAF-v0.4-TASK-005-B-FIX-001 — Force Recovery Authority and Successful Termination Proof Closure：Core finalizer 由 canonical Bridge registry root + launch_id 推导 registry/evidence 路径（官方 read contract，evidence.registry_path 只作 proof）、evidence 绑定 canonical Bridge location、termination_exit_status == 0 才授权 CANCELLED、registry durable force 字段逐项核对、三方 identity 全量交叉；新增 32 项 authority 正负矩阵测试；Obsidian Handoff = VERIFIED（新 Planner 对话经 CURRENT_HANDOFF + PROJECT_STATE 恢复项目状态成功））\
 > 2026-08-28（AAF-MAINT-CONTEXT-001-FIX-003 — Explicit Route Authority + Snapshot Reference Closure：`Route:` canonical machine 字段优先于关键词 heuristic、Route Completeness Guard（required Codex 缺失不得 SUCCESS）、manifest 区分 intake_task（provenance）/ execution_task（authority）、REPORT 统一引用 immutable snapshot；唯一 Next Step 保持 = AAF-v0.4-TASK-005-B-FIX-001）\
@@ -62,6 +63,13 @@ Phase: A — Runtime State Foundation: COMPLETE
             Codex 原 timezone blocker 已闭合）——Phase E 正式标记 COMPLETE（route 阶段
             WorkBuddy / Codex 独立复核按惯例执行并记录于任务 REPORT，若 blocking 则
             按惯例开 FIX））
+       F — Project Switching + Duplicate Task UX: IMPLEMENTATION DELIVERED（2026-08-28，
+            AAF-v0.4-TASK-006：workspace 分类提交流程（SAME/KNOWN/UNKNOWN/INVALID +
+            config.update_project 持久化 + recent_projects）+ duplicate 状态卡片
+            （running/completed/abnormal/unknown）+ RUNNING 保护 + restart 恢复；
+            72 项新测试（63 单元 + 9 真实 Windows E2E A–I）；760 passed；
+            RW-003 / RW-016 / RW-006 收口 SOLVED；正式 COMPLETE 判定留待 WorkBuddy
+            独立验证 + Codex 审查后由 Planner 确认，本任务不自行宣布）
 Direction: Desktop Shell MVP / Runtime Observability & Control
 Context Compaction Maintenance: CLOSED → PRODUCTION OBSERVATION（不主动重新设计；观察项见 Policy §14）
 Obsidian Handoff: VERIFIED（CURRENT_HANDOFF.md；2026-08-28 005-B-FIX-001 新会话读取并准确恢复项目状态后验证）
@@ -80,10 +88,13 @@ E. Safe Cancel Lifecycle（COMPLETE — 2026-08-28 closure：AAF-v0.4-TASK-005-A
    005-C（Status Window Cancel UX + Real Windows E2E Closure）全部交付；
    666 passed；真实 Windows 正负 E2E A–G 全过；route 阶段 WorkBuddy / Codex 独立复核
    按项目惯例由 route 执行并记录于任务 REPORT；见下方 Phase E 段落）
-F. Project Switching / Duplicate Task UX（NOT STARTED）
+F. Project Switching / Duplicate Task UX（IMPLEMENTATION DELIVERED — 2026-08-28，
+   AAF-v0.4-TASK-006：workspace 分类提交流程 + duplicate 状态卡片 + RUNNING 保护 +
+   restart 恢复；760 passed；RW-003 / RW-016 / RW-006 收口 SOLVED；正式 COMPLETE
+   判定留待 WorkBuddy 独立验证 + Codex 审查后由 Planner 确认——见下方 Phase F 段落）
 
-Phase F 不得提前实现 / 不得自动启动。
-当前唯一 Next Step = Planner Phase E Stage Retrospective（不自动进入 Phase F）。
+当前唯一 Next Step = Planner v0.4 Remaining-Issues Retrospective
+→ Runtime Integrity batch planning（不自动进入最终封装）。
 
 Phase C 目标：正式状态窗口（bridge/status_window.py）—— 只读观察 + 中文优先 +
 六阶段条事实映射；Tray 接入（打开状态窗口复用/聚焦，关闭不退出 Bridge）；
@@ -667,6 +678,55 @@ docs/internal/handoffs/AI-Agent-Framework-v0.4-PHASE-A-START-HANDOFF-2026-08-27.
   blocker——688 passed，666 基线 + 22 新增零下降）全部交付 → **Phase E = COMPLETE；
   Phase F = NOT STARTED；Next Step = Planner Phase E Stage Retrospective（不自动
   进入 Phase F）**
+
+### 0.2 Phase F — Project Switching / Duplicate Task UX（IMPLEMENTATION DELIVERED，2026-08-28）
+
+- **任务**：AAF-v0.4-TASK-006（RW-003 Project Switching + RW-016 Duplicate Task UX，
+  设计 §9/§10 全量落地；冻结设计未重新设计）
+- **实现**：
+  - `bridge/workspace.py`（新）——TASK Workspace 校验与分类纯函数：check_workspace
+    （fail closed：空/malformed/控制字符/非绝对路径/不存在/非目录/无权限/Bridge 私有
+    目录安全校验）；classify_workspace → SAME / KNOWN / UNKNOWN / INVALID
+  - `bridge/duplicate.py`（新）——duplicate 状态卡片数据：running（registry 活跃
+    launch / launcher 当前任务）/ completed（终态 SUCCESS/WAITING/FAILED/CANCELLED）/
+    abnormal（残留 RUNNING/CREATED）/ unknown（无 task.json）；REPORT 路径
+    task.json.report_path → task_archive.find_report_path 归档兜底；最近活动 =
+    产物最大 mtime；判定基础 = canonical TASK.md 落盘路径存在（与 save_task 同一
+    判定，未放宽 execution authority）
+  - `bridge/intake.py`（新）——提交流程决策（纯逻辑）：plan_submission（只读）+
+    apply_submission（确认后切换持久化 + 落盘）；决策矩阵：SAME 无额外确认 /
+    KNOWN confirm_switch / UNKNOWN confirm_unknown（fail-safe）/ INVALID reject /
+    RUNNING 拒绝跨 workspace 切换 / duplicate running 拒绝第二 runner /
+    completed/abnormal/unknown 拒绝 + 卡片（需新 Task ID，不另造 rerun 架构）
+  - `bridge/config.py`——recent_projects（上限 5，last_used 倒序）+ update_project
+    （唯一切换持久化入口）+ known_workspaces / same_workspace / normalize_workspace
+  - `bridge/ui.py`——「切换项目确认」窗（当前/目标项目 + Workspace + Task ID + 将修改
+    AAF Bridge 项目设置 + 陌生路径警示）与「任务已存在」状态卡片（查看状态 / 打开
+    REPORT / 关闭），全部中文优先（技术状态值保留英文原值）
+  - `bridge/main.py`——_process_clipboard 接入 intake 流程（决策 → UI 确认 → apply →
+    launch）；duplicate 卡片接线 [查看状态]（复用状态窗口）/ [打开 REPORT]（os.startfile）
+  - `tests/fixtures/run_dry.py`（新）——真实 run.py 的 dry-run 包装（真实 runner
+    子进程 + 真实文件契约，零 Agent 依赖；Phase E 同款确定性约束）
+- **测试**：760 passed（688 基线 + 72 新增零下降）——tests/test_phase_f_workspace.py
+  （18 项）、test_phase_f_duplicate.py（20 项）、test_phase_f_intake.py（25 项）、
+  test_phase_f_e2e.py（9 项真实 Windows E2E A–I：同 workspace 无额外确认执行 /
+  已知切换并执行 / 拒绝切换零写入 / 陌生 workspace 确认前不执行 / invalid fail
+  closed / RUNNING 拒绝切换与第二启动 / duplicate RUNNING 不启动第二 runner /
+  duplicate terminal 不覆盖 artifacts + 清晰提示 / restart 恢复 current project
+  + duplicate protection）
+- **Backlog 收口**（仅状态校正，不重新开发）：RW-003 OPEN → SOLVED；RW-016 OPEN →
+  SOLVED；RW-006 OPEN → SOLVED（按 Phase C/D/E/F 真实交付证据校正）；RW-009 /
+  RW-014 状态核对保持 PARTIAL（无新交付）
+- **边界遵守**：未实现 autostart / parser compatibility / orphan-dead runner
+  recovery / final status aggregation / hotkey self-heal / completion notification
+  continuity / Context Compaction redesign / 大型项目 dashboard（TASK req 16）；
+  未放宽 duplicate protection / execution authority；未改写 Task ID / Workspace /
+  canonical terminal / 历史 artifacts（req 12）；未另造 rerun 架构（沿用既有
+  `--resume-from` CLI 边界）
+- **结论**：Phase F 实现 + 测试 + 真实 Windows E2E 全部完成；**正式 Phase F =
+  COMPLETE 判定留待 WorkBuddy 独立验证 + Codex 审查后由 Planner 确认（本任务不
+  自行宣布）**；Next Step = Planner v0.4 Remaining-Issues Retrospective →
+  Runtime Integrity batch planning（不自动进入最终封装）
 
 ### 0.2 Maintenance — Context Compaction / Stage Packet Protocol（AAF-MAINT-CONTEXT-001，2026-08-28）
 

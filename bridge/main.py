@@ -32,7 +32,9 @@ from ctypes import wintypes
 from pathlib import Path
 
 from . import config as cfg_mod
+from . import duplicate as dup_mod
 from . import handoff
+from . import intake
 from . import task_io
 from . import tray as tray_mod
 from . import ui
@@ -521,44 +523,41 @@ class Bridge:
             ui.show_error("AAF Bridge", "剪贴板为空或正被其他程序占用，请重试。")
             return
 
-        expected_ws = str(self.cfg.get("current_workspace") or "").strip()
-        ok, errors = task_io.validate_task_text(text, expected_ws)
-        if not ok:
-            ui.show_error("AAF Bridge — TASK 校验失败", "\n".join(errors))
+        # Phase F / TASK-006：决策与 UI 分离（intake 纯逻辑可单测；req 1–13）
+        plan = intake.plan_submission(text, self.cfg, self.launcher)
+
+        # 1) reject：明确原因；duplicate 附带状态卡片（req 8/9/10）
+        if plan.is_reject:
+            if plan.duplicate is not None:
+                self._show_duplicate_card(plan.duplicate)
+                return
+            title = "当前任务正在运行" if plan.running_blocked else "AAF Bridge — TASK 校验失败"
+            ui.show_error(title, "\n".join(plan.reasons))
             return
 
-        fields = task_io.parse_task(task_io.extract_task_body(text))
-        task_id = fields["task_id"]
-        task_name = fields["task_name"]
-        workspace = fields["workspace"]
+        # 2) 项目切换确认（已知/陌生 workspace；取消 = 不切换、不执行、不写任何文件）
+        if plan.action in (intake.ACTION_CONFIRM_SWITCH, intake.ACTION_CONFIRM_UNKNOWN):
+            if not ui.show_workspace_switch(self.root, plan):
+                return
 
-        confirmed = ui.show_confirm(
-            self.root,
-            task_id,
-            task_name,
-            str(self.cfg.get("current_project") or ""),
-            workspace,
-        )
-        if not confirmed:
-            return  # Cancel：不生成文件
-
+        # 3) 确认后执行：切换持久化（如需）→ 落盘 TASK.md（save_task duplicate 兜底仍在）
         try:
-            # 落盘内容 = 提取后的标准 TASK 正文（含 BEGIN/END 标记），
-            # 不写入剪贴板中标记外的无关前后文
-            task_body = task_io.extract_task_body(text)
-            target = task_io.save_task(
-                f"{task_io.BEGIN_MARKER}\n{task_body}\n{task_io.END_MARKER}",
-                workspace,
-                task_id,
-            )
+            target = intake.apply_submission(plan, cfg_mod.CONFIG_PATH)
         except task_io.TaskParseError as e:
-            ui.show_error("AAF Bridge", str(e))
+            # 兜底：plan 后出现竞态 duplicate（文件已存在）→ 尽力展示状态卡片
+            dup_info = dup_mod.inspect_duplicate(plan.task_id, plan.workspace, None)
+            if dup_info is not None:
+                self._show_duplicate_card(dup_info)
+            else:
+                ui.show_error("AAF Bridge", str(e))
             return
+        if plan.switch_workspace:
+            self.cfg = cfg_mod.load_config()  # 状态窗口/后续提交立即反映新项目
 
-        # 自动启动 Framework 执行链（subprocess 调用 run.py，后台运行）
-        output_dir = self.launcher.default_output_dir(workspace, task_id)
+        # 4) 自动启动 Framework 执行链（subprocess 调用 run.py，后台运行）
+        output_dir = self.launcher.default_output_dir(plan.workspace, plan.task_id)
         try:
-            started = self.launcher.launch(target, workspace, output_dir, task_id)
+            started = self.launcher.launch(target, plan.workspace, output_dir, plan.task_id)
         except AlreadyRunningError:
             ui.show_error(
                 "任务已在执行",
@@ -574,7 +573,25 @@ class Bridge:
                 f"Last result: {self.launcher.last.result if self.launcher.last else 'n/a'}",
             )
             return
-        ui.show_info("任务已启动", f"Task ID: {task_id}\nTASK.md: {target}\nFramework 已在后台执行。")
+        ui.show_info("任务已启动", f"Task ID: {plan.task_id}\nTASK.md: {target}\nFramework 已在后台执行。")
+
+    # ---------- Phase F / TASK-006：Duplicate 状态卡片（req 8/9/10，只读） ----------
+
+    def _show_duplicate_card(self, info) -> None:
+        """展示 duplicate 状态卡片（设计 §10.1）；只读，不改写任何 canonical / artifacts。"""
+        ui.show_duplicate_card(
+            self.root,
+            info,
+            on_view_status=self._open_status_window,
+            on_open_report=self._open_report_path,
+        )
+
+    def _open_report_path(self, report_path: str) -> None:
+        """用系统默认编辑器打开 REPORT.md（设计 §10.3；归档任务自动定位）。"""
+        try:
+            os.startfile(report_path)  # type: ignore[attr-defined]  # Windows only
+        except OSError as e:
+            ui.show_error("打开 REPORT 失败", f"无法打开 {report_path}\n{e}")
 
 
 def main() -> int:

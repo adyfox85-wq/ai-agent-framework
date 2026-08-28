@@ -311,3 +311,147 @@ def show_finished(root: tk.Tk, task_id: str, report_path: str, on_copy) -> None:
     y = root.winfo_screenheight() // 2 - win.winfo_height() // 2
     win.geometry(f"+{max(0, x)}+{max(0, y)}")
     win.focus_force()
+
+
+# ---------- Phase F / TASK-006：项目切换确认窗 + Duplicate 状态卡片 ----------
+
+def show_workspace_switch(root: tk.Tk, plan) -> bool:
+    """项目切换确认窗（设计 §9.1/§9.2.7；中文优先）。
+
+    - 显示当前项目/目标项目/Workspace/Task ID + 「将修改 AAF Bridge 的项目设置」说明
+    - 陌生 workspace：额外 fail-safe 警示文案（req 4）
+    - [切换并执行] 返回 True；[取消] 返回 False（不切换、不执行、不写任何文件）
+    """
+    win = tk.Toplevel(root)
+    win.title("切换项目确认 — AAF Bridge")
+    win.attributes("-topmost", True)
+    win.resizable(False, False)
+
+    tk.Label(win, text="检测到新项目，需要切换项目后执行", font=("Segoe UI", 11, "bold")).pack(
+        padx=16, pady=(14, 6), anchor="w"
+    )
+    rows = [
+        ("Task ID", plan.task_id or "(empty)"),
+        ("当前项目", plan.current_project or "（未设置）"),
+        ("当前 Workspace", plan.current_workspace or "（未设置）"),
+        ("目标项目", plan.target_project or "(empty)"),
+        ("目标 Workspace", plan.workspace or "(empty)"),
+    ]
+    for label, value in rows:
+        frame = tk.Frame(win)
+        frame.pack(fill="x", padx=16, pady=2)
+        tk.Label(frame, text=f"{label}：", font=("Segoe UI", 9, "bold")).pack(side="left")
+        tk.Label(frame, text=value, font=("Segoe UI", 9), wraplength=440, justify="left").pack(
+            side="left", padx=(6, 0)
+        )
+
+    if getattr(plan, "action", "") == "confirm_unknown":
+        tk.Label(
+            win,
+            text="⚠ 该 Workspace 首次出现（陌生路径）。确认前不会执行任何操作。",
+            font=("Segoe UI", 9, "bold"),
+            fg="#b00020",
+            wraplength=460,
+            justify="left",
+        ).pack(padx=16, pady=(8, 0), anchor="w")
+    tk.Label(
+        win,
+        text="切换将修改 AAF Bridge 的项目设置（current_project / current_workspace）。",
+        font=("Segoe UI", 8),
+        fg="#666666",
+        wraplength=460,
+        justify="left",
+    ).pack(padx=16, pady=(4, 0), anchor="w")
+
+    result = {"value": False}
+
+    def on_switch():
+        result["value"] = True
+        win.destroy()
+
+    def on_cancel():
+        result["value"] = False
+        win.destroy()
+
+    btns = tk.Frame(win)
+    btns.pack(pady=12)
+    tk.Button(btns, text="切换并执行", width=12, command=on_switch).pack(side="left", padx=8)
+    tk.Button(btns, text="取消", width=12, command=on_cancel).pack(side="left", padx=8)
+
+    win.grab_set()
+    win.update_idletasks()
+    x = root.winfo_screenwidth() // 2 - win.winfo_width() // 2
+    y = root.winfo_screenheight() // 2 - win.winfo_height() // 2
+    win.geometry(f"+{max(0, x)}+{max(0, y)}")
+    win.focus_force()
+    root.wait_window(win)
+    return result["value"]
+
+
+def show_duplicate_card(root: tk.Tk, info, on_view_status=None, on_open_report=None) -> None:
+    """Duplicate 状态卡片（设计 §10.1/§10.3；中文优先）。
+
+    - 展示 Task ID / 当前状态（中文映射）/ 当前阶段 / 最近活动 / 结果 / REPORT 路径
+    - [查看状态]：运行中与异常状态提供（on_view_status 回调）
+    - [打开 REPORT]：仅已完成/有 REPORT 时提供（on_open_report 回调）
+    - [关闭]：仅关闭卡片，不做任何操作
+    - 本卡片只读：不改写 canonical / 历史 artifacts（req 12）
+    """
+    win = tk.Toplevel(root)
+    win.title("任务已存在 — AAF Bridge")
+    win.attributes("-topmost", True)
+    win.resizable(False, False)
+
+    tk.Label(win, text="任务已存在", font=("Segoe UI", 12, "bold"), fg="#9a6700").pack(
+        padx=16, pady=(14, 4), anchor="w"
+    )
+    rows = [
+        ("Task ID", info.task_id or "(empty)"),
+        ("当前状态", f"{info.status_cn}" + (f"（{info.status}）" if info.status else "")),
+        ("当前阶段", info.stage_cn or "—"),
+        ("最近活动", info.last_activity or "—"),
+        ("结果", info.status_cn or "—"),
+    ]
+    if info.report_path:
+        rows.append(("REPORT 路径", info.report_path))
+    for label, value in rows:
+        frame = tk.Frame(win)
+        frame.pack(fill="x", padx=16, pady=2)
+        tk.Label(frame, text=f"{label}：", font=("Segoe UI", 9, "bold")).pack(side="left")
+        tk.Label(frame, text=value, font=("Segoe UI", 9), wraplength=440, justify="left").pack(
+            side="left", padx=(6, 0)
+        )
+    tk.Label(
+        win,
+        text=info.reason,
+        font=("Segoe UI", 9),
+        fg="#b00020",
+        wraplength=470,
+        justify="left",
+    ).pack(padx=16, pady=(8, 0), anchor="w")
+
+    btns = tk.Frame(win)
+    btns.pack(pady=12)
+
+    def _safe(cb):
+        def wrapper():
+            win.destroy()
+            try:
+                cb()
+            except Exception:  # noqa: BLE001 —— 打开失败不得让卡片卡死
+                pass
+        return wrapper
+
+    if on_view_status is not None:
+        tk.Button(btns, text="查看状态", width=12, command=_safe(on_view_status)).pack(side="left", padx=8)
+    if on_open_report is not None and info.report_path:
+        tk.Button(btns, text="打开 REPORT", width=12, command=_safe(on_open_report)).pack(side="left", padx=8)
+    tk.Button(btns, text="关闭", width=12, command=win.destroy).pack(side="left", padx=8)
+
+    win.grab_set()
+    win.update_idletasks()
+    x = root.winfo_screenwidth() // 2 - win.winfo_width() // 2
+    y = root.winfo_screenheight() // 2 - win.winfo_height() // 2
+    win.geometry(f"+{max(0, x)}+{max(0, y)}")
+    win.focus_force()
+    root.wait_window(win)

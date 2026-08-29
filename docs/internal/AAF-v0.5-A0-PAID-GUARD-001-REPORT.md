@@ -221,5 +221,5 @@ FIX-002 一次性关闭（未扩张到 A1）：
     / notes 记录 IGNORED / hermes 未 spawn；
   - S9：授权已消费后同一 execution 上下文再准入 → BLOCKED / authorization_consumed=true
     / consumption marker 存在 / hermes 未 spawn。
-- 提交：FIX-002 commit SHA 见 git log（同步至 origin/main）。
+- 提交：`fa1adaa`（feat 修复，2026-08-29，TASK: AAF-v0.5-A0-PAID-GUARD-001-FIX-002）；Remote Sync：**SYNCED**（`git push origin main`：`5037eb4..fa1adaa main -> main`；ahead-behind 0/0）。
 - 状态：A0 修复完成；**Codex re-review 通过前 A0 不得标记 CLOSED**；A1 未启动。

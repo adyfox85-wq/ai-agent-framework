@@ -6,12 +6,15 @@ resolve_effective_hermes 路径，模型/provider/授权来自环境变量 —�
 用法：
     python _auth_claim_worker.py <state_dir> [task_id]
 
+``<state_dir>`` 为字面 ``NONE`` 时传入 ``state_dir=None``（FIX-005：无持久化
+filesystem authority 的 fail-closed 路径）。
+
 依赖 env（调用方注入）：
     AAF_HERMES_MODEL / AAF_HERMES_PROVIDER / AAF_COST_AUTH
 
 stdout 输出一行 JSON 证据（decision / authorization_consumed / ...）；
 退出码：0 = ALLOWED_AUTHORIZED_PAID（赢得 claim）；3 = BLOCKED_COST_APPROVAL
-（输掉/已消费）；9 = 其他 decision（意外）；2 = 异常。
+（输掉/已消费/fail closed）；9 = 其他 decision（意外）；2 = 异常。
 """
 import json
 import os
@@ -21,7 +24,8 @@ from ai_agent_framework import cost_guard as cg
 
 
 def main() -> int:
-    state_dir = sys.argv[1] if len(sys.argv) > 1 else "."
+    raw = sys.argv[1] if len(sys.argv) > 1 else "."
+    state_dir = None if raw == "NONE" else raw
     task_id = (
         sys.argv[2] if len(sys.argv) > 2 else os.environ.get("AAF_FIX003_TASK_ID", "T1")
     )

@@ -99,20 +99,33 @@ def test_thread_concurrency_exactly_one_allowed(monkeypatch, tmp_path):
     assert (tmp_path / cg.CONSUMPTION_FILENAME).exists()
 
 
-def test_thread_concurrency_inprocess_authority_only(monkeypatch):
-    """state_dir=None：in-process 集合 + 锁仍是进程内 authority（只拒绝，无 fail-open）。"""
+def test_thread_concurrency_state_dir_none_zero_winners(monkeypatch):
+    """FIX-005（FIX-004 re-issue）：state_dir=None + matched paid auth → 零 winner。
+
+    原 FIX-003 语义（state_dir=None 时 in-process 集合可放行 1 个 winner）已被
+    移除：没有持久化 filesystem exclusive-create 权威，任何线程/进程都不得
+    ALLOWED_AUTHORIZED_PAID（fail closed）。
+    """
     monkeypatch.setattr(cg, "resolve_effective_hermes", lambda: _paid_resolution())
     monkeypatch.setenv(cg.ENV_AUTH, "T1|hermes|deepseek-v4-flash|deepseek")
     n = 8
     barrier = threading.Barrier(n)
     decisions: list[str] = []
+    consumed_flags: list[bool] = []
+    errors: list[str] = []
     guard = threading.Lock()
 
     def worker():
         barrier.wait()
-        rec = cg.evaluate("T1", "hermes")  # state_dir=None
+        try:
+            rec = cg.evaluate("T1", "hermes")  # state_dir=None
+        except Exception as exc:  # noqa: BLE001 — 线程内异常要收集而不是静默
+            with guard:
+                errors.append(f"{type(exc).__name__}: {exc}")
+            return
         with guard:
             decisions.append(rec["decision"])
+            consumed_flags.append(rec["authorization_consumed"])
 
     threads = [threading.Thread(target=worker) for _ in range(n)]
     for t in threads:
@@ -120,8 +133,11 @@ def test_thread_concurrency_inprocess_authority_only(monkeypatch):
     for t in threads:
         t.join(timeout=60)
 
-    assert decisions.count(cg.DECISION_ALLOWED_AUTHORIZED_PAID) == 1, decisions
-    assert decisions.count(cg.DECISION_BLOCKED_COST_APPROVAL) == n - 1, decisions
+    assert not errors, errors
+    assert len(decisions) == n
+    assert decisions.count(cg.DECISION_ALLOWED_AUTHORIZED_PAID) == 0, decisions
+    assert decisions.count(cg.DECISION_BLOCKED_COST_APPROVAL) == n, decisions
+    assert not any(consumed_flags), "nothing was persisted — nothing may be consumed"
 
 
 # ---------------------------------------------------------------------------

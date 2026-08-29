@@ -194,14 +194,17 @@ def test_evaluate_free_env_remote_local_ollama_unaffected(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_one_time_auth_first_admission_allowed_second_blocked(monkeypatch):
-    """同一进程内：精确授权第一次准入 allowed，第二次（同值）replay → blocked。"""
+def test_one_time_auth_first_admission_allowed_second_blocked(monkeypatch, tmp_path):
+    """同一进程内：精确授权第一次准入 allowed，第二次（同值）replay → blocked。
+
+    FIX-005：paid admission 必须携带有效 state_dir（持久化原子 claim 权威）。
+    """
     monkeypatch.setattr(cg, "resolve_effective_hermes", lambda: _paid_resolution())
     monkeypatch.setenv(cg.ENV_AUTH, "T1|hermes|deepseek-v4-flash|deepseek")
-    rec1 = cg.evaluate("T1", "hermes")
+    rec1 = cg.evaluate("T1", "hermes", state_dir=tmp_path)
     assert rec1["decision"] == cg.DECISION_ALLOWED_AUTHORIZED_PAID
     assert rec1["authorization_consumed"] is True
-    rec2 = cg.evaluate("T1", "hermes")
+    rec2 = cg.evaluate("T1", "hermes", state_dir=tmp_path)
     assert rec2["decision"] == cg.DECISION_BLOCKED_COST_APPROVAL
     assert rec2["authorization_consumed"] is True
     assert any("consumed" in n for n in rec2["notes"])

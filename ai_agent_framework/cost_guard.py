@@ -33,7 +33,10 @@ closed——Hermes 进程不启动，任务进入 WAITING（COST_APPROVAL_REQUIR
 消费记录 ``cost_auth_consumed.json`` 的 filesystem exclusive-create
 （``open(..., "x")``，O_CREAT|O_EXCL 语义），恰好一个 contender 能创建成功
 （FIX-003；替换 FIX-002 的 check-then-consume TOCTOU）；in-process 集合仅作
-非权威拒绝快路径（只拒绝、不放行）。同一授权值在同一执行上下文内不可二次准入
+非权威拒绝快路径（只拒绝、不放行）。**FIX-005（FIX-004 re-issue）**：paid
+admission 必须存在可用的持久化 ``state_dir``（filesystem exclusive-create 是
+唯一跨进程准入权威）；state_dir 缺失/无效/不可用时，matched authorization 一律
+fail closed，绝不因 in-process 集合放行。同一授权值在同一执行上下文内不可二次准入
 （replay 拒绝、fail closed）；Task ID 在 scope 内 → 对其他任务天然失效（不泄漏到
 后续任务）；claim 状态不确定（marker 已存在 / I/O 失败）→ fail closed。
 
@@ -104,9 +107,18 @@ _SEPARATOR = "|"
 
 # 一次性授权消费（FIX-003）：原子 claim（exclusive-create 为跨进程权威）+ in-process
 # 只拒绝快路径。不构建数据库 / 审批服务 / 永久子系统（A0 最小；claim 状态不确定 → fail closed）。
+# FIX-005（FIX-004 re-issue）：paid admission 必须存在可用的持久化 state_dir ——
+# filesystem exclusive-create 是唯一准入权威；state_dir=None → fail closed。
 CONSUMPTION_FILENAME = "cost_auth_consumed.json"
 _CONSUMED_AUTHS: set[str] = set()
 _CONSUMED_LOCK = threading.Lock()
+
+_STATE_DIR_REQUIRED_ERR = (
+    "persistent state_dir is REQUIRED for paid admission — the filesystem "
+    "exclusive-create claim is the cross-process authority and cannot be "
+    "established without it; _CONSUMED_AUTHS is NOT an admission authority "
+    "(fail closed)"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +405,10 @@ def _claim_auth(
     """原子 claim 一次性授权（FIX-003；替换 FIX-002 的 check-then-consume TOCTOU）。
 
     单一原子操作，不再“先检查是否已消费、再消费”：
+    - **state_dir=None → 直接失败（FIX-005 / FIX-004 re-issue）**：paid admission
+      的唯一跨进程权威 = filesystem exclusive-create；没有可用的持久化 state_dir
+      就无法建立原子 claim —— `_CONSUMED_AUTHS` 只是非权威拒绝快路径，绝不放行。
+      任何 matched paid authorization 在无持久化权威时都必须 fail closed。
     - in-process 快路径（``_CONSUMED_LOCK`` 保护）：只拒绝（已在本进程消费过），
       不放行任何东西 —— 非权威优化，不可能造成 fail-open；
     - 跨进程权威 = 文件系统 exclusive-create：确定性子路径
@@ -407,36 +423,39 @@ def _claim_auth(
     返回 (ok, err)。ok=True 仅当本次调用赢得了 claim。
     """
     with _CONSUMED_LOCK:
+        if state_dir is None:
+            # FIX-005：无持久化 filesystem authority → 无法原子 claim → fail closed。
+            # 即便 auth 已在 _CONSUMED_AUTHS 中（本进程曾消费），也绝不因此放行。
+            return False, _STATE_DIR_REQUIRED_ERR
         if auth in _CONSUMED_AUTHS:
             return False, _CLAIM_ALREADY_CONSUMED
-        if state_dir is not None:
-            marker = Path(state_dir) / CONSUMPTION_FILENAME
-            payload = {
-                "schema_version": SCHEMA_VERSION,
-                "decision": DECISION_ALLOWED_AUTHORIZED_PAID,
-                "scope": scope,
-                "consumed_auth_fingerprint": _auth_fingerprint(auth),
-                "consumed_at": datetime.now().isoformat(timespec="seconds"),
-            }
-            try:
-                marker.parent.mkdir(parents=True, exist_ok=True)
-            except FileExistsError:
-                # state_dir 路径本身是已存在文件 → marker 无法建立 → fail closed
-                return False, (
-                    "cannot persist consumption marker (state_dir is not a "
-                    "directory) — fail closed"
-                )
-            except OSError as exc:
-                return False, f"cannot persist consumption marker ({exc})"
-            try:
-                with open(marker, "x", encoding="utf-8") as fh:
-                    fh.write(json.dumps(payload, ensure_ascii=False, indent=2))
-            except OSError as exc:
-                if marker.exists():
-                    # 路径已被占用（含目录/符号链接等非 FileExistsError 平台差异）
-                    # → 他人已 claim → 视为已消费（fail closed）
-                    return False, _CLAIM_ALREADY_CONSUMED
-                return False, f"cannot persist consumption marker ({exc})"
+        marker = Path(state_dir) / CONSUMPTION_FILENAME
+        payload = {
+            "schema_version": SCHEMA_VERSION,
+            "decision": DECISION_ALLOWED_AUTHORIZED_PAID,
+            "scope": scope,
+            "consumed_auth_fingerprint": _auth_fingerprint(auth),
+            "consumed_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+        except FileExistsError:
+            # state_dir 路径本身是已存在文件 → marker 无法建立 → fail closed
+            return False, (
+                "cannot persist consumption marker (state_dir is not a "
+                "directory) — fail closed"
+            )
+        except OSError as exc:
+            return False, f"cannot persist consumption marker ({exc})"
+        try:
+            with open(marker, "x", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, ensure_ascii=False, indent=2))
+        except OSError as exc:
+            if marker.exists():
+                # 路径已被占用（含目录/符号链接等非 FileExistsError 平台差异）
+                # → 他人已 claim → 视为已消费（fail closed）
+                return False, _CLAIM_ALREADY_CONSUMED
+            return False, f"cannot persist consumption marker ({exc})"
         _CONSUMED_AUTHS.add(auth)
         return True, ""
 
@@ -460,8 +479,12 @@ def evaluate(
 ) -> dict:
     """对指定 Task + stage 求值 Hermes Paid Guard。
 
-    ``state_dir``：一次性授权消费记录所在目录（runner 传 execution output dir；
-    None → 仅 in-process 消费）。消费在准入边界完成（FIX-002）。
+    ``state_dir``：一次性授权消费记录所在目录（runner 传 execution output dir）。
+    **FIX-005（FIX-004 re-issue）**：paid admission 必须存在可用的持久化
+    state_dir —— filesystem exclusive-create（``open(marker, "x")``）是唯一
+    跨进程准入权威；state_dir=None / 缺失 / 无效 / 不可用（无法提供持久化原子
+    claim 权威）时，matched paid authorization 一律 BLOCKED（fail closed），
+    绝不因 ``_CONSUMED_AUTHS`` 等 in-process 集合放行。消费在准入边界完成（FIX-002）。
 
     返回 machine-readable record（可直接序列化为 cost_guard.json）：
 
@@ -510,6 +533,9 @@ def evaluate(
             # FIX-003：单一原子 claim（exclusive-create 跨进程权威），
             # 不再 check-then-consume —— 并发/重入 admission 不可能同时看到
             # “未消费”并双双放行；恰好一个 contender 赢得 claim。
+            # FIX-005（FIX-004 re-issue）：_claim_auth 在 state_dir=None /
+            # 不可用时直接失败 —— matched authorization 无持久化 filesystem
+            # authority → BLOCKED（fail closed），_CONSUMED_AUTHS 绝不放行。
             claimed, claim_err = _claim_auth(auth_value, scope, state_dir)
             if claimed:
                 decision = DECISION_ALLOWED_AUTHORIZED_PAID

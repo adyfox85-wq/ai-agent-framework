@@ -186,10 +186,11 @@ def test_b_paid_without_authorization_blocked(monkeypatch):
     assert rec["authorization_matched"] is False
 
 
-def test_c_exact_authorization_allows_paid(monkeypatch):
+def test_c_exact_authorization_allows_paid(monkeypatch, tmp_path):
     monkeypatch.setattr(cg, "resolve_effective_hermes", lambda: _paid_resolution())
     monkeypatch.setenv(cg.ENV_AUTH, "T1|hermes|deepseek-v4-flash|deepseek")
-    rec = cg.evaluate("T1", "hermes")
+    # FIX-005：paid admission 必须带有效 state_dir（持久化原子 claim 权威）
+    rec = cg.evaluate("T1", "hermes", state_dir=tmp_path)
     assert rec["decision"] == cg.DECISION_ALLOWED_AUTHORIZED_PAID
     assert rec["authorization_matched"] is True
 

@@ -1,5 +1,12 @@
 """AAF-v0.4-TASK-006-FIX-001 — 真实 Bridge/UI 交互路径验收（关闭 Codex blocker #2）。
 
+⚠️ GUI E2E（manual/交互式）：本文件故意驱动**真实桌面窗口**（真实 Tk
+Toplevel + 真实剪贴板往返 + 真实按钮 invoke），需要交互式桌面，被 pytest 标记为
+``gui_e2e`` 并从普通 automated suite 中排除（见 pytest.ini addopts）。
+运行方式：``pytest -m gui_e2e tests/test_phase_f_fix_001_ui.py``
+（AAF-v0.4-TASK-010-FIX-001：FIX-UI-A-001 真实桌面弹窗事件根因定位后登记；
+普通 automated 等价覆盖见 tests/test_bridge_ui_headless.py）。
+
 不是只调用 plan_submission / apply_submission / launcher 的纯函数验证，而是
 驱动**真实 Bridge UI 接线**：真实 tk.Tk root + 真实剪贴板往返 + 真实
 `Bridge._handle_hotkey → _process_clipboard` + 真实 `ui.show_workspace_switch`
@@ -43,6 +50,9 @@ from bridge.launcher import FrameworkLauncher
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RUN_DRY = REPO_ROOT / "tests" / "fixtures" / "run_dry.py"
 DUMMY_RUNNER = REPO_ROOT / "tests" / "fixtures" / "dummy_runner.py"
+
+# FIX-001：真实桌面 GUI E2E —— 从普通 automated suite 排除（pytest.ini addopts）
+pytestmark = pytest.mark.gui_e2e
 
 WIN_SWITCH = "切换项目确认 — AAF Bridge"
 WIN_DUP = "任务已存在 — AAF Bridge"

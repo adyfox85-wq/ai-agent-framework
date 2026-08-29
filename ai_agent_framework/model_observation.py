@@ -27,6 +27,9 @@
 - 模型可增加 / 删除 / 改名；免费状态可变化；积分倍率可变化。
 - registry 每次 run 重新 discovery 并覆盖条目（refreshable），
   一次发现结果绝不当永久事实。
+- Agent 安装版本同理：只由 discovery 动态获得（``<exe> --version``
+  只读探测），任何版本号（含本文件、docs、REPORT）都不得写成永久事实；
+  版本探测失败 → version=UNKNOWN + 失败原因，绝不猜测。
 """
 
 from __future__ import annotations
@@ -80,10 +83,19 @@ COST_CLASSES = frozenset(
     )
 )
 
-# discovery_status：任何 failure 只反映在状态上，不阻断执行
+# discovery_status：任何 failure 只反映在状态上，不阻断执行。
+# 语义（FIX-001 起）：任一必需 probe（model config / version）失败 → FAILED
+# （notes 记录具体失败原因）；probe 正常但模型不可得 → UNAVAILABLE；模型可得 → OK。
 DISCOVERY_STATUS_OK = "OK"
 DISCOVERY_STATUS_UNAVAILABLE = "UNAVAILABLE"
 DISCOVERY_STATUS_FAILED = "FAILED"
+
+# version_source：版本证据来源（只记录实际执行的只读 probe）
+VERSION_SOURCE_CLI = "cli:--version"
+
+# reasoning_effort capability：CLI/config 没有明确、可验证的 reasoning-effort key
+# → 如实 NOT_EXPOSED_BY_CURRENT_CLI（不得根据通用 -c 参数猜配置路径）
+REASONING_CAP_NOT_EXPOSED = "NOT_EXPOSED_BY_CURRENT_CLI"
 
 # 遥测开关：AAF_MODEL_OBSERVATION=0/false/off → 完全关闭（行为与未引入遥测前一致）
 ENV_TOGGLE = "AAF_MODEL_OBSERVATION"
@@ -117,6 +129,9 @@ def empty_observation(agent: str) -> dict:
         "model": None,
         "model_source": MODEL_SOURCE_UNKNOWN,
         "reasoning_effort": None,
+        "version": None,  # 安装版本：只由 discovery 动态获得（FIX-001）
+        "version_source": None,  # 版本证据来源（如 cli:--version）
+        "version_evidence": None,  # 简洁原始版本输出头（reviewer 可复核）
         "cost_class": COST_CLASS_UNKNOWN,
         "cost_metadata": None,
         "cost_multiplier": None,  # 动态积分倍率；无法可靠读取 → null
@@ -258,6 +273,85 @@ def _cli_help(exe: str) -> str | None:
     return _HELP_CACHE[exe]
 
 
+def _probe_version(exe: str) -> dict:
+    """只读版本探测：``<exe> --version``（FIX-001；绝不抛出）。
+
+    返回 ``{"version", "version_source", "version_evidence", "version_error"}``：
+    - exit 0 → version = stdout 首行（trim），version_evidence = 原始输出头。
+    - 失败 / 异常 → version=None，version_error = 失败原因头
+      （如 native module LoadLibrary 错误）；绝不猜测版本。
+    - 版本不可得只记录为 UNKNOWN；调用方决定 discovery_status。
+    """
+    res = _run_readonly([exe, "--version"])
+    if res is None:
+        return {
+            "version": None,
+            "version_source": VERSION_SOURCE_CLI,
+            "version_evidence": None,
+            "version_error": "invocation failed (timeout/OSError)",
+        }
+    code, out, err = res
+    text = (out or "").strip()
+    if code == 0 and text:
+        head = text.splitlines()[0].strip()
+        return {
+            "version": head,
+            "version_source": VERSION_SOURCE_CLI,
+            "version_evidence": text[:200],
+            "version_error": None,
+        }
+    parts = [p for p in ((err or "").strip().splitlines() + (out or "").strip().splitlines()) if p]
+    reason = " / ".join(parts[:2])[:200] if parts else f"exit={code}, empty output"
+    return {
+        "version": None,
+        "version_source": VERSION_SOURCE_CLI,
+        "version_evidence": None,
+        "version_error": reason,
+    }
+
+
+_STATUS_PRIORITY = {
+    DISCOVERY_STATUS_OK: 0,
+    DISCOVERY_STATUS_UNAVAILABLE: 1,
+    DISCOVERY_STATUS_FAILED: 2,
+}
+
+
+def _set_discovery_status(obs: dict, status: str) -> dict:
+    """合并 discovery_status（FIX-001）：FAILED 最优先（任一必需 probe 失败即
+    FAILED，后续 probe 不得覆盖）；OK 只在未 FAILED 时覆盖 UNAVAILABLE
+    （成功探测结果优先于「未尝试/不可得」的初始值）；UNAVAILABLE 不覆盖 FAILED。"""
+    cur = obs.get("discovery_status") or DISCOVERY_STATUS_UNAVAILABLE
+    new_prio = _STATUS_PRIORITY.get(status, 1)
+    cur_prio = _STATUS_PRIORITY.get(cur, 1)
+    if new_prio == 2 or (status != cur and cur_prio != 2):
+        obs["discovery_status"] = status
+    return obs
+
+
+def _apply_version(obs: dict, version_info: dict) -> dict:
+    """把版本探测结果写入观测并返回观测（version_error 非空 → FAILED + 原因）。"""
+    obs["version"] = version_info["version"]
+    obs["version_source"] = version_info["version_source"]
+    obs["version_evidence"] = version_info["version_evidence"]
+    if version_info["version"]:
+        obs["notes"].append(
+            f"installed version read via `{version_info['version_source']}` "
+            "(dynamic discovery; not a hardcoded fact)"
+        )
+    elif version_info.get("version_error"):
+        _set_discovery_status(obs, DISCOVERY_STATUS_FAILED)
+        obs["notes"].append(
+            f"`--version` probe failed — installed version UNKNOWN: "
+            f"{version_info['version_error']}"
+        )
+    else:
+        obs["notes"].append(
+            "`--version` probe returned empty output — installed version UNKNOWN"
+        )
+    return obs
+
+
 # ---------------------------------------------------------------------------
 # 文本解析（只解析真实 CLI 输出形态；解析失败 → UNKNOWN，不发明）
 # ---------------------------------------------------------------------------
@@ -281,7 +375,7 @@ def _parse_key_value_lines(text: str) -> dict:
 def _parse_aux_slots(text: str) -> list[dict]:
     """解析 ``hermes config get auxiliary`` 的缩进槽位输出。
 
-    形态（真实 v0.20.5 输出）::
+    形态（真实 CLI 输出）::
 
         vision:
           provider: custom
@@ -328,7 +422,7 @@ def _parse_aux_slots(text: str) -> list[dict]:
 def _parse_codebuddy_model_list(help_text: str) -> list[str]:
     """从 CodeBuddy CLI ``--model`` help 行提取官方支持的模型 ID 列表。
 
-    形态（真实 2.137.1 输出）::
+    形态（真实 CLI help 输出；版本级静态元数据）::
 
         --model <model>   Model for the current session. ... Currently supported:
                           (hy4-preview, hy4-preview-x, hy3, ...)
@@ -374,9 +468,12 @@ def discover_hermes() -> dict:
         obs["notes"].append("hermes CLI not found on PATH — main model UNKNOWN")
         return obs
 
+    # FIX-001：安装版本动态探测（先于 model probe；失败只记录，不阻断）
+    _apply_version(obs, _probe_version(exe))
+
     res = _run_readonly([exe, "config", "get", "model"])
     if res is None:
-        obs["discovery_status"] = DISCOVERY_STATUS_FAILED
+        _set_discovery_status(obs, DISCOVERY_STATUS_FAILED)
         obs["notes"].append("`hermes config get model` invocation failed")
         return obs
     code, out, err = res
@@ -391,8 +488,8 @@ def discover_hermes() -> dict:
             provider=provider or None,
             model_source=MODEL_SOURCE_CONFIG,
             reasoning_effort=effort or None,
-            discovery_status=DISCOVERY_STATUS_OK,
         )
+        _set_discovery_status(obs, DISCOVERY_STATUS_OK)
         cost_class, cost_meta = _local_free_from_base_url(base_url)
         obs["cost_class"] = cost_class
         obs["cost_metadata"] = cost_meta
@@ -403,7 +500,7 @@ def discover_hermes() -> dict:
             )
         obs["notes"].append("model read via `hermes config get model` (resolved config)")
     else:
-        obs["discovery_status"] = DISCOVERY_STATUS_UNAVAILABLE
+        _set_discovery_status(obs, DISCOVERY_STATUS_UNAVAILABLE)
         obs["notes"].append(
             f"`hermes config get model` unavailable (exit={code}): "
             f"{(err or 'empty').strip()[:120]}"
@@ -463,7 +560,10 @@ def discover_hermes() -> dict:
 def discover_codebuddy() -> dict:
     """WorkBuddy / CodeBuddy：当前模型 config 读取 + CLI 官方能力判定。
 
-    真实结论（codebuddy 2.137.1）：
+    真实结论（2026-08-29 本机动态 probe；版本只由 discovery 获得，不写死）：
+    - installed version 通过 ``codebuddy --version`` 只读探测；
+      探测失败（如 native module LoadLibrary）→ version=UNKNOWN + 失败原因，
+      不阻断执行（FIX-001）。
     - ``codebuddy config get model`` 为空 → 当前模型不由用户 config 暴露；
       实际模型由 CLI default / last-used 决定 → UNKNOWN（需 runtime 观测）。
     - ``--model`` 显式选择存在；``--effort`` reasoning effort 存在；
@@ -476,9 +576,12 @@ def discover_codebuddy() -> dict:
         obs["notes"].append("codebuddy CLI not found on PATH — current model UNKNOWN")
         return obs
 
+    # FIX-001：安装版本动态探测（先于 model probe；失败只记录，不阻断）
+    _apply_version(obs, _probe_version(exe))
+
     res = _run_readonly([exe, "config", "get", "model"])
     if res is None:
-        obs["discovery_status"] = DISCOVERY_STATUS_FAILED
+        _set_discovery_status(obs, DISCOVERY_STATUS_FAILED)
         obs["notes"].append("`codebuddy config get model` invocation failed")
         return obs
     code, out, err = res
@@ -487,11 +590,11 @@ def discover_codebuddy() -> dict:
         obs.update(
             model=model,
             model_source=MODEL_SOURCE_CONFIG,
-            discovery_status=DISCOVERY_STATUS_OK,
         )
+        _set_discovery_status(obs, DISCOVERY_STATUS_OK)
         obs["notes"].append("model read via `codebuddy config get model`")
     else:
-        obs["discovery_status"] = DISCOVERY_STATUS_UNAVAILABLE
+        _set_discovery_status(obs, DISCOVERY_STATUS_UNAVAILABLE)
         obs["notes"].append(
             "`codebuddy config get model` returned empty — current model NOT exposed "
             "by user config; actual model determined by CLI default / last-used "
@@ -540,11 +643,14 @@ def _codex_config_model() -> str | None:
 def discover_codex() -> dict:
     """Codex：当前/default 模型 + 显式选择 + reasoning + 可枚举性（真实判定）。
 
-    真实结论（codex-cli 0.150.0-alpha.12.2）：
+    真实结论（2026-08-29 本机动态 probe；版本只由 discovery 获得，不写死）：
+    - installed version 通过 ``codex --version`` 只读探测（FIX-001）。
     - ~/.codex/config.toml 无 model key → 默认模型由 server-side 决定，
       本地 CLI 不可读 → UNKNOWN（documented discoverability limitation）。
-    - ``codex exec -m/--model`` 显式选择存在。
-    - 无专用 reasoning-effort flag；只有通用 ``-c model_options.*`` 覆盖机制。
+    - ``codex exec -m/--model`` 显式选择存在；``--local-provider`` 存在。
+    - 无专用 reasoning-effort flag；通用 ``-c <dotted.path>=value`` 覆盖机制
+      存在，但**不构成任何具体 reasoning config key 的证据**
+      → reasoning_effort capability = NOT_EXPOSED_BY_CURRENT_CLI。
     - CLI 无命令枚举 server-side model catalog → 不可枚举（limitation）。
     """
     obs = empty_observation("codex")
@@ -553,16 +659,19 @@ def discover_codex() -> dict:
         obs["notes"].append("codex CLI not found on PATH — current model UNKNOWN")
         return obs
 
+    # FIX-001：安装版本动态探测（先于 model probe；失败只记录，不阻断）
+    _apply_version(obs, _probe_version(exe))
+
     model = _codex_config_model()
     if model:
         obs.update(
             model=model,
             model_source=MODEL_SOURCE_CONFIG,
-            discovery_status=DISCOVERY_STATUS_OK,
         )
+        _set_discovery_status(obs, DISCOVERY_STATUS_OK)
         obs["notes"].append("model key present in ~/.codex/config.toml")
     else:
-        obs["discovery_status"] = DISCOVERY_STATUS_UNAVAILABLE
+        _set_discovery_status(obs, DISCOVERY_STATUS_UNAVAILABLE)
         obs["notes"].append(
             "no `model` key in ~/.codex/config.toml — current/default model is "
             "determined server-side and NOT locally discoverable "
@@ -586,10 +695,12 @@ def discover_codex() -> dict:
             "local_provider_option": "--local-provider" in text,
         }
         if "--reasoning-effort" not in text:
+            # FIX-001：通用 -c 覆盖机制不得推断具体 reasoning key
+            obs["capabilities"]["reasoning_effort_capability"] = REASONING_CAP_NOT_EXPOSED
             obs["notes"].append(
-                "no dedicated reasoning-effort flag in this Codex version; generic "
-                "`-c model_options.*` config override mechanism exists "
-                "(config-level capability, semantics unverified)"
+                "no dedicated reasoning-effort flag; generic `-c <dotted.path>=value` "
+                "override exists but does NOT evidence any specific reasoning config "
+                "key → reasoning_effort capability = NOT_EXPOSED_BY_CURRENT_CLI"
             )
         obs["notes"].append(
             "Codex CLI does not enumerate the server-side model catalog "
@@ -777,11 +888,12 @@ def render_compact_summary(model_observations: dict, output_dir: Path | str | No
         source = obs.get("model_source") or MODEL_SOURCE_UNKNOWN
         effort = obs.get("reasoning_effort") or "UNKNOWN"
         cost = obs.get("cost_class") or COST_CLASS_UNKNOWN
+        version = obs.get("version") or "UNKNOWN"  # FIX-001：版本动态证据，无则 UNKNOWN
         elapsed = (entry or {}).get("stage_elapsed")
         elapsed_s = f"{elapsed:.2f}s" if isinstance(elapsed, (int, float)) else "UNKNOWN"
         lines.append(
             f"- {agent}: model={model} provider={provider} source={source} "
-            f"effort={effort} cost={cost} stage={elapsed_s}"
+            f"effort={effort} cost={cost} version={version} stage={elapsed_s}"
         )
     if output_dir is not None:
         lines.append(f"- Artifact (machine authority): {Path(output_dir) / ARTIFACT_FILENAME}")

@@ -1,7 +1,8 @@
-"""AAF — Model Observability / Discovery Foundation 测试（AAF-v0.4-TASK-010）。
+"""AAF — Model Observability / Discovery Foundation 测试（AAF-v0.4-TASK-010 + FIX-001）。
 
 覆盖 TASK Requirements 19（A–I）+ 20（agent-specific，mock 真实 CLI 输出形态）
 + 动态元数据刷新 + schema 校验 + 单一 authority 语义。
+FIX-001 追加：版本动态探测（A/B/C）+ Codex reasoning evidence 边界（D/E）。
 
 原则：
 - mock 只使用本机真实 CLI 观察到的输出形态（probe 证据），
@@ -9,6 +10,7 @@
 - 任何 discovery 失败 → 非阻塞（UNKNOWN / FAILED 记录，绝不抛出到 runner）。
 - 不持久化任何 secret。
 """
+import inspect
 import json
 import os
 from pathlib import Path
@@ -22,6 +24,10 @@ from ai_agent_framework.report import build_report
 # ---------------------------------------------------------------------------
 # 真实 CLI 输出形态（2026-08-29 本机 probe 证据；仅作 mock 输入，非 AAF 硬编码）
 # ---------------------------------------------------------------------------
+
+HERMES_VERSION = "Hermes Agent v0.20.5 (2026.8.19) · upstream 3340bbbd"
+CODEBUDDY_VERSION = "2.141.0"  # FIX-001：`codebuddy --version` 真实 probe 输出形态
+CODEX_VERSION = "codex-cli 0.150.0-alpha.12.2"
 
 HERMES_CONFIG_GET_MODEL = """\
 default: deepseek-v4-flash
@@ -122,6 +128,7 @@ def _json_text(obs: dict) -> str:
 def test_hermes_known_metadata_serialized(monkeypatch):
     _fake_cli(monkeypatch)
     calls = _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (0, HERMES_VERSION, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "model"): (0, HERMES_CONFIG_GET_MODEL, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "auxiliary"): (0, HERMES_CONFIG_GET_AUXILIARY, ""),
         ("C:/fake/bin/cli.exe", "--help"): (0, "usage: hermes [-h] [-m MODEL] [--provider PROVIDER] [--reasoning LEVEL]", ""),
@@ -172,6 +179,7 @@ def test_make_observation_rejects_invalid_schema():
 def test_codebuddy_empty_config_yields_unknown(monkeypatch):
     _fake_cli(monkeypatch)
     _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (0, CODEBUDDY_VERSION, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "model"): (0, "", ""),
         ("C:/fake/bin/cli.exe", "--help"): (0, CODEBUDDY_HELP, ""),
     })
@@ -179,6 +187,9 @@ def test_codebuddy_empty_config_yields_unknown(monkeypatch):
     assert obs["model"] is None
     assert obs["model_source"] == mo.MODEL_SOURCE_UNKNOWN
     assert obs["discovery_status"] == mo.DISCOVERY_STATUS_UNAVAILABLE
+    # FIX-001：版本动态获得（版本可复核，与模型 UNKNOWN 相互独立）
+    assert obs["version"] == CODEBUDDY_VERSION
+    assert obs["version_source"] == mo.VERSION_SOURCE_CLI
     # 不发明 model；notes 记录真实原因
     assert any("NOT exposed" in n for n in obs["notes"])
 
@@ -230,6 +241,7 @@ def test_safe_discover_agent_absorbs_any_exception(monkeypatch):
 def test_cost_unknown_not_invented_codebuddy(monkeypatch):
     _fake_cli(monkeypatch)
     _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (0, CODEBUDDY_VERSION, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "model"): (0, "", ""),
         ("C:/fake/bin/cli.exe", "--help"): (0, CODEBUDDY_HELP, ""),
     })
@@ -243,6 +255,7 @@ def test_cost_unknown_not_invented_codebuddy(monkeypatch):
 def test_cost_unknown_not_invented_codex(monkeypatch, tmp_path):
     _fake_cli(monkeypatch)
     _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (0, CODEX_VERSION, ""),
         ("C:/fake/bin/cli.exe", "exec", "--help"): (0, CODEX_EXEC_HELP, ""),
     })
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))  # 无 config.toml
@@ -256,6 +269,7 @@ def test_hermes_api_provider_cost_unknown_not_paid(monkeypatch):
     """main model 走 DeepSeek API（base_url 空）→ 不得硬编码 PAID；如实 UNKNOWN。"""
     _fake_cli(monkeypatch)
     _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (0, HERMES_VERSION, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "model"): (0, HERMES_CONFIG_GET_MODEL, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "auxiliary"): (1, "", "no"),
         ("C:/fake/bin/cli.exe", "--help"): (0, "", ""),
@@ -271,6 +285,7 @@ def test_local_aux_slots_classified_local_free_from_evidence(monkeypatch):
     """local endpoint（base_url=127.0.0.1）→ LOCAL_FREE 且带证据（provider config 事实）。"""
     _fake_cli(monkeypatch)
     _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (0, HERMES_VERSION, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "model"): (0, HERMES_CONFIG_GET_MODEL, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "auxiliary"): (0, HERMES_CONFIG_GET_AUXILIARY, ""),
         ("C:/fake/bin/cli.exe", "--help"): (0, "", ""),
@@ -294,14 +309,15 @@ def test_local_aux_slots_classified_local_free_from_evidence(monkeypatch):
 
 def test_secrets_never_in_observation(monkeypatch):
     _fake_cli(monkeypatch)
-    leaky_model_out = HERMES_CONFIG_GET_MODEL + "api_key: sk-SUPERSECRET12345\n"
+    leaky_model_out = HERMES_CONFIG_GET_MODEL + "api_key: FAKEKEY12345\n"
     _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (0, HERMES_VERSION, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "model"): (0, leaky_model_out, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "auxiliary"): (1, "", ""),
         ("C:/fake/bin/cli.exe", "--help"): (0, "", ""),
     })
     obs = mo.discover_hermes()
-    assert "sk-SUPERSECRET12345" not in _json_text(obs)
+    assert "FAKEKEY12345" not in _json_text(obs)
 
 
 def test_codex_config_only_model_key_extracted(tmp_path, monkeypatch):
@@ -316,6 +332,7 @@ def test_codex_config_only_model_key_extracted(tmp_path, monkeypatch):
     # secret 不进入任何观测
     _fake_cli(monkeypatch)
     _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (0, CODEX_VERSION, ""),
         ("C:/fake/bin/cli.exe", "exec", "--help"): (0, CODEX_EXEC_HELP, ""),
     })
     obs = mo.discover_codex()
@@ -394,6 +411,8 @@ def test_report_unknown_rendering(tmp_path):
                           output_dir=tmp_path, model_observations=data)
     assert "codex: model=UNKNOWN provider=UNKNOWN source=unknown" in report
     assert "stage=UNKNOWN" in report
+    # FIX-001：版本无证据 → REPORT 如实 UNKNOWN
+    assert "version=UNKNOWN" in report
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +423,7 @@ def test_report_unknown_rendering(tmp_path):
 def test_registry_artifact_written_and_refreshed(tmp_path, monkeypatch):
     _fake_cli(monkeypatch)
     _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (0, HERMES_VERSION, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "model"): (0, HERMES_CONFIG_GET_MODEL, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "auxiliary"): (0, HERMES_CONFIG_GET_AUXILIARY, ""),
         ("C:/fake/bin/cli.exe", "--help"): (0, "", ""),
@@ -419,6 +439,7 @@ def test_registry_artifact_written_and_refreshed(tmp_path, monkeypatch):
 
     # 动态元数据：刷新后新模型替换旧条目（不把一次发现当永久事实）
     script = {
+        ("C:/fake/bin/cli.exe", "--version"): (0, HERMES_VERSION, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "model"): (0, "default: newer-model\nprovider: deepseek\nbase_url: ''\nreasoning_effort: high\n", ""),
         ("C:/fake/bin/cli.exe", "config", "get", "auxiliary"): (0, HERMES_CONFIG_GET_AUXILIARY, ""),
         ("C:/fake/bin/cli.exe", "--help"): (0, "", ""),
@@ -525,6 +546,7 @@ def test_runner_telemetry_failure_does_not_fail_execution(tmp_path, monkeypatch)
 def test_hermes_auxiliary_and_capabilities(monkeypatch):
     _fake_cli(monkeypatch)
     _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (0, HERMES_VERSION, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "model"): (0, HERMES_CONFIG_GET_MODEL, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "auxiliary"): (0, HERMES_CONFIG_GET_AUXILIARY, ""),
         ("C:/fake/bin/cli.exe", "--help"): (0, "usage: hermes [-h] [-m MODEL] [--provider PROVIDER] [--reasoning LEVEL]", ""),
@@ -540,6 +562,7 @@ def test_hermes_auxiliary_and_capabilities(monkeypatch):
 def test_codebuddy_models_documented_by_cli(monkeypatch):
     _fake_cli(monkeypatch)
     _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (0, CODEBUDDY_VERSION, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "model"): (0, "", ""),
         ("C:/fake/bin/cli.exe", "--help"): (0, CODEBUDDY_HELP, ""),
     })
@@ -558,6 +581,7 @@ def test_codebuddy_models_documented_by_cli(monkeypatch):
 def test_codex_capabilities_truthful(monkeypatch, tmp_path):
     _fake_cli(monkeypatch)
     _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (0, CODEX_VERSION, ""),
         ("C:/fake/bin/cli.exe", "exec", "--help"): (0, CODEX_EXEC_HELP, ""),
     })
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
@@ -567,20 +591,137 @@ def test_codex_capabilities_truthful(monkeypatch, tmp_path):
     assert caps["reasoning_effort_option"] is False   # 本版本无专用 flag
     assert caps["models_listable"] is False           # server-side catalog 不可枚举
     assert caps["local_provider_option"] is True      # --local-provider
+    assert caps["reasoning_effort_capability"] == mo.REASONING_CAP_NOT_EXPOSED
     assert any("server-side" in n for n in obs["notes"])
-    assert any("reasoning-effort" in n for n in obs["notes"])
+    assert any("NOT_EXPOSED_BY_CURRENT_CLI" in n for n in obs["notes"])
     assert obs["discovery_status"] == mo.DISCOVERY_STATUS_UNAVAILABLE
+    # FIX-001：版本动态记录，且 source 模块不含任何固定版本号
+    assert obs["version"] == CODEX_VERSION
+    assert obs["version_source"] == mo.VERSION_SOURCE_CLI
 
 
 def test_dispatch_workbuddy_uses_codebuddy(monkeypatch):
     _fake_cli(monkeypatch)
     _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (0, CODEBUDDY_VERSION, ""),
         ("C:/fake/bin/cli.exe", "config", "get", "model"): (0, "", ""),
         ("C:/fake/bin/cli.exe", "--help"): (0, CODEBUDDY_HELP, ""),
     })
     obs = mo.discover_agent("workbuddy")
     assert obs["agent"] == "workbuddy"  # route agent 名保留
     assert obs["model"] is None
+
+
+# ---------------------------------------------------------------------------
+# FIX-001：版本动态证据（A/B/C）+ Codex reasoning evidence 边界（D/E）+ 非阻塞（F）
+# ---------------------------------------------------------------------------
+
+
+def test_codebuddy_version_dynamically_discovered(monkeypatch):
+    """A. CodeBuddy installed version 由 `--version` 动态获得（含原始证据）。"""
+    _fake_cli(monkeypatch)
+    calls = _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (0, CODEBUDDY_VERSION, ""),
+        ("C:/fake/bin/cli.exe", "config", "get", "model"): (0, "", ""),
+        ("C:/fake/bin/cli.exe", "--help"): (0, CODEBUDDY_HELP, ""),
+    })
+    obs = mo.discover_codebuddy()
+    assert obs["version"] == CODEBUDDY_VERSION
+    assert obs["version_source"] == mo.VERSION_SOURCE_CLI
+    assert obs["version_evidence"]  # reviewer 可复核的原始输出头
+    assert any("version read via" in n for n in obs["notes"])
+    assert ("C:/fake/bin/cli.exe", "--version") in [tuple(c) for c in calls]
+
+
+def test_codebuddy_version_probe_failure_unknown_non_blocking(monkeypatch):
+    """B. `--version` 失败（如 native module LoadLibrary）→ version=UNKNOWN、
+    discovery_status=FAILED（notes 带失败原因）、绝不抛出、执行不阻断。"""
+    _fake_cli(monkeypatch)
+    _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (1, "", "LoadLibrary failed: native module xyz.dll"),
+        ("C:/fake/bin/cli.exe", "config", "get", "model"): (0, "", ""),
+        ("C:/fake/bin/cli.exe", "--help"): (0, CODEBUDDY_HELP, ""),
+    })
+    obs = mo.safe_discover_agent("workbuddy")
+    assert obs["version"] is None
+    assert obs["version_source"] == mo.VERSION_SOURCE_CLI
+    assert obs["discovery_status"] == mo.DISCOVERY_STATUS_FAILED
+    assert any("LoadLibrary" in n for n in obs["notes"])
+    assert any("UNKNOWN" in n for n in obs["notes"])
+
+
+def test_codebuddy_version_probe_invocation_failure_non_blocking(monkeypatch):
+    """B2. `--version` 调用本身失败（None）→ 同样 UNKNOWN + FAILED + 非阻塞。"""
+    _fake_cli(monkeypatch)
+
+    def fake(args, timeout=20.0):
+        if list(args) == ["C:/fake/bin/cli.exe", "--version"]:
+            return None
+        return (0, "", "")
+
+    monkeypatch.setattr(mo, "_run_readonly", fake)
+    obs = mo.discover_codebuddy()
+    assert obs["version"] is None
+    assert obs["discovery_status"] == mo.DISCOVERY_STATUS_FAILED
+    assert any("version" in n and "UNKNOWN" in n for n in obs["notes"])
+
+
+def test_no_hardcoded_installed_version():
+    """C. model_observation.py 源码不含任何固定 Agent 版本号（动态原则）。"""
+    src = inspect.getsource(mo)
+    assert "2.137.1" not in src
+    assert "2.141.0" not in src
+    assert "0.150.0-alpha.12.2" not in src
+    assert "v0.20.5" not in src
+
+
+def test_codex_generic_c_not_implying_model_options(monkeypatch, tmp_path):
+    """D. Codex 通用 `-c <dotted.path>=value` 不得推断 model_options.*。"""
+    _fake_cli(monkeypatch)
+    _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (0, CODEX_VERSION, ""),
+        ("C:/fake/bin/cli.exe", "exec", "--help"): (0, CODEX_EXEC_HELP, ""),
+    })
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    obs = mo.discover_codex()
+    assert "model_options" not in _json_text(obs)
+    assert "model_options" not in inspect.getsource(mo.discover_codex)
+    caps = obs["capabilities"]
+    assert caps["reasoning_effort_option"] is False
+    assert caps["reasoning_effort_capability"] == mo.REASONING_CAP_NOT_EXPOSED
+    assert any("does NOT evidence" in n for n in obs["notes"])
+
+
+def test_codex_unknown_reasoning_serialized(monkeypatch, tmp_path):
+    """E. 未证据的 reasoning option 如实序列化（None + NOT_EXPOSED_BY_CURRENT_CLI）。"""
+    _fake_cli(monkeypatch)
+    _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (0, CODEX_VERSION, ""),
+        ("C:/fake/bin/cli.exe", "exec", "--help"): (0, CODEX_EXEC_HELP, ""),
+    })
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    obs = mo.discover_codex()
+    data = json.loads(_json_text(obs))
+    assert data["reasoning_effort"] is None
+    assert data["capabilities"]["reasoning_effort_capability"] == mo.REASONING_CAP_NOT_EXPOSED
+    assert data["discovery_status"] == mo.DISCOVERY_STATUS_UNAVAILABLE
+
+
+def test_version_probe_failure_does_not_break_hermes_discovery(monkeypatch):
+    """F. 版本探测失败 + 模型探测正常 → 模型仍被记录（仅版本 UNKNOWN/FAILED 原因）。"""
+    _fake_cli(monkeypatch)
+    _fake_run_readonly(monkeypatch, {
+        ("C:/fake/bin/cli.exe", "--version"): (1, "", "LoadLibrary failed"),
+        ("C:/fake/bin/cli.exe", "config", "get", "model"): (0, HERMES_CONFIG_GET_MODEL, ""),
+        ("C:/fake/bin/cli.exe", "config", "get", "auxiliary"): (1, "", "no"),
+        ("C:/fake/bin/cli.exe", "--help"): (0, "", ""),
+    })
+    obs = mo.safe_discover_agent("hermes")
+    # 版本失败不吞掉模型事实；观测完整返回（非阻塞）
+    assert obs["model"] == "deepseek-v4-flash"
+    assert obs["version"] is None
+    assert obs["discovery_status"] == mo.DISCOVERY_STATUS_FAILED
+    assert any("LoadLibrary" in n for n in obs["notes"])
 
 
 # ---------------------------------------------------------------------------

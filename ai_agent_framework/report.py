@@ -267,6 +267,7 @@ def build_report(
     output_dir=None,
     sync_state: dict | None = None,
     intake_task_path=None,
+    model_observations: dict | None = None,
 ) -> str:
     """生成 REPORT.md 文本（REPORT De-duplication，Requirement 7）。
 
@@ -285,6 +286,10 @@ def build_report(
       提供时附加 ``## Terminal Generation``（派生产物 provenance，§6B.4）
     - status == CANCELLED：追加 ``## Cancellation`` 中文说明（§6.6 / req 17）；
       未执行 agent 的缺失结果不列入 Unresolved Issues（取消是预期中断，不是缺陷）
+    - ``model_observations``（AAF-v0.4-TASK-010）：``model_observation.model_report_data()``
+      的紧凑 dict——提供时附加 ``## Model Observation`` 段（每 agent 一行模型/时序摘要 +
+      artifact authority 路径）；缺省（legacy 调用方 / telemetry 关闭 / dry-run）不输出该段。
+      详细 discovery metadata 只在 model_observation.json（Context Compaction：REPORT 不膨胀）。
     """
     agent_sections = []
     for name in route:
@@ -356,6 +361,13 @@ def build_report(
             sync_lines.extend(f'  - {d}' for d in dirty[:20])
         sync_section = '\n\n' + '\n'.join(sync_lines)
 
+    # TASK-010：紧凑 Model Observation 摘要（详细数据在 model_observation.json，
+    # 单一 authority；REPORT 不膨胀——每 agent 一行 + artifact 路径）。
+    model_section = ''
+    if model_observations:
+        from .model_observation import render_compact_summary
+        model_section = '\n\n' + render_compact_summary(model_observations, output_dir)
+
     return f'''# REPORT
 
 ## Current Status
@@ -372,6 +384,7 @@ def build_report(
 ## Unresolved Issues
 {unresolved}
 {sync_section}
+{model_section}
 
 ## Planner Handoff
 Use this report as the authoritative context for the next planning turn. Resolve any FAIL / REQUEST_CHANGE / unresolved warnings before creating the next TASK. If all required checks passed, plan the next smallest task without reopening completed scope.{extra}

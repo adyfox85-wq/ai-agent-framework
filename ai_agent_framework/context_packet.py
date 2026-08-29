@@ -51,6 +51,11 @@ STAGE_FIELDS = (
     "evidence_paths",
     "findings",
     "warnings",
+    # AAF-v0.4-TASK-010（Model Observability / Execution Metrics Foundation）：
+    # stage_timing = 执行时序（started/finished/elapsed）；model_observation_ref =
+    # 指向 model_observation.json（单一 authority）的引用，不含重复模型数据。
+    "stage_timing",
+    "model_observation_ref",
 )
 
 _SUMMARY_LIMIT = 400
@@ -256,8 +261,18 @@ def build_stage_result(
     changed_files: list[str] | None = None,
     structured: dict | None = None,
     structured_status: str = SUMMARY_STATUS_NOT_PROVIDED,
+    stage_started_at: str | None = None,
+    stage_elapsed_seconds: float | None = None,
+    model_observation_ref: dict | None = None,
 ) -> dict:
     """确定性派生 stage 结构化结果（Requirement 5 / FIX-002 Req 6–9）。
+
+    AAF-v0.4-TASK-010 新增（可选，backward compatible）：
+    - ``stage_started_at`` / ``stage_elapsed_seconds`` 提供时 → 记录
+      ``stage_timing``（stage_started_at / stage_finished_at / stage_elapsed_seconds）
+      ——Execution Metrics Foundation；未提供 → 无该字段（旧调用行为不变）。
+    - ``model_observation_ref`` 提供时 → 记录指向 model_observation.json
+      （单一 machine authority）的引用；不在此复制模型数据（无重复 truth source）。
 
     只记录 Framework 可验证的事实，不解析 / 不虚构 LLM 正文语义：
     - status：result 有效 → SUCCESS，无效（空 / FRAMEWORK_ERROR）→ FAILED
@@ -283,6 +298,7 @@ def build_stage_result(
     body = result_text.strip()
     valid = bool(body) and not body.startswith("FRAMEWORK_ERROR")
     changed = list(changed_files or [])
+    generated_at = datetime.now().isoformat(timespec="seconds")
 
     findings: list | None = None
     warnings: list | None = None
@@ -363,7 +379,7 @@ def build_stage_result(
     if is_blocking_verdict(verdict) and not blocking_rework:
         blocking_rework = True
 
-    return {
+    stage = {
         "protocol": PROTOCOL_VERSION,
         "agent": agent,
         "status": "SUCCESS" if valid else "FAILED",
@@ -384,8 +400,24 @@ def build_stage_result(
         "structured_summary_status": status,
         "summary": _summarize(result_text),
         "narrative_path": str(output_dir / f"{agent}_result.md"),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": generated_at,
     }
+
+    # TASK-010：stage 执行时序（Execution Metrics Foundation）——只有 runner
+    # 提供 stage_started_at 时才记录；缺失 = 旧行为（不虚构时序）。
+    if stage_started_at:
+        stage["stage_timing"] = {
+            "stage_started_at": stage_started_at,
+            "stage_finished_at": generated_at,
+            "stage_elapsed_seconds": (
+                round(float(stage_elapsed_seconds), 3)
+                if stage_elapsed_seconds is not None else None
+            ),
+        }
+    # TASK-010：model observation authority 引用（不复制模型数据本身）。
+    if model_observation_ref:
+        stage["model_observation_ref"] = dict(model_observation_ref)
+    return stage
 
 
 # ---------- Machine-Readable Stage Summary：提取 / schema validation（FIX-002 Req 7） ----------

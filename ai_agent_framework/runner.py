@@ -4,12 +4,14 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
 from .adapters import build_prompt_measured, run_agent
 from . import cancel as cancel_mod
 from . import control as control_mod
+from . import model_observation as model_observation_mod
 from .context_packet import (
     build_stage_result,
     extract_and_validate_structured,
@@ -430,6 +432,9 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
 
         dry = bool(dry_run)
         prompt_metrics: dict[str, dict] = {}
+        # TASK-010：遥测开关只读一次（AAF_MODEL_OBSERVATION=0 关闭整层；
+        # 默认开启。辅助 telemetry，不参与 execution authority）。
+        mo_enabled = model_observation_mod.observations_enabled()
         if dry:
             status = 'DRY_RUN'  # 保留现有 dry-run 语义（route only，不执行 Agent）
             final_status = 'CREATED'  # 未正式执行 Agent 链 → 终态保持 CREATED，不伪装 SUCCESS
@@ -463,10 +468,21 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                                      prompt_meta.get('referenced_artifact_count', 0)),
                     'path': str(output_dir / f'{agent}_prompt.md'),
                 }
+                # TASK-010（Model Observability / Execution Metrics Foundation）：
+                # stage 时序 + 只读模型 discovery。telemetry 是辅助层——任何 discovery
+                # 失败都非阻塞（safe_discover_agent 吸收异常；UNKNOWN 记录）；
+                # AAF_MODEL_OBSERVATION=0 时整层关闭（行为与引入前完全一致）。
+                stage_started_iso = None
+                stage_elapsed = None
+                if mo_enabled:
+                    stage_started_iso = datetime.now().isoformat(timespec='seconds')
+                    stage_started_mono = time.monotonic()
                 try:
                     result_text = run_agent(agent, prompt, workspace)
                 except Exception as exc:
                     result_text = f'FRAMEWORK_ERROR\n{type(exc).__name__}: {exc}'
+                if mo_enabled:
+                    stage_elapsed = round(time.monotonic() - stage_started_mono, 3)
                 results[agent] = result_text
                 (output_dir / f'{agent}_result.md').write_text(result_text, encoding='utf-8')
                 # Structured stage result（Requirement 5 + FIX-002 Req 6–9）：
@@ -474,6 +490,22 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 # findings/warnings 未提供 → None（UNKNOWN），绝不伪装为空数组；
                 # summary 不完整 / 与 narrative 不一致 → 显式 PARTIAL/UNKNOWN。
                 structured, structured_status = extract_and_validate_structured(agent, result_text)
+                model_ref = None
+                if mo_enabled:
+                    # 只读 discovery（帮助/config 查询；不发付费推理、不改任何配置）；
+                    # registry（model_observation.json）是 model observation 单一 authority，
+                    # stage result 只携带引用（无重复 truth source）。
+                    # 双保险非阻塞：observe_stage 内部自吸收 + runner 级 try/except，
+                    # 任何 telemetry 失败（含 registry 写失败）都不影响 Agent 执行。
+                    try:
+                        observation = model_observation_mod.observe_stage(output_dir, agent)
+                    except Exception:
+                        observation = None
+                    if observation is not None:
+                        model_ref = {
+                            'authority': str(output_dir / model_observation_mod.ARTIFACT_FILENAME),
+                            'entry': agent,
+                        }
                 stage = build_stage_result(
                     agent=agent,
                     result_text=result_text,
@@ -483,6 +515,9 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     changed_files=git_changed_files(workspace),
                     structured=structured,
                     structured_status=structured_status,
+                    stage_started_at=stage_started_iso,
+                    stage_elapsed_seconds=stage_elapsed,
+                    model_observation_ref=model_ref,
                 )
                 write_stage_result(output_dir, stage)
                 valid = _result_is_valid(result_text)
@@ -535,10 +570,18 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
         # 非 git 仓库 → NOT_APPLICABLE（REPORT 不输出 Remote Sync 段，不虚构）。
         sync_state = remote_sync_state(workspace)
 
+        # TASK-010：REPORT 只拿紧凑 model observation 摘要（lazy artifact；
+        # 详细 discovery metadata 只在 model_observation.json）。
+        # dry-run 不执行 Agent → 无观测数据 → 不输出该段（不虚构）。
+        model_observations = None
+        if mo_enabled and not dry:
+            model_observations = model_observation_mod.model_report_data(output_dir, route.agents)
+
         report = build_report(
             task, route.agents, results, status, integrity_notes,
             task_path=snapshot_path, task_hash=task_hash, output_dir=output_dir,
             sync_state=sync_state, intake_task_path=task_file,
+            model_observations=model_observations,
         )
         report_path = output_dir / 'REPORT.md'
 
@@ -583,6 +626,7 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     terminal=canonical.to_dict(),
                     task_path=snapshot_path, task_hash=task_hash, output_dir=output_dir,
                     sync_state=sync_state, intake_task_path=task_file,
+                    model_observations=model_observations,
                 )
                 report_path.write_text(report, encoding='utf-8')
         else:

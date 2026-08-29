@@ -84,9 +84,27 @@ LISTENER_READY_TIMEOUT = 3.0  # 秒
 #   这不是无限预算重置：每次 delayed-exit 事件只 rearm 一次（identity-safe
 #   clear 只发生一次），replacement 失败仍受 max_failures/backoff 有界约束，
 #   不会每 poll tick 重置、不会 tight loop。
-# - 所有 self.listener / _pending_stop / ownership-clear / rearm 的 transition
-#   都在 _lifecycle_lock 内（_apply_hotkey / _delayed_exit_cleanup /
-#   _try_recover_hotkey 异常路径 / shutdown），无 lock 外 mutation。
+
+# RW-012 FIX-004（atomic recovery transition consolidation，单一锁内 transition）：
+# - FIX-003 遗留的多段 ownership transition 被收敛：此前 _poll_health 在 lock 内
+#   做 cleanup/rearm → 释放 lock → lock 外判定 recovery eligibility →
+#   再次获取 lock 创建 replacement，cleanup 与 replacement start 之间存在
+#   exposed intermediate state（listener=None / pending=None / rearmed 但
+#   transition 未 reserved/owned，可被另一 lifecycle trigger 利用）。
+# - 现在 `_run_lifecycle_transition()` 在同一个 _lifecycle_lock 临界区内完成
+#   完整状态转换：old pending 确认退出 → 锁内 identity 重验证 → clear old
+#   ownership → rearm 恰好一次 → eligibility 判定 → reserve attempt
+#   （begin_attempt）→ exactly one replacement（_apply_hotkey_locked）。
+#   锁作用域内不存在可竞争 gap：任何其他 trigger 在锁外不可见该中间态，
+#   非阻塞获取失败即 coalesce（Requirement 1/5）。
+# - `_apply_hotkey_locked()` 是唯一的 listener replace/start transition owner
+#   （public `_apply_hotkey` 只负责获取锁后委托；config reload / health
+#   recovery / delayed cleanup / restart-failure 全部汇入同一 authority，
+#   Requirement 2/3/6）。持锁状态不得再调用会自行获取锁的 `_apply_hotkey`
+#   （非重入锁 → 合并而非死锁；locked 内部路径一律用 _locked 变体）。
+# - rearm 仍是真实的 one-shot ownership-release 事件：只有 pending old 确认
+#   退出才 rearm（Requirement 7）；listener=None / DEGRADED / 每 poll 都不会
+#   自动 rearm——epoch 只随真实 exit 事件增长（Requirement 8）。
 
 # 单实例 mutex（Restart 交接 / 防双开）
 _SINGLE_INSTANCE_MUTEX = "Local\\AAF_Bridge_SingleInstance_v0_4"
@@ -461,6 +479,26 @@ class Bridge:
         self._recovery.rearm()
         return True
 
+    def _delayed_exit_cleanup_locked(self) -> bool:
+        """RW-012 FIX-004：delayed-exit check-and-clear 的 locked 变体。
+
+        调用方必须已持有 _lifecycle_lock（本方法自身不获取锁）。锁内重新确认
+        pending 存在且已退出 → identity-safe clear（_clear_pending_ownership_locked
+        双身份校验）→ ownership release → rearm 恰好一次。
+
+        返回是否发生了清理（并 rearm 一次 recovery epoch）。
+        """
+        pending = self._pending_stop
+        if pending is None or pending.is_alive():
+            return False  # 无 pending / 旧 listener 仍存活 → 不清理
+        if self._clear_pending_ownership_locked(pending):
+            _log(
+                "AAF Bridge: 旧热键监听线程已确认退出（迟延退出），"
+                "清理 ownership reference，恢复策略 rearm 一次。"
+            )
+            return True
+        return False
+
     def _delayed_exit_cleanup(self) -> bool:
         """RW-012 FIX-003：受 lifecycle lock 保护的 delayed-exit check-and-clear
         原子单元（Requirement 1/2）。
@@ -469,23 +507,44 @@ class Bridge:
         _lifecycle_lock 临界区内完成，不存在 lock 外 check → 锁内另一路创建
         replacement → lock 外 clear 的 TOCTOU 窗口（Requirement 11）。
 
+        FIX-004：生产恢复路径不再单独调用本方法（已收敛进
+        _run_lifecycle_transition 的单一锁内 transition）；本方法保留为
+        独立的锁内原子单元入口（测试 / 外部调用可用）。
+
         返回是否发生了清理（并 rearm 一次 recovery epoch）。
         """
         with self._lifecycle_lock:
-            pending = self._pending_stop
-            if pending is None or pending.is_alive():
-                return False  # 无 pending / 旧 listener 仍存活 → 不清理
-            if self._clear_pending_ownership_locked(pending):
-                _log(
-                    "AAF Bridge: 旧热键监听线程已确认退出（迟延退出），"
-                    "清理 ownership reference，恢复策略 rearm 一次。"
-                )
-                return True
-            return False
+            return self._delayed_exit_cleanup_locked()
 
     def _apply_hotkey(self, show_error: bool = True) -> None:
-        """应用热键配置（启动 / 配置热加载 / 自动恢复）：stop-before-replace。
+        """应用热键配置（启动 / 配置热加载 / 自动恢复 / 外部触发）：public 入口。
 
+        RW-012 FIX-004：本方法只负责获取 _lifecycle_lock 后委托给
+        `_apply_hotkey_locked`（唯一 listener replace/start transition owner）。
+
+        - 非阻塞获取锁：并发触发（另一 lifecycle transition 进行中）被合并，
+          不创建重复 listener；锁释放后的下一次触发正常执行。
+        - 持锁状态（lifecycle transition 内）不得调用本方法——非重入锁下
+          非阻塞获取失败即 coalesce（不会死锁）；锁内路径一律用
+          `_apply_hotkey_locked`。
+        """
+        if not self._lifecycle_lock.acquire(blocking=False):
+            _log("AAF Bridge: 热键生命周期转换已在进行，本次触发被合并（不创建重复 listener）。")
+            return
+        try:
+            self._apply_hotkey_locked(show_error)
+        finally:
+            self._lifecycle_lock.release()
+
+    def _apply_hotkey_locked(self, show_error: bool = True) -> None:
+        """RW-012 FIX-004：唯一的 listener replace/start transition owner。
+
+        调用方必须已持有 _lifecycle_lock（本方法自身不获取锁）——所有
+        lifecycle trigger（启动 / config reload / health recovery / delayed
+        cleanup / restart-failure / 外部恢复入口）最终都汇入本方法创建
+        listener，不存在第二套 listener creation 逻辑（Requirement 2/3/6）。
+
+        stop-before-replace（Requirement 12）：
         - 先通过 listener-owned stop 契约停掉旧 listener（线程内注销 + 有界
           join），确认旧线程退出后才创建新 listener；主线程绝不直接
           UnregisterHotKey（registration 归 listener 线程所有）。
@@ -494,8 +553,6 @@ class Bridge:
           DEGRADED（可恢复性保留给有界重试；跨 recovery cycle 不重复）。
         - 新 listener 启动后必须 wait_ready 成功且无 error 才算启动成功：
           wait_ready 超时 / error 均不 reset recovery/backoff、不报告 healthy。
-        - _lifecycle_lock：同一时刻只有一个 lifecycle transition owner，
-          并发触发被合并，不会创建多个 listener。
         """
         parsed = cfg_mod.parse_hotkey(self.cfg.get("hotkey", "ctrl+alt+a"))
         if parsed is None:
@@ -503,39 +560,92 @@ class Bridge:
                 ui.show_error("AAF Bridge", f"热键配置无效: {self.cfg.get('hotkey')!r}（示例: ctrl+alt+a）")
             return
         mods, vk = parsed
-        if not self._lifecycle_lock.acquire(blocking=False):
-            _log("AAF Bridge: 热键生命周期转换已在进行，本次触发被合并（不创建重复 listener）。")
-            return
-        try:
-            # 先停止旧 listener 并确认退出，才允许创建新 listener（stop-before-replace）
-            if not self._stop_listener():
-                return  # fail safe：旧 listener 未确认退出 → 不启动 replacement
-            self.listener = HotkeyListener(mods, vk, self._on_hotkey, self.hotkey_id)
-            self.listener.start()
-            # RW-012 FIX-002：wait_ready 返回值必须参与 start success 判定——
-            # 初始化超时（线程可能仍 alive 但未 ready）不得视为 healthy
-            ready = self.listener.wait_ready(LISTENER_READY_TIMEOUT)
-            err = self.listener.error()
-            if err is not None:
-                if show_error:
-                    ui.show_error(
-                        "AAF Bridge — 热键冲突",
-                        f"{err}\n请在 ~/.aaf-bridge/config.json 修改 hotkey 后等待配置热加载。",
-                    )
-                return
-            if not ready:
-                # 初始化未在限时内就绪：不 reset recovery/backoff、不报告 healthy；
-                # 尽力停止未就绪的 listener（未确认退出时保留引用 → recovery pending）
-                _log(
-                    "AAF Bridge: 热键监听线程未能在限时内就绪（初始化超时），"
-                    "视为启动失败，不重置恢复策略，进入 DEGRADED 恢复流程。"
+        # 先停止旧 listener 并确认退出，才允许创建新 listener（stop-before-replace）
+        if not self._stop_listener():
+            return  # fail safe：旧 listener 未确认退出 → 不启动 replacement
+        self.listener = HotkeyListener(mods, vk, self._on_hotkey, self.hotkey_id)
+        self.listener.start()
+        # RW-012 FIX-002：wait_ready 返回值必须参与 start success 判定——
+        # 初始化超时（线程可能仍 alive 但未 ready）不得视为 healthy
+        ready = self.listener.wait_ready(LISTENER_READY_TIMEOUT)
+        err = self.listener.error()
+        if err is not None:
+            if show_error:
+                ui.show_error(
+                    "AAF Bridge — 热键冲突",
+                    f"{err}\n请在 ~/.aaf-bridge/config.json 修改 hotkey 后等待配置热加载。",
                 )
-                self._stop_listener()
+            return
+        if not ready:
+            # 初始化未在限时内就绪：不 reset recovery/backoff、不报告 healthy；
+            # 尽力停止未就绪的 listener（未确认退出时保留引用 → recovery pending）
+            _log(
+                "AAF Bridge: 热键监听线程未能在限时内就绪（初始化超时），"
+                "视为启动失败，不重置恢复策略，进入 DEGRADED 恢复流程。"
+            )
+            self._stop_listener()
+            return
+        # RW-012：成功应用（启动 / 热键变更 / 自动恢复）→ 恢复策略归零（允许重新自恢复）
+        self._recovery.reset()
+
+    def _run_lifecycle_transition(self) -> None:
+        """RW-012 FIX-004：delayed-exit recovery 的单一 lifecycle transition。
+
+        在同一个 _lifecycle_lock 临界区内完成完整状态转换（Requirement 1/5）：
+
+            old pending 确认退出
+            → 锁内 identity 重验证（pending/listener 双身份 + not alive）
+            → clear old ownership（listener=None / pending=None）
+            → rearm 恰好一次（新的有界 recovery epoch）
+            → eligibility 判定（health 分类 + should_attempt）
+            → reserve attempt（begin_attempt：后续触发 coalesce）
+            → exactly one replacement（_apply_hotkey_locked）
+
+        不再存在「cleanup lock → release → later eligibility → later
+        reacquire for create」的多段 ownership transition：cleanup 与
+        replacement start 之间不释放锁，`listener=None / pending=None /
+        rearmed 但 transition 未 reserved/owned` 的可竞争中间态在锁外不可见，
+        任何其他 lifecycle trigger 非阻塞获取锁失败即被合并。
+
+        rearm 只随真实 delayed-exit ownership release 发生（Requirement 7）；
+        listener=None / DEGRADED / 每次 poll 都不会自动 rearm（Requirement 8）。
+        主动退出（_shutting_down）时整体跳过：不清理、不 rearm、不启动
+        replacement（Requirement 13，退出不复活）。
+        """
+        if self._shutting_down:
+            return
+        with self._lifecycle_lock:
+            # 1) delayed-exit ownership release（锁内 identity 重验证 + 恰好一次 rearm）
+            self._delayed_exit_cleanup_locked()
+            # 2) eligibility + reserve + replacement（同一锁作用域，单一 creation authority）
+            status, _ = classify_bridge_health(
+                self.listener, self._pending_stop is not None
+            )
+            if status != HEALTH_DEGRADED:
                 return
-            # RW-012：成功应用（启动 / 热键变更 / 自动恢复）→ 恢复策略归零（允许重新自恢复）
-            self._recovery.reset()
-        finally:
-            self._lifecycle_lock.release()
+            if not self._recovery.should_attempt(time.monotonic()):
+                return
+            self._recovery.begin_attempt()  # reserve：后续触发 coalesce
+            try:
+                self._apply_hotkey_locked(show_error=False)
+                recovered = (
+                    classify_bridge_health(
+                        self.listener, self._pending_stop is not None
+                    )[0]
+                    == HEALTH_OK
+                )
+            except Exception:
+                recovered = False
+            if recovered:
+                self._recovery.record_success()
+                _log("AAF Bridge: hotkey listener 自动恢复成功。")
+            else:
+                self._recovery.record_failure(time.monotonic())
+                _log(
+                    "AAF Bridge: hotkey listener 自动恢复失败"
+                    f"（第 {self._recovery.consecutive_failures} 次）。"
+                    f"{self._recovery.note()}"
+                )
 
     def _current_health(self) -> tuple[str, str]:
         """健康判定 + 恢复状态说明（供 Tray / 状态窗口观察；失败必须可见）。"""
@@ -546,7 +656,13 @@ class Bridge:
         return status, detail
 
     def _try_recover_hotkey(self) -> bool:
-        """RW-012：仅重建 listener（不重启 Bridge）；失败不弹窗（状态可见即可）。"""
+        """RW-012：仅重建 listener（不重启 Bridge）；失败不弹窗（状态可见即可）。
+
+        FIX-004：生产恢复路径已收敛进 `_run_lifecycle_transition`（单一锁内
+        authority），本方法保留为外部触发入口（测试 / 其他调用方）——它仍
+        经 `_apply_hotkey` → `_apply_hotkey_locked` 汇入同一个 listener
+        creation authority，不存在第二套创建逻辑。
+        """
         try:
             self._apply_hotkey(show_error=False)
         except Exception:
@@ -615,50 +731,26 @@ class Bridge:
         self.tray.set_health(status == HEALTH_OK, _HEALTH_LABELS.get(status, status), detail)
 
     def _poll_health(self) -> None:
-        """每 5s 健康轮询：DEGRADED → RW-012 有界自恢复（只重建 listener，不重启 Bridge）。
+        """每 5s 健康轮询：单一 lifecycle transition → Tray/状态窗口反映结果。
 
         - 主动退出（shutting_down）期间不触发恢复（退出不复活）
-        - 恢复进行中/已停止/backoff 期内重复触发被策略拒绝（无重复 listener / 无 tight loop）
+        - RW-012 FIX-004：恢复动作收敛为 `_run_lifecycle_transition()`——在同一
+          个 _lifecycle_lock 临界区内完成 delayed-exit cleanup（锁内 identity
+          重验证 + 恰好一次 rearm）→ eligibility 判定 → reserve → exactly one
+          replacement。不存在「cleanup 释放锁 → 锁外判定 → 再获取锁创建」的
+          多段 ownership transition 与可竞争 gap；恢复进行中 / 已停止 /
+          backoff 期内重复触发被策略拒绝（无重复 listener / 无 tight loop）
         - 失败保持在 Tray 图标 / Tooltip / 状态窗口可见（note 并入 detail）
-        - RW-012 FIX-002：pending 旧 listener 的迟延退出独立检测——即使恢复策略
-          处于 backoff / 已停止，旧 listener 一旦确认退出也必须清理 ownership
-          reference（不留死引用、不伪装 healthy）；随后按正常恢复策略决定是否
-          启动 exactly one replacement（不得因引用残留而永久卡死）
         """
         try:
             if not self._shutting_down:
-                # RW-012 FIX-003：delayed-exit check-and-clear 是受 lifecycle
-                # lock 保护的原子单元（锁内 identity 重验证 + rearm）；即使恢复
-                # 策略处于 backoff / 已停止，旧 listener 一旦确认退出也必须清理
-                # ownership reference（不留死引用、不伪装 healthy），随后按正常
-                # 恢复策略决定是否启动 exactly one replacement（不永久卡死）
-                self._delayed_exit_cleanup()
+                self._run_lifecycle_transition()
                 status, detail = classify_bridge_health(
                     self.listener, self._pending_stop is not None
                 )
-                if status == HEALTH_DEGRADED:
-                    if self._recovery.should_attempt(time.monotonic()):
-                        self._recovery.begin_attempt()
-                        try:
-                            recovered = self._try_recover_hotkey()
-                        except Exception:
-                            recovered = False
-                        if recovered:
-                            self._recovery.record_success()
-                            _log("AAF Bridge: hotkey listener 自动恢复成功。")
-                        else:
-                            self._recovery.record_failure(time.monotonic())
-                            _log(
-                                "AAF Bridge: hotkey listener 自动恢复失败"
-                                f"（第 {self._recovery.consecutive_failures} 次）。"
-                                f"{self._recovery.note()}"
-                            )
-                        status, detail = classify_bridge_health(
-                            self.listener, self._pending_stop is not None
-                        )
-                    note = self._recovery.note()
-                    if note:
-                        detail = f"{detail}；{note}" if detail else note
+                note = self._recovery.note()
+                if note and status == HEALTH_DEGRADED:
+                    detail = f"{detail}；{note}" if detail else note
                 self._last_health = status
                 if self.tray is not None:
                     self.tray.set_health(

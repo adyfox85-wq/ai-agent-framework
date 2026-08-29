@@ -210,17 +210,22 @@ def test_note_states_observable():
 
 
 def test_poll_health_recovers_dead_listener_exactly_once(monkeypatch):
-    """A/G：listener 意外退出 → 恢复尝试 → 恰好一个活跃 listener；健康 → 不无谓重启。"""
+    """A/G：listener 意外退出 → 恢复尝试 → 恰好一个活跃 listener；健康 → 不无谓重启。
+
+    FIX-004：恢复动作已收敛为单一锁内 lifecycle transition，`_poll_health` 的
+    恢复动作钩子为 `_apply_hotkey_locked`（唯一 creation authority 的 locked
+    变体；`_try_recover_hotkey` 已不再是 `_poll_health` 的调用点）。
+    """
     monkeypatch.setattr(bridge_main.time, "monotonic", _Clock().monotonic)
     b = _stub_bridge(listener=FakeListener(alive=False))
     calls = []
 
-    def recover():
+    def recover(show_error=True):
         calls.append(1)
         b.listener = FakeListener(alive=True)  # 恢复成功：重建 listener
         return True
 
-    b._try_recover_hotkey = recover
+    b._apply_hotkey_locked = recover
 
     b._poll_health()
     assert len(calls) == 1
@@ -236,7 +241,7 @@ def test_poll_health_no_recovery_when_healthy():
     """G：listener 健康 → 不无谓重启。"""
     b = _stub_bridge(listener=FakeListener(alive=True))
     calls = []
-    b._try_recover_hotkey = lambda: calls.append(1) or True
+    b._apply_hotkey_locked = lambda show_error=True: calls.append(1) or True
     b._poll_health()
     assert calls == []
 
@@ -245,7 +250,7 @@ def test_poll_health_no_recovery_when_shutting_down():
     """D/F：主动退出 / 退出期间 → 不触发恢复（不复活）。"""
     b = _stub_bridge(listener=FakeListener(alive=False), shutting_down=True)
     calls = []
-    b._try_recover_hotkey = lambda: calls.append(1) or True
+    b._apply_hotkey_locked = lambda show_error=True: calls.append(1) or True
     b._poll_health()
     assert calls == []
     # 轮询链仍被调度（退出确认取消时 Bridge 继续运行）
@@ -258,7 +263,7 @@ def test_poll_health_repeated_failure_bounded_three_then_stop(monkeypatch):
     monkeypatch.setattr(bridge_main.time, "monotonic", clock.monotonic)
     b = _stub_bridge(listener=FakeListener(alive=False))
     calls = []
-    b._try_recover_hotkey = lambda: calls.append(1) or False  # 恢复一直失败
+    b._apply_hotkey_locked = lambda show_error=True: calls.append(1) or False  # 恢复一直失败
 
     b._poll_health()  # t=1000：失败 #1 → 15s backoff
     assert len(calls) == 1
@@ -286,7 +291,7 @@ def test_poll_health_no_duplicate_trigger_while_recovering():
     """E：恢复进行中的重复触发被 coalesce（策略层 + 轮询层双重验证）。"""
     b = _stub_bridge(listener=FakeListener(alive=False))
     calls = []
-    b._try_recover_hotkey = lambda: calls.append(1) or False
+    b._apply_hotkey_locked = lambda show_error=True: calls.append(1) or False
     b._recovery.begin_attempt()  # 模拟一次恢复已在进行
     b._poll_health()
     assert calls == []  # 不重复发起

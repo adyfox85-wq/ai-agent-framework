@@ -36,8 +36,8 @@ Remote Sync: SYNCED（ahead/behind = 0/0；tracked tree clean）
 | 项 | 值 |
 |---|---|
 | Accepted Implementation Baseline | `1d3771fe8220e1b2e21c774840d680ec9f2dce61` |
-| Final Freeze Metadata Commit | docs-only 提交（PROJECT_STATE / backlog / policy / handoff；SHA 见 git tag `v0.4` 指向的提交，记录于 PROJECT_STATE §0 顶部） |
-| Git Tag | `v0.4`（lightweight，对齐仓库既有 `v0.2.0-rc1` 惯例；指向 final freeze/release commit，未覆盖任何已有 tag） |
+| Final Freeze Metadata Commit | `e3e54102afcc212e593f7d5d3b19481d12173ba6`（docs-only：PROJECT_STATE / backlog / policy / handoff；零功能代码；记录于 PROJECT_STATE §0 顶部） |
+| Git Tag | `v0.4` → `e3e54102afcc212e593f7d5d3b19481d12173ba6`（lightweight，对齐仓库既有 `v0.2.0-rc1` 惯例；指向 final freeze/release commit，未覆盖任何已有 tag） |
 | 冻结边界 | 无新功能代码；freeze 仅文档 / tag / release metadata |
 
 ## 4. Release Closure Matrix（Final Acceptance-002 确认）

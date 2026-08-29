@@ -39,8 +39,8 @@ Status: FROZEN / RELEASE READY
 Release Status: FROZEN（2026-08-29，AAF-v0.4-FREEZE-001 正式冻结；freeze 提交仅文档/tag metadata，零功能代码）
 Final Acceptance: PASS（AAF-v0.4-FINAL-ACCEPTANCE-002，2026-08-29：Codex APPROVE，Unresolved Issues = None）
 Accepted Implementation Baseline: 1d3771fe8220e1b2e21c774840d680ec9f2dce61
-Freeze Metadata Commit: 见 freeze 收尾提交（docs-only：PROJECT_STATE / backlog / policy / final handoff；SHA 记录于本文件最终版本与 git tag v0.4）
-Tag: v0.4 → freeze 收尾提交（lightweight，对齐 v0.2.0-rc1 惯例；指向 final freeze/release commit）
+Freeze Metadata Commit: e3e54102afcc212e593f7d5d3b19481d12173ba6（docs-only：PROJECT_STATE / backlog / policy / final handoff；零功能代码）
+Tag: v0.4 → e3e54102afcc212e593f7d5d3b19481d12173ba6（lightweight，对齐 v0.2.0-rc1 惯例；指向 final freeze/release commit）
 Next Development Line: post-v0.4 / v0.5 —— 仅在用户显式启动时才开启；仅使用 AAF 不自动进入 v0.5
 Known Deferred（v0.4 non-blocking）: RW-021（P2）、RW-028 / early validation diagnostics visibility（P2）、
   Windows 0x80000003 test-env observation（RW-029，NON-BLOCKING）、RW-023 / RW-025 等既有登记项

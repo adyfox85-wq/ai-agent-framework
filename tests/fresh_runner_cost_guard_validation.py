@@ -1,4 +1,4 @@
-"""AAF-v0.5-A0 fresh-runner validation driver（Run N+1，TASK: AAF-v0.5-A0-PAID-GUARD-001）。
+"""AAF-v0.5-A0 fresh-runner validation driver（Run N+1，TASK: AAF-v0.5-A0-PAID-GUARD-001 + FIX-002）。
 
 每个场景用**全新 python 进程**运行真实 runner（fresh_runner_wrapper.py），
 fake hermes.bat / codebuddy.bat 是真实 child process（argv marker 为调用证据）：
@@ -11,9 +11,19 @@ fake hermes.bat / codebuddy.bat 是真实 child process（argv marker 为调用�
   S5  paid + 其他 model 的授权       -> WAITING + BLOCKED + marker 缺失
   S6  无 env 覆盖 + config probe 失败  -> WAITING + BLOCKED + cost_class=COST_UNKNOWN + marker 缺失（fail closed）
 
+FIX-002 新增（Codex REQUEST_CHANGE 对抗场景）：
+  S7  伪装本地 URL（config probe 返回 base_url=https://localhost.evil.example/v1）
+                                      -> WAITING + BLOCKED + cost_class=PAID_OR_UNKNOWN + marker 缺失
+                                      （hostname/IP 语义，非 substring）
+  S8  AAF_COST_FREE_MODELS 声明付费模型 -> WAITING + BLOCKED + marker 缺失 + notes 记录"IGNORED"
+                                      （env 元数据不是权威 FREE 来源）
+  S9  同一授权值 replay（消费记录已存在）-> WAITING + BLOCKED + authorization_consumed=true + marker 缺失
+                                      （一次性：准入即消费；跨进程 replay 拒绝）
+
 用法：python tests/fresh_runner_cost_guard_validation.py
 退出码 = 失败场景数（0 = 全部通过）。运行时证据写入
-.aaf/AAF-v0.5-A0-PAID-GUARD-001/fresh-runner-validation/（不提交）。
+.aaf/<TASK-ID>/fresh-runner-validation/（不提交）；可用环境变量
+AAF_FRESH_EVIDENCE_ROOT 覆盖证据根目录。
 """
 from __future__ import annotations
 
@@ -25,12 +35,19 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from ai_agent_framework import cost_guard as cg  # noqa: E402
+
 WRAPPER = ROOT / "tests" / "fresh_runner_wrapper.py"
 FAKE_HERMES = ROOT / "tests" / "fake_hermes_cli.bat"
+FAKE_HERMES_EVIL_LOCAL = ROOT / "tests" / "fake_hermes_cli_evil_local.bat"
 FAKE_CODEBUDDY = ROOT / "tests" / "fake_codebuddy_cli.bat"
-EVIDENCE_ROOT = (
-    ROOT / ".aaf" / "AAF-v0.5-A0-PAID-GUARD-001" / "fresh-runner-validation"
-)
+DEFAULT_EVIDENCE_ROOT = ROOT / ".aaf" / "AAF-v0.5-A0-PAID-GUARD-001" / "fresh-runner-validation"
+EVIDENCE_ROOT = Path(
+    os.environ.get("AAF_FRESH_EVIDENCE_ROOT", "").strip() or DEFAULT_EVIDENCE_ROOT
+).resolve()  # resolve：fake bin / marker 路径必须是绝对路径（子进程 cwd=ws，相对路径会解析失败）
 
 TASK_ID = "AAF-FRESH-GUARD-001"
 TASK_TEXT = f"""# Task ID
@@ -124,14 +141,63 @@ SCENARIOS = [
         },
         "env": {},  # 无 env 覆盖 → config probe（fake hermes 对 config 返回 exit 1）→ 无法解析
     },
+    {
+        "id": "S7-fake-local-url-blocked",
+        "expect": {
+            "status": "WAITING",
+            "decision": "BLOCKED_COST_APPROVAL",
+            "cost_class": "PAID_OR_UNKNOWN",
+            "marker": False,
+            "cost_metadata_contains": "localhost.evil.example",
+        },
+        # 无 env 覆盖 → config probe 返回 paid model + 伪装本地 base_url
+        # （旧 substring 实现会把 https://localhost.evil.example/v1 判为 LOCAL_FREE）
+        "env": {},
+        "fake_hermes": FAKE_HERMES_EVIL_LOCAL,
+    },
+    {
+        "id": "S8-free-env-ignored-blocked",
+        "expect": {
+            "status": "WAITING",
+            "decision": "BLOCKED_COST_APPROVAL",
+            "cost_class": "PAID_OR_UNKNOWN",
+            "marker": False,
+            "notes_contain": "IGNORED",
+        },
+        # AAF_COST_FREE_MODELS 声明远程付费模型 → 仍然 BLOCKED（不是权威 FREE 来源）
+        "env": {
+            "AAF_HERMES_MODEL": "deepseek-v4-flash",
+            "AAF_HERMES_PROVIDER": "deepseek",
+            "AAF_COST_FREE_MODELS": "deepseek-v4-flash@deepseek,deepseek-v4-flash",
+        },
+    },
+    {
+        "id": "S9-auth-replay-blocked",
+        "expect": {
+            "status": "WAITING",
+            "decision": "BLOCKED_COST_APPROVAL",
+            "cost_class": "PAID_OR_UNKNOWN",
+            "marker": False,
+            "authorization_consumed": True,
+        },
+        # pre_consume：驱动先用生产消费函数写消费记录（模拟 admission #1 已发生），
+        # 再用同一授权值运行真实 runner → 一次性语义拒绝 replay（跨进程实证）。
+        "pre_consume": True,
+        "env": {
+            "AAF_HERMES_MODEL": "deepseek-v4-flash",
+            "AAF_HERMES_PROVIDER": "deepseek",
+            "AAF_COST_AUTH": f"{TASK_ID}|hermes|deepseek-v4-flash|deepseek",
+        },
+    },
 ]
 
 
-def _spawn_fresh_runner(scenario_dir: Path, env: dict) -> subprocess.CompletedProcess:
+def _spawn_fresh_runner(scenario: dict, scenario_dir: Path) -> subprocess.CompletedProcess:
     fake_bin = scenario_dir / "fakebin"
     fake_bin.mkdir(parents=True, exist_ok=True)
-    shutil.copy(FAKE_HERMES, fake_bin / "hermes.bat")
+    shutil.copy(scenario.get("fake_hermes", FAKE_HERMES), fake_bin / "hermes.bat")
     shutil.copy(FAKE_CODEBUDDY, fake_bin / "codebuddy.bat")
+    env = scenario["env"]
 
     task_file = scenario_dir / "TASK.md"
     task_file.write_text(TASK_TEXT, encoding="utf-8")
@@ -161,12 +227,23 @@ def _spawn_fresh_runner(scenario_dir: Path, env: dict) -> subprocess.CompletedPr
 def _run_scenario(scenario: dict, root: Path) -> tuple[bool, list[str]]:
     sid = scenario["id"]
     expect = scenario["expect"]
+    env = scenario["env"]
     scenario_dir = root / sid
     if scenario_dir.exists():
         shutil.rmtree(scenario_dir)
     scenario_dir.mkdir(parents=True)
 
-    proc = _spawn_fresh_runner(scenario_dir, scenario["env"])
+    # S9 replay：先用生产消费函数写入消费记录（admission #1 已发生的等价状态），
+    # 再运行真实 runner —— 一次性语义必须在跨进程下拒绝同一授权值。
+    if scenario.get("pre_consume"):
+        auth = env["AAF_COST_AUTH"]
+        scope = auth
+        out_dir = scenario_dir / "out"
+        ok, err = cg._consume_auth(auth, scope, out_dir)
+        if not ok:
+            return False, [f"pre_consume failed: {err}"]
+
+    proc = _spawn_fresh_runner(scenario, scenario_dir)
     out_dir = scenario_dir / "out"
     failures: list[str] = []
 
@@ -188,6 +265,18 @@ def _run_scenario(scenario: dict, root: Path) -> tuple[bool, list[str]]:
     _check("guard.decision", guard["decision"] == expect["decision"], guard["decision"])
     if "cost_class" in expect:
         _check("guard.cost_class", guard["cost_class"] == expect["cost_class"], guard["cost_class"])
+    if "cost_metadata_contains" in expect:
+        meta = json.dumps(guard.get("cost_metadata") or {}, ensure_ascii=False)
+        _check("guard.cost_metadata", expect["cost_metadata_contains"] in meta, meta[:300])
+    if "notes_contain" in expect:
+        notes = " | ".join(guard.get("notes") or [])
+        _check("guard.notes", expect["notes_contain"] in notes, notes[:300])
+    if "authorization_consumed" in expect:
+        _check(
+            "guard.authorization_consumed",
+            guard.get("authorization_consumed") is expect["authorization_consumed"],
+            f"authorization_consumed={guard.get('authorization_consumed')}",
+        )
     if "marker" in expect:
         if expect["marker"]:
             _check("hermes.spawned", marker_text is not None, "marker missing — Hermes subprocess was not created")
@@ -208,6 +297,10 @@ def _run_scenario(scenario: dict, root: Path) -> tuple[bool, list[str]]:
         "guard_required_scope": guard.get("required_scope"),
         "guard_authorization_present": guard.get("authorization_present"),
         "guard_authorization_matched": guard.get("authorization_matched"),
+        "guard_authorization_consumed": guard.get("authorization_consumed"),
+        "guard_cost_metadata": guard.get("cost_metadata"),
+        "guard_notes": guard.get("notes"),
+        "consumption_marker_exists": (out_dir / cg.CONSUMPTION_FILENAME).exists(),
         "hermes_marker_exists": marker_text is not None,
         "hermes_marker": marker_text,
         "hermes_result_head": hermes_md[:300],

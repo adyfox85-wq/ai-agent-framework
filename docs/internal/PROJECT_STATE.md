@@ -38,17 +38,22 @@
 
 ``` text
 Version: v0.5（IN PROGRESS）
-A0 Delivered: Hermes Paid Guard（fail-closed task-scoped cost authorization）—— 2026-08-29
+A0 Delivered: Hermes Paid Guard（fail-closed task-scoped cost authorization）—— 2026-08-29（FIX-002 修复后）
   - 实现：ai_agent_framework/cost_guard.py + runner 预调用 guard（subprocess 创建前）
     + adapters 透传（AAF_HERMES_MODEL / AAF_HERMES_PROVIDER → -m / --provider）
-  - 授权：AAF_COST_AUTH="<Task ID>|<stage>|<model>[|<provider>]"（整串精确匹配；env per-run 一次性）
-  - FREE 元数据：AAF_COST_FREE_MODELS（显式声明；未知成本绝不视为免费）
+  - 授权：AAF_COST_AUTH="<Task ID>|<stage>|<model>[|<provider>]"（整串精确匹配；
+    FIX-002 起准入即消费——in-process + 执行目录 cost_auth_consumed.json，replay 拒绝）
+  - 本地判定（FIX-002）：base_url 解析后 hostname = exact localhost / loopback IP
+    （127.0.0.0/8、::1）或 verified local Ollama；substring 匹配已移除（fail-closed）
+  - FREE 元数据（FIX-002）：AAF_COST_FREE_MODELS 不再是权威 FREE 来源（A0 无远程
+    FREE registry），设置即忽略并记录诊断 note
   - 机器可读决策：cost_guard.json（ALLOWED_FREE / ALLOWED_AUTHORIZED_PAID / BLOCKED_COST_APPROVAL）
   - blocked → Hermes 进程零创建 + 任务 WAITING（COST_APPROVAL_REQUIRED）
   - Hermes 全局 config 零修改；无网络/LLM 调用用于决策
-  - 证据：34 项定向测试 + 全量 non-GUI 1323 passed（1289 基线 + 34 新增，零下降）
-    + fresh-runner Run N+1 6/6 场景（见 docs/internal/AAF-v0.5-A0-PAID-GUARD-001-REPORT.md）
-Status: IN PROGRESS（A0 交付；正式 COMPLETE 判定留待 WorkBuddy 独立验证 + Codex 审查 + Planner 确认）
+  - 证据：FIX-002 定向对抗测试（test_cost_guard.py + test_cost_guard_fix002.py 52 项）
+    + 全量 non-GUI 回归 + fresh-runner Run N+1 9 场景
+    （见 docs/internal/AAF-v0.5-A0-PAID-GUARD-001-REPORT.md §FIX-002）
+Status: IN PROGRESS（A0 FIX-002 已修复；正式 COMPLETE 判定留待 WorkBuddy 复验 + Codex re-review + Planner 确认）
 Next (A1+): Hermes candidate Tier registry / Selection Engine / Shadow Routing / WorkBuddy 经济路由 /
   Codex 成本优化 / 精确计价 / Cost Gate UX（本任务显式不做）
 ```

@@ -486,7 +486,12 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                         # 精确 task-scoped 授权时 → BLOCKED_COST_APPROVAL（Hermes 不启动，
                         # blocked 文本以 FRAMEWORK_ERROR 开头 → 链中断 → WAITING；
                         # resume 时不会把 blocked result 当已完成结果复用）。
-                        guard_record = cost_guard_mod.evaluate(task_id, agent)
+                        # FIX-002：state_dir=output_dir —— 一次性授权在准入边界
+                        # 消费（cost_auth_consumed.json），同 execution 上下文内
+                        # 同一授权值不可 replay（fail closed）。
+                        guard_record = cost_guard_mod.evaluate(
+                            task_id, agent, state_dir=output_dir
+                        )
                         (output_dir / cost_guard_mod.ARTIFACT_FILENAME).write_text(
                             json.dumps(guard_record, ensure_ascii=False, indent=2),
                             encoding='utf-8',

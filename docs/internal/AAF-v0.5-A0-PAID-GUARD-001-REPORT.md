@@ -2,8 +2,10 @@
 
 > Task: v0.5 A0 Hermes Paid Guard — Fail-Closed Task-Scoped Cost Authorization
 > Executor: Hermes（AAF Executor stage）2026-08-29
-> Status: IMPLEMENTED (A0) — 正式 COMPLETE 判定留待 WorkBuddy 独立验证 + Codex 审查 + Planner 确认
-> 实现证据（Run N）：本文件 + 定向/全量测试 + 单测；运行时证据（Run N+1）：fresh-runner 6/6 场景
+> Status: IMPLEMENTED (A0) — **Codex 审查 = REQUEST_CHANGE → FIX-002 已修复全部三个 blocking fail-open 发现（见文末 §12 FIX-002 修订说明）**；正式 COMPLETE 判定留待 WorkBuddy 独立复验 + Codex re-review + Planner 确认
+> 实现证据（Run N）：本文件 + 定向/全量测试 + 单测；运行时证据（Run N+1）：fresh-runner 9/9 场景（FIX-002）
+
+> ⚠️ **FIX-002 修订**：本文 §2/§4/§5 中关于「0.0.0.0 视为本地」「AAF_COST_FREE_MODELS 为权威 FREE 元数据」「env 天然 per-run 一次性」的原始表述已被 FIX-002 推翻，以 §12 为准。
 
 ---
 
@@ -138,3 +140,86 @@ self-hosting 边界：本任务由当前 Run N（实现前启动的 runner 进�
 - git status：实现前基线 = main @ 5bdefa6（v0.4 freeze metadata）；本次变更仅新增/修改上述实现文件（`.aaf/` 运行时证据保持 untracked，按 RW-017 现状不清理不提交）。
 - commit：`3a0f72595de4832c887cb45466c67b2f60a959f6`（feat(v0.5-A0): Hermes Paid Guard — fail-closed task-scoped cost authorization，TASK: AAF-v0.5-A0-PAID-GUARD-001）。
 - Remote Sync：**SYNCED**（`git push origin main` 成功：`5bdefa6..3a0f725 main -> main`；ahead-behind 0/0）。
+
+---
+
+## 12. FIX-002 修订说明（TASK: AAF-v0.5-A0-PAID-GUARD-001-FIX-002，2026-08-29）
+
+Codex 最终审查（codex_result.md）对父任务给出 REQUEST_CHANGE，三个 blocking 发现全部属于 A0，
+FIX-002 一次性关闭（未扩张到 A1）：
+
+### 12.1 阻断 #1：本地端点判定从 substring 改为 hostname/IP 严格语义（fail-closed）
+
+- 原实现：`any(h in base_url for h in ("127.0.0.1","localhost","0.0.0.0"))` ——
+  `https://localhost.evil.example/v1`、`https://api.example/127.0.0.1/v1`、
+  `https://notlocalhost.example/v1` 均被误判 LOCAL_FREE（可复现 fail-open）。
+- 新实现：`cost_guard._endpoint_is_local()` 用 `urllib.parse.urlsplit` 解析真实 hostname：
+  - LOCAL_FREE 仅当 hostname == exact `localhost`（大小写不敏感）或为合法 IP 且
+    `ipaddress.is_loopback` 为真（IPv4 127.0.0.0/8 全段、IPv6 `::1`、IPv4-mapped loopback）。
+  - 一律拒绝：非 http(s) scheme、无 hostname、非法 port、非 exact localhost 域名
+    （localhost.evil.example / notlocalhost.example / 127.0.0.1.evil.com）、合法但非 loopback 的 IP
+    （含 0.0.0.0 bind 通配地址 —— 无既有架构安全理由，fail closed）、path/query 中的本地字样、
+    畸形/歧义 endpoint（无法安全建立真实 hostname）。
+  - ollama 语义保留：provider=ollama 且无 base_url → LOCAL_FREE（verified local Ollama）；
+    有 base_url 时一律走端点判定。
+
+### 12.2 阻断 #2：移除 AAF_COST_FREE_MODELS 权威 FREE 路径
+
+- 原实现：进程环境变量 `AAF_COST_FREE_MODELS` 被当作权威 FREE 元数据，`paid-model` 可无授权
+  变为 ALLOWED_FREE（跨任务模型级全局 bypass）。
+- 新实现：A0 没有任何远程 FREE 权威 —— `classify_cost` 不再接受 FREE 元数据参数；
+  `COST_FREE` 分类被移除；`AAF_COST_FREE_MODELS` 若被设置，仅在 cost_guard.json 的 notes 中
+  记录「IGNORED：A0 无可信远程 FREE registry，用户可控 env 元数据不是权威 FREE 证据」。
+  远程/API 模型一律 PAID_OR_UNKNOWN（需精确一次性授权）；本地路径（LOCAL_FREE）不受影响。
+  A1 Registry 不在本 FIX 内实现（不得用另一个同等不可信的 bypass 替换）。
+
+### 12.3 阻断 #3：授权改为准入即消费的真一次性（replay 拒绝，fail-closed）
+
+- 原实现：`AAF_COST_AUTH` 只读比较、永不消费；同 Task/stage/model 的后续 execution 可重复放行。
+- 新实现：`evaluate()` 在准入边界消费授权 ——
+  - in-process 集合 `_CONSUMED_AUTHS`：同进程内重复/再入 evaluate → 第二次 BLOCKED；
+  - 执行目录内消费记录 `cost_auth_consumed.json`（sha256 指纹 + scope + 时间戳）：
+    跨进程 resume/re-entry 同一 execution 上下文 → BLOCKED（replay 拒绝）；
+  - 消费状态不确定（marker 不可读/损坏）→ fail closed（视为已消费）；
+  - 消费持久化失败 → fail closed（BLOCKED，不静默放行）；
+  - 未匹配的授权不产生任何消费记录（不误锁后续正确授权）；
+  - scope 语义不变：Task ID + stage + model（+provider）整串精确匹配；无关 Task/model/stage 仍 blocked。
+  - runner 传入 `state_dir=output_dir`（execution 目录），消费发生在 run_agent 之前
+    （Hermes subprocess 创建之前）。
+- 恢复语义（fail-closed 的必然结果）：同一 execution 目录内、同 scope 的授权消费后不可再准入；
+  恢复 = 新 execution（新目录）重新提交并重新设置授权。blocked 文本已如实说明。
+
+### 12.4 新增/修订测试（Requirement 7 对抗矩阵）
+
+- `tests/test_cost_guard_fix002.py`（新增 20 项）：伪装本地 URL 全矩阵（localhost.evil.example /
+  notlocalhost.example / path/query 内嵌 127.0.0.1 与 localhost / 127.0.0.1.evil.example /
+  0.0.0.0 / 8.8.8.8 / userinfo 伪装 / ollama+伪装 URL）、畸形/歧义 endpoint fail-closed
+  （无 scheme / 无 hostname / 非法 port / 非 http(s) / 非法 IPv6）、exact localhost 与 loopback
+  IP 变体（127.0.0.0/8、::1、长写、IPv4-mapped）、FREE env 声明远程付费模型仍 BLOCKED +
+  IGNORED note、本地路径不受 FREE env 干扰、一次性授权（首准入 allowed / 同值 replay blocked /
+  fresh-process 等价 replay blocked / 消费后任何值不可再准入 / 消费状态不确定 fail closed /
+  未匹配不消费 / 畸形授权 blocked / runner 集成 replay blocked / blocked 文本含一次性说明）。
+- `tests/test_cost_guard.py` 修订：移除 FREE 元数据分类测试（COST_FREE 已删除），
+  `AAF_COST_FREE_MODELS` 声明付费模型 → BLOCKED + IGNORED note；其余 A–G 矩阵保持。
+- fresh-runner 新增对抗场景 S7（config probe 返回 `base_url=https://localhost.evil.example/v1`
+  → BLOCKED + PAID_OR_UNKNOWN + hermes 未 spawn）、S8（FREE env 声明付费模型 → BLOCKED +
+  IGNORED + hermes 未 spawn）、S9（授权已消费后同一 execution 上下文再准入 → BLOCKED +
+  authorization_consumed=true + hermes 未 spawn）。
+
+### 12.5 FIX-002 验证证据
+
+- 定向：`python -m pytest tests/test_cost_guard.py tests/test_cost_guard_fix002.py -q` → **52 passed**（原 34 项 A–G 矩阵修订 + 20 项 FIX-002 对抗新增）。
+- 全量 non-GUI 回归：分块复跑（单进程连跑触发既有 RW-029 环境 flake，与父任务同款处理）——
+  `pytest -q --deselect <3 个线程型文件>` → **1321 passed / 1 skipped / 29 deselected**；
+  3 个线程型文件单独 → **20 passed**；合计 **1341 passed + 1 skipped**（1289 v0.4 基线 + 52 定向，零下降）。
+- fresh-runner Run N+1（FIX-002 代码 + 全新 python 进程跑真实 runner）：**9/9 场景 passed**
+  （S1–S6 原 6 场景保持 + S7 伪装本地 URL / S8 FREE env 声明 / S9 授权 replay 三个对抗场景新增）；
+  运行时证据存于 `.aaf/AAF-v0.5-A0-PAID-GUARD-001-FIX-002/fresh-runner-validation/`（不提交）：
+  - S7：`base_url=https://localhost.evil.example/v1` → BLOCKED_COST_APPROVAL / PAID_OR_UNKNOWN
+    （evidence 明示 hostname 非 exact localhost、substring 不作为证据）/ hermes 未 spawn；
+  - S8：`AAF_COST_FREE_MODELS=deepseek-v4-flash@deepseek,...` → BLOCKED / PAID_OR_UNKNOWN
+    / notes 记录 IGNORED / hermes 未 spawn；
+  - S9：授权已消费后同一 execution 上下文再准入 → BLOCKED / authorization_consumed=true
+    / consumption marker 存在 / hermes 未 spawn。
+- 提交：FIX-002 commit SHA 见 git log（同步至 origin/main）。
+- 状态：A0 修复完成；**Codex re-review 通过前 A0 不得标记 CLOSED**；A1 未启动。

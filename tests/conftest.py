@@ -40,4 +40,6 @@ def _hermetic_cost_guard(monkeypatch):
     monkeypatch.setattr(cg, "resolve_effective_hermes", lambda: dict(_HERMETIC_RESOLUTION))
     for env in (cg.ENV_MODEL, cg.ENV_PROVIDER, cg.ENV_AUTH, cg.ENV_FREE_MODELS):
         monkeypatch.delenv(env, raising=False)
+    # 一次性授权 in-process 消费状态：每个测试独立（无跨测试泄漏）
+    cg._CONSUMED_AUTHS.clear()
     return cg

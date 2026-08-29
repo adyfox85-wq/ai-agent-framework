@@ -109,17 +109,16 @@ def test_classify_never_infers_free_from_model_name():
     assert cls == cg.COST_PAID_OR_UNKNOWN
 
 
-def test_classify_explicit_free_metadata_bare_model():
-    cls, _ = cg.classify_cost("free-model-a", "deepseek", None, free_entries=["free-model-a"])
-    assert cls == cg.COST_FREE
-
-
-def test_classify_explicit_free_metadata_model_at_provider():
-    cls, _ = cg.classify_cost("free-model-a", "deepseek", None, free_entries=["free-model-a@deepseek"])
-    assert cls == cg.COST_FREE
-    # 同模型不同 provider → 不匹配（provider-scoped 声明）
-    cls2, _ = cg.classify_cost("free-model-a", "other-provider", None, free_entries=["free-model-a@deepseek"])
-    assert cls2 == cg.COST_PAID_OR_UNKNOWN
+def test_classify_no_remote_free_authority_fix002():
+    # FIX-002：A0 无权威远程 FREE registry —— 用户可控环境元数据不产生远程 FREE。
+    # classify_cost 已移除 free_entries 参数；远程/API 模型一律 PAID_OR_UNKNOWN。
+    for model, provider, url in (
+        ("free-model-a", "deepseek", None),
+        ("deepseek-v4-flash", "deepseek", "https://api.example/v1"),
+        ("free-trial-llm", "some-api", None),
+    ):
+        cls, _ = cg.classify_cost(model, provider, url)
+        assert cls == cg.COST_PAID_OR_UNKNOWN, (model, provider, url)
 
 
 def test_classify_none_model_is_cost_unknown():
@@ -166,12 +165,15 @@ def test_a_local_free_model_allowed(monkeypatch):
     assert rec["required_scope"] is None
 
 
-def test_a_explicit_free_metadata_allowed(monkeypatch):
+def test_a_free_env_declaration_does_not_allow_remote_paid(monkeypatch):
+    """FIX-002（Codex BLOCKING #2）：AAF_COST_FREE_MODELS 声明远程付费模型 →
+    无授权仍 BLOCKED；FREE env 仅记录为忽略，绝不参与分类。"""
     monkeypatch.setattr(cg, "resolve_effective_hermes", lambda: _paid_resolution())
     monkeypatch.setenv(cg.ENV_FREE_MODELS, "deepseek-v4-flash@deepseek")
     rec = cg.evaluate("T1", "hermes")
-    assert rec["decision"] == cg.DECISION_ALLOWED_FREE
-    assert rec["cost_class"] == cg.COST_FREE
+    assert rec["decision"] == cg.DECISION_BLOCKED_COST_APPROVAL
+    assert rec["cost_class"] == cg.COST_PAID_OR_UNKNOWN
+    assert any("IGNORED" in n for n in rec["notes"])
 
 
 def test_b_paid_without_authorization_blocked(monkeypatch):

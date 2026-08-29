@@ -17,16 +17,22 @@ closed——Hermes 进程不启动，任务进入 WAITING（COST_APPROVAL_REQUIR
 7. 缓存/本地决策快速（决策耗时记录于 cost_guard.json 的 decision_ms）。
 8. 不构建 Registry / Selection Engine（A1+ 范围）。
 
-成本分类（刻意最小）：
-- LOCAL_FREE：provider base_url 明确指向本机（127.0.0.1 / localhost / 0.0.0.0），
-  或 provider == ollama 且无远程 base_url（verified local Ollama）。
-- FREE：仅当 AAF 有**显式权威 FREE 元数据**（``AAF_COST_FREE_MODELS`` 环境变量，
-  条目为精确 model 或 model@provider）。绝不根据模型名猜测免费。
-- PAID_OR_UNKNOWN：任何不能证明为 FREE/LOCAL_FREE 的远程/API 模型。
+成本分类（刻意最小；FIX-002 修订）：
+- LOCAL_FREE：provider base_url **解析后的真实 hostname** 明确为本机
+  （exact 'localhost' 或 loopback IP —— IPv4 127.0.0.0/8、IPv6 ::1；substring
+  匹配已移除，fail-closed），或 provider == ollama 且无 base_url（verified
+  local Ollama）。
+- PAID_OR_UNKNOWN：任何不能证明为 LOCAL_FREE 的远程/API 模型（默认）。A0 没有
+  真正的权威远程 FREE registry —— 用户可控环境变量（``AAF_COST_FREE_MODELS``）
+  不再作为权威 FREE 来源，一律忽略（诊断 note 保留）。
+- COST_UNKNOWN（内部）：effective model 无法解析（fail closed）。
 
-授权表示（为何最小）：单环境变量 + 整串精确匹配。不引入文件子系统 / 数据库 /
-长生命周期 token：env 只存在于发起进程，天然一次性（per-run）、无法被 runner
-持久化自授权、Task ID 在 scope 内 → 对其他任务天然失效（不泄漏到后续任务）。
+授权表示（为何最小；FIX-002 修订）：单环境变量 + 整串精确匹配 + **准入即消费**。
+不引入数据库 / 审批服务 / 长生命周期 token：env 只存在于发起进程；精确匹配成功后
+授权立即被消费（in-process 集合 + 执行目录内消费记录 ``cost_auth_consumed.json``），
+同一授权值在同一执行上下文内不可二次准入（replay 拒绝、fail closed）；Task ID 在
+scope 内 → 对其他任务天然失效（不泄漏到后续任务）；消费状态不确定 → fail closed。
+
 
 Hermes 全局 config 不被本模块修改（只读查询 ``hermes config get model`` 是
 解析 effective model 的 fallback；env 覆盖优先）。
@@ -36,6 +42,8 @@ Hermes 全局 config 不被本模块修改（只读查询 ``hermes config get mo
 
 from __future__ import annotations
 
+import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -45,6 +53,7 @@ import time
 import winreg
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .subprocess_utils import no_console_kwargs
 
@@ -62,13 +71,13 @@ ENV_MODEL = "AAF_HERMES_MODEL"
 ENV_PROVIDER = "AAF_HERMES_PROVIDER"
 # 一次性显式授权：整串精确匹配 "<task_id>|<stage>|<model>[|<provider>]"
 ENV_AUTH = "AAF_COST_AUTH"
-# 显式权威 FREE 元数据：逗号分隔；条目 = 精确 model 或 model@provider。
-# 缺省 = 没有任何模型被声明为 FREE（UNKNOWN 不视为 FREE）。
+# AAF_COST_FREE_MODELS：**不是**权威 FREE 来源（A0 无可信远程 FREE registry）。
+# 保留常量仅用于诊断——若被设置，evaluate() 在 notes 里明确记录"已忽略"。
+# 任何用户可控环境变量都不得把远程付费模型变成 ALLOWED_FREE（FIX-002）。
 ENV_FREE_MODELS = "AAF_COST_FREE_MODELS"
 
-# --- 成本分类（A0 刻意最小） ---
+# --- 成本分类（A0 刻意最小；FIX-002：无远程 FREE 分类） ---
 COST_LOCAL_FREE = "LOCAL_FREE"
-COST_FREE = "FREE"
 COST_PAID_OR_UNKNOWN = "PAID_OR_UNKNOWN"
 COST_UNKNOWN = "COST_UNKNOWN"  # 内部：effective model 无法解析（fail closed）
 
@@ -84,10 +93,14 @@ MODEL_SOURCE_ENV = "env_override"
 MODEL_SOURCE_CONFIG = "hermes_config"
 MODEL_SOURCE_UNKNOWN = "unknown"
 
-_LOCAL_HOST_HINTS = ("127.0.0.1", "localhost", "0.0.0.0")
 _OLLAMA_PROVIDER = "ollama"
 
 _SEPARATOR = "|"
+
+# 一次性授权消费：in-process 集合 + 执行目录内消费记录文件（见 _consume_auth）。
+# 不构建数据库 / 审批服务 / 永久子系统（A0 最小；消费状态不确定 → fail closed）。
+CONSUMPTION_FILENAME = "cost_auth_consumed.json"
+_CONSUMED_AUTHS: set[str] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -232,68 +245,97 @@ def resolve_effective_hermes() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 成本分类（A0 刻意最小；绝不根据模型名推断免费）
+# 成本分类（A0 刻意最小；FIX-002：严格 hostname/IP 语义 + 无远程 FREE 权威）
 # ---------------------------------------------------------------------------
 
 
-def _parse_free_models(raw: str | None) -> list[str]:
-    """解析 AAF_COST_FREE_MODELS：逗号分隔；条目 = 精确 model 或 model@provider。"""
-    if not raw:
-        return []
-    return [e.strip() for e in raw.split(",") if e.strip()]
+def _endpoint_is_local(base_url: str | None) -> tuple[bool, str]:
+    """严格本地端点判定（fail-closed；FIX-002 替代原 substring 匹配）。
 
+    只依据 URL **解析后的真实 hostname**（``urllib.parse.urlsplit``）：
+    接受（LOCAL_FREE）：
+    - hostname == 'localhost'（urlsplit 已小写化 → 大小写不敏感、exact 匹配）
+    - hostname 为合法 IP 且 ``ipaddress.is_loopback`` 为真
+      （IPv4 127.0.0.0/8 全段、IPv6 ::1 等标准 loopback 语义）
 
-def _free_list_match(free_entries: list[str], model: str, provider: str | None) -> bool:
-    """FREE 元数据精确匹配：裸 model 或 model@provider 形式。"""
-    if model in free_entries:
-        return True
-    if provider and f"{model}@{provider}" in free_entries:
-        return True
-    return False
+    一律拒绝（NOT local → PAID_OR_UNKNOWN，fail closed）：
+    - 无 base_url / 无法解析 / 无 hostname / 非 http(s) scheme / 非法 port
+    - 形似本地的域名但非 exact 'localhost'（localhost.evil.example、
+      notlocalhost.example、127.0.0.1.evil.com …）
+    - 合法 IP 但非 loopback（0.0.0.0 是 bind 通配地址、8.8.8.8 等 → 非权威
+      本地证据，fail closed）
+    - path/query 中的 localhost / 127.0.0.1 字样（hostname 才是判定依据）
+
+    返回 (is_local, evidence)。
+    """
+    if not base_url or not base_url.strip():
+        return False, "no base_url"
+    raw = base_url.strip()
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return False, f"unparseable base_url={raw!r}"
+    scheme = (parts.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return False, f"scheme={scheme!r} not http(s) — ambiguous endpoint"
+    host = parts.hostname  # 已小写化、已去 []；缺省 None
+    if not host:
+        return False, f"no hostname in base_url={raw!r}"
+    try:
+        _ = parts.port  # 非法 port（99999 / 非数字）→ ValueError → fail closed
+    except ValueError:
+        return False, f"invalid port in base_url={raw!r}"
+    if host == "localhost":
+        return True, f"exact hostname 'localhost' (case-insensitive) in {raw!r}"
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False, (
+            f"hostname={host!r} is neither exact 'localhost' nor a valid IP — "
+            "remote/ambiguous; substring occurrence in URL is not evidence"
+        )
+    if addr.is_loopback:
+        return True, f"loopback IP {host} (ipaddress.is_loopback) in {raw!r}"
+    return False, f"hostname={host!r} is a valid IP but NOT loopback — remote"
 
 
 def classify_cost(
     model: str | None,
     provider: str | None,
     base_url: str | None,
-    free_entries: list[str] | None = None,
 ) -> tuple[str, dict | None]:
-    """A0 最小成本分类 → (cost_class, cost_metadata)。
+    """A0 最小成本分类 → (cost_class, cost_metadata)。FIX-002：无远程 FREE 分类。
 
-    - base_url 明确本机 → LOCAL_FREE（evidence 来自 endpoint，不是促销表）
-    - provider=ollama 且无远程 base_url → LOCAL_FREE（verified local Ollama；
-      有非本机 base_url 时 Ollama 可能服务远程 → PAID_OR_UNKNOWN，fail closed）
-    - 显式权威 FREE 元数据精确匹配 → FREE
-    - 其余远程/API 模型 → PAID_OR_UNKNOWN（UNKNOWN 不视为 FREE）
+    - base_url 存在 → 严格 hostname/IP 判定（本地 → LOCAL_FREE；否则
+      PAID_OR_UNKNOWN，fail closed）
+    - provider=ollama 且无 base_url → LOCAL_FREE（verified local Ollama）
+    - 其余远程/API 模型 → PAID_OR_UNKNOWN（A0 无权威远程 FREE 来源；
+      UNKNOWN 不视为 FREE）
     - model=None → COST_UNKNOWN（调用方 fail closed）
     """
     if model is None:
         return COST_UNKNOWN, {"evidence": "effective model unresolved"}
-    if base_url and any(h in base_url for h in _LOCAL_HOST_HINTS):
-        return COST_LOCAL_FREE, {
-            "evidence": f"provider base_url={base_url} (local endpoint)",
-            "note": "local inference; no per-token cash cost",
-        }
-    p = (provider or "").strip().lower()
-    if p == _OLLAMA_PROVIDER:
-        if not base_url:
+    if base_url:
+        is_local, evidence = _endpoint_is_local(base_url)
+        if is_local:
             return COST_LOCAL_FREE, {
-                "evidence": "provider=ollama with no base_url (verified local Ollama server)",
+                "evidence": f"provider base_url={base_url} ({evidence})",
                 "note": "local inference; no per-token cash cost",
             }
         return COST_PAID_OR_UNKNOWN, {
-            "evidence": f"provider=ollama but base_url={base_url} is non-local — "
-            "Ollama may be serving a remote endpoint; not verified local",
-            "note": "fail closed: not treated as local",
+            "evidence": f"base_url={base_url} not a verified local endpoint "
+            f"({evidence})",
+            "note": "fail closed: remote/ambiguous endpoint is never LOCAL_FREE",
         }
-    if _free_list_match(free_entries or [], model, provider):
-        return COST_FREE, {
-            "evidence": "explicit authoritative FREE metadata match",
-            "note": f"declared FREE via {ENV_FREE_MODELS}",
+    p = (provider or "").strip().lower()
+    if p == _OLLAMA_PROVIDER:
+        return COST_LOCAL_FREE, {
+            "evidence": "provider=ollama with no base_url (verified local Ollama server)",
+            "note": "local inference; no per-token cash cost",
         }
     return COST_PAID_OR_UNKNOWN, {
-        "evidence": "remote/API model with no authoritative FREE metadata",
-        "note": "UNKNOWN/paid cost is never treated as FREE",
+        "evidence": "remote/API model with no verified local endpoint",
+        "note": "A0 has no trusted remote FREE authority — PAID_OR_UNKNOWN (fail closed)",
     }
 
 
@@ -324,18 +366,89 @@ def _authorization_matches(auth: str | None, scope: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# 一次性授权消费（FIX-002；Codex BLOCKING #3）
+# ---------------------------------------------------------------------------
+
+
+def _auth_fingerprint(auth: str) -> str:
+    """授权值的稳定指纹（sha256；消费记录里不存放明文之外的等价标识）。"""
+    return hashlib.sha256(auth.encode("utf-8")).hexdigest()
+
+
+def _auth_consumed(auth: str, state_dir: str | os.PathLike | None) -> bool:
+    """auth 是否已被消费（in-process 集合 或 state_dir 内消费记录）。
+
+    消费状态不确定（记录损坏/读取失败）→ 视为已消费（fail closed）。
+    """
+    if auth in _CONSUMED_AUTHS:
+        return True
+    if state_dir is None:
+        return False
+    marker = Path(state_dir) / CONSUMPTION_FILENAME
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError, TypeError):
+        return True  # 读取失败/损坏 → 状态不确定 → fail closed
+    consumed_fp = data.get("consumed_auth_fingerprint")
+    if not isinstance(consumed_fp, str):
+        return True  # 记录损坏 → fail closed
+    return _auth_fingerprint(auth) == consumed_fp
+
+
+def _consume_auth(
+    auth: str, scope: str, state_dir: str | os.PathLike | None
+) -> tuple[bool, str]:
+    """在准入边界消费授权（FIX-002）。
+
+    - 先标记 in-process（同进程 re-entrant / duplicate evaluate → 第二次 blocked）
+    - 再持久化到执行目录（跨进程 resume/re-entry 不可 replay）
+    - 持久化失败 → 撤回 in-process 标记并返回错误 → 调用方 fail closed
+    返回 (ok, error)。
+    """
+    _CONSUMED_AUTHS.add(auth)
+    if state_dir is not None:
+        marker = Path(state_dir) / CONSUMPTION_FILENAME
+        payload = {
+            "schema_version": SCHEMA_VERSION,
+            "decision": DECISION_ALLOWED_AUTHORIZED_PAID,
+            "scope": scope,
+            "consumed_auth_fingerprint": _auth_fingerprint(auth),
+            "consumed_auth": auth,
+            "consumed_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError as exc:
+            _CONSUMED_AUTHS.discard(auth)
+            return False, f"cannot persist consumption marker ({exc})"
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
 # Guard 决策（纯本地；无网络 / 无 LLM；决策耗时被记录）
 # ---------------------------------------------------------------------------
 
 
-def evaluate(task_id: str, stage: str) -> dict:
+def evaluate(
+    task_id: str,
+    stage: str,
+    state_dir: str | os.PathLike | None = None,
+) -> dict:
     """对指定 Task + stage 求值 Hermes Paid Guard。
+
+    ``state_dir``：一次性授权消费记录所在目录（runner 传 execution output dir；
+    None → 仅 in-process 消费）。消费在准入边界完成（FIX-002）。
 
     返回 machine-readable record（可直接序列化为 cost_guard.json）：
 
     {schema_version, task_id, stage, decision, cost_class, model, provider,
      model_source, cost_metadata, required_scope, authorization_present,
-     authorization_matched, decision_ms, timestamp, notes}
+     authorization_matched, authorization_consumed, decision_ms, timestamp, notes}
     """
     started = time.monotonic()
     effective = resolve_effective_hermes()
@@ -344,14 +457,22 @@ def evaluate(task_id: str, stage: str) -> dict:
     base_url = effective.get("base_url")
     notes = list(effective.get("notes") or [])
 
-    free_entries = _parse_free_models(os.environ.get(ENV_FREE_MODELS, ""))
-    cost_class, cost_metadata = classify_cost(model, provider, base_url, free_entries)
-    if free_entries:
-        notes.append(f"FREE metadata declared via {ENV_FREE_MODELS}")
+    # A0 无远程 FREE 权威（FIX-002）：AAF_COST_FREE_MODELS 一律忽略——
+    # 仅作诊断记录，绝不参与分类（Codex BLOCKING #2）。
+    free_env = os.environ.get(ENV_FREE_MODELS, "").strip()
+    if free_env:
+        notes.append(
+            f"{ENV_FREE_MODELS} is set but deliberately IGNORED: A0 has no trusted "
+            "remote FREE authority — user-controlled env metadata is not "
+            "authoritative FREE evidence (fail closed)"
+        )
+
+    cost_class, cost_metadata = classify_cost(model, provider, base_url)
 
     auth_value = _auth_env_value()
     required_scope = None
     authorization_matched = False
+    authorization_consumed = False
     decision: str
 
     if model is None or cost_class == COST_UNKNOWN:
@@ -361,15 +482,34 @@ def evaluate(task_id: str, stage: str) -> dict:
             "effective model missing/ambiguous — cannot verify authorization scope; "
             f"fail closed (set {ENV_MODEL} to pin the model explicitly)"
         )
-    elif cost_class in (COST_LOCAL_FREE, COST_FREE):
+    elif cost_class == COST_LOCAL_FREE:
         decision = DECISION_ALLOWED_FREE
     else:  # PAID_OR_UNKNOWN
         scope = scope_string(task_id, stage, model, provider)
         required_scope = scope
         if _authorization_matches(auth_value, scope):
-            decision = DECISION_ALLOWED_AUTHORIZED_PAID
-            authorization_matched = True
-            notes.append("exact task/stage/model authorization matched")
+            if _auth_consumed(auth_value, state_dir):
+                decision = DECISION_BLOCKED_COST_APPROVAL
+                authorization_consumed = True
+                notes.append(
+                    "authorization already consumed (one-time) — replay rejected; "
+                    "a NEW authorization value is required for another admission"
+                )
+            else:
+                consumed, err = _consume_auth(auth_value, scope, state_dir)
+                if consumed:
+                    decision = DECISION_ALLOWED_AUTHORIZED_PAID
+                    authorization_matched = True
+                    authorization_consumed = True
+                    notes.append(
+                        "exact task/stage/model authorization matched and consumed "
+                        "at admission boundary (one-time; same auth cannot admit twice)"
+                    )
+                else:
+                    decision = DECISION_BLOCKED_COST_APPROVAL
+                    notes.append(
+                        f"authorization consumption failed — fail closed ({err})"
+                    )
         else:
             decision = DECISION_BLOCKED_COST_APPROVAL
             if auth_value:
@@ -394,6 +534,7 @@ def evaluate(task_id: str, stage: str) -> dict:
         "required_scope": required_scope,
         "authorization_present": auth_value is not None,
         "authorization_matched": authorization_matched,
+        "authorization_consumed": authorization_consumed,
         "decision_ms": elapsed_ms,
         "notes": notes,
     }
@@ -427,6 +568,13 @@ def blocked_stage_text(record: dict) -> str:
     for note in record.get("notes") or []:
         lines.append(f"- note: {note}")
     lines.append("")
+    if record.get("authorization_consumed"):
+        lines.append(
+            "注意：当前 AAF_COST_AUTH 授权值已在本次 execution 上下文中被准入消费"
+            "（一次性语义，fail-closed）。同一 execution 目录内该授权不可再次准入；"
+            "如需再次运行该任务，请以新 execution（新目录）重新提交并重新设置授权。"
+        )
+        lines.append("")
     lines.append(
         "Why blocked: 该 Hermes 模型为远程/API 模型或成本未知；A0 规则下未知成本"
         "一律视为非免费，且未检测到精确匹配的 task-scoped 显式授权——"

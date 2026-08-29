@@ -24,6 +24,17 @@ Scope（严格执行，不扩大）：
   attempt execution / backoff / taskkill wait / kill grace / communicate reap
   全部从同一 deadline 派生并被其裁剪；attempt timeout 预留 ``cleanup_reserve``
   有界清理窗口，绝不因清理而超出 budget。
+- **Windows tree cleanup authority（AAF-v0.4-TASK-011-FIX-002）**：Windows 上
+  cleanup 成功必须基于足够强的 process-tree evidence——taskkill /PID /T /F
+  实际尝试且成功（或等价强证据）+ 顶层确认退出 + reap 完成/明确分类；只 kill
+  顶层成功（或只观察顶层 poll() != None）**不是** safe cleanup（不得报告 fake
+  tree success）。tree 未确认 → cleanup safety=UNKNOWN/FAILED → fail closed、
+  不 retry、child PID 保持注册（Registry Gate）。
+- **safe cleanup reserve minimum + attempt admission（FIX-002）**：
+  ``AAF_WORKBUDDY_CLEANUP_RESERVE`` 被钳制到 ``MIN_SAFE_CLEANUP_RESERVE``
+  下限（配置 reserve=0 也不能关闭 tree safety）；每次 attempt 启动前确认
+  remaining budget > effective safe cleanup reserve + minimum useful attempt
+  runtime，不足则不启动（cleanup budget 在启动 attempt 之前就保留）。
 
 Failure classification（只基于真实 CLI evidence，不凭空造字符串规则）：
 RETRYABLE_TRANSIENT：
@@ -74,6 +85,12 @@ DEFAULT_OVERALL_STAGE_BUDGET = 0.0  # 0 → 按公式计算（见 load_workbuddy
 # remaining - cleanup_reserve，保证 timeout 后仍有界清理窗口（taskkill ≤30s +
 # kill grace ≤5s + reap 2×5s + 余量 ≈ 45~50s，默认 60s 安全覆盖）。
 DEFAULT_CLEANUP_RESERVE = 60.0
+# FIX-002 Requirement 3/4/12：安全清理预留下限——Windows process-tree cleanup
+# （taskkill /T /F ≤30s + kill grace ≤5s + reap 2×5s + 余量）的最低有界窗口。
+# 任何配置（env）或构造的 cleanup_reserve 都不得低于此值（policy 加载钳制 +
+# orchestrator admission 双保险）；低于它时按它计算，保证真实 attempt 一旦
+# 启动必然预留足够 bounded cleanup window（Requirement 3 最终保证）。
+MIN_SAFE_CLEANUP_RESERVE = 60.0
 
 ENV_MAX_ATTEMPTS = "AAF_WORKBUDDY_MAX_ATTEMPTS"
 ENV_TIMEOUT = "AAF_WORKBUDDY_TIMEOUT"
@@ -91,6 +108,9 @@ REAP_COMMUNICATE_TIMEOUT = 5.0
 REAP_ATTEMPTS = 2
 POLL_INTERVAL = 0.05
 MIN_ATTEMPT_TIMEOUT = 0.05  # 低于此值不再启动 attempt（budget 不足，fail closed）
+# FIX-002 Requirement 6：attempt admission 的“minimum useful attempt runtime”——
+# 剩余 budget 必须 > safe cleanup reserve + 该值才允许启动 attempt。
+MIN_ATTEMPT_RUNTIME = MIN_ATTEMPT_TIMEOUT
 
 # 已知 transient gateway evidence（CodeBuddy CLI 自身输出；CLOSURE-002 真实 stderr）
 _PLACEHOLDER_GATEWAY_RES = (
@@ -133,14 +153,24 @@ class CleanupResult:
     - ``terminated_confirmed``: 进程不再存活被**观察到**（poll() 非 None）——
       不是“kill() 被调用”，而是终止被确认（Requirement 5）。
     - ``reaped_confirmed``: 管道已排空 / communicate 已返回（资源已回收）。
-    - ``method``: 确认途径（already-exited / taskkill-tree / kill / none）。
+    - ``method``: 确认途径（already-exited / taskkill-tree / taskkill+kill /
+      kill / none）。
     - ``failure_reason``: 未确认时的人类可读原因（否则 None）。
+    - FIX-002 Requirement 1/2/8（Windows process-tree cleanup authority）：
+      ``tree_confirmed``: CodeBuddy descendant process tree 终止被确认（Windows
+      下 = taskkill /T /F 尝试成功或等价强证据 + 顶层确认退出）；非 Windows
+      恒为 True（平台差异显式）。
+      ``taskkill_attempted`` / ``taskkill_success``: taskkill /T /F 是否实际
+      尝试 / 是否返回成功（Windows 树级证据原语；非 Windows 恒为 False）。
     """
 
     terminated_confirmed: bool
     reaped_confirmed: bool
     method: str
     failure_reason: str | None = None
+    tree_confirmed: bool = False
+    taskkill_attempted: bool = False
+    taskkill_success: bool = False
 
 
 @dataclass
@@ -163,6 +193,12 @@ class AttemptRecord:
     cleanup_failure: bool = False
     cleanup_method: str | None = None
     cleanup_reason: str | None = None
+    # FIX-002 Requirement 8/17：Windows process-tree cleanup evidence 遥测
+    # （tree 是否确认、taskkill /T /F 是否尝试 / 是否成功；非 Windows 语义见
+    # CleanupResult —— taskkill 字段恒 False、tree_confirmed 恒 True）
+    cleanup_tree_confirmed: bool | None = None
+    taskkill_attempted: bool | None = None
+    taskkill_success: bool | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -180,6 +216,9 @@ class AttemptRecord:
             "cleanup_failure": self.cleanup_failure,
             "cleanup_method": self.cleanup_method,
             "cleanup_reason": self.cleanup_reason,
+            "cleanup_tree_confirmed": self.cleanup_tree_confirmed,
+            "taskkill_attempted": self.taskkill_attempted,
+            "taskkill_success": self.taskkill_success,
         }
 
 
@@ -322,6 +361,12 @@ def load_workbuddy_policy() -> WorkBuddyRetryPolicy:
     per_attempt_timeout = max(1.0, _env_float(ENV_TIMEOUT, DEFAULT_PER_ATTEMPT_TIMEOUT))
     backoff = max(0.0, _env_float(ENV_BACKOFF, DEFAULT_BACKOFF_SECONDS))
     cleanup_reserve = max(0.0, _env_float(ENV_CLEANUP_RESERVE, DEFAULT_CLEANUP_RESERVE))
+    # FIX-002 Requirement 3/4/12（Config Safety）：用户配置
+    # （AAF_WORKBUDDY_CLEANUP_RESERVE=0 或其它过低值）不得关闭 process-tree
+    # safety invariant —— 钳制到 MIN_SAFE_CLEANUP_RESERVE（Option B: clamp）。
+    # 任何真实 attempt 一旦启动，必须预留足够 bounded cleanup window 使
+    # Windows tree cleanup path（taskkill /T /F）有机会安全执行。
+    cleanup_reserve = max(cleanup_reserve, MIN_SAFE_CLEANUP_RESERVE)
     budget = _env_float(ENV_STAGE_BUDGET, DEFAULT_OVERALL_STAGE_BUDGET)
     if budget <= 0:
         budget = max_attempts * per_attempt_timeout + (max_attempts - 1) * backoff
@@ -374,27 +419,80 @@ def _taskkill(pid: int, timeout: float = TASKKILL_TIMEOUT) -> bool:
         return False
 
 
-def _kill_process_tree(proc, deadline: float | None) -> tuple[bool, str]:
+@dataclass(frozen=True)
+class TreeKillOutcome:
+    """``_kill_process_tree`` 的结构化结果（FIX-002 Requirement 1/2/8/9）。
+
+    - ``terminated_confirmed``: 顶层 proc 终止被观察到（poll() 非 None）。
+    - ``tree_confirmed``: CodeBuddy descendant process tree 终止被确认。
+      Windows：仅当 taskkill /T /F 实际尝试且成功（或等价强证据）+ 顶层确认
+      退出；只 kill 顶层成功 ≠ tree confirmed。非 Windows：恒等于
+      terminated_confirmed（平台差异显式）。
+    - ``method``: 确认途径（already-exited / taskkill-tree / taskkill+kill /
+      kill / none）。
+    - ``taskkill_attempted`` / ``taskkill_success``: Windows 树级证据原语。
+    - ``failure_reason``: tree/termination 未确认时的人类可读原因（否则 None）。
+    """
+
+    terminated_confirmed: bool
+    tree_confirmed: bool
+    method: str
+    taskkill_attempted: bool = False
+    taskkill_success: bool = False
+    failure_reason: str | None = None
+
+
+def _kill_process_tree(proc, deadline: float | None) -> TreeKillOutcome:
     """确保 child（Windows 下为整棵进程树）已死，并**确认**终止。
 
-    返回 (terminated_confirmed, method)：
+    返回 TreeKillOutcome：
     - ``terminated_confirmed=True`` 仅当终止被**观察到**（final liveness check：
       ``proc.poll() is not None``），不是“kill() 被调用”就算成功（Requirement 5）。
-    - Windows 优先 ``taskkill /PID /T /F`` 整树杀（Requirement 6 保留；
-      树级证据 = taskkill 成功 + 顶层 poll 观察到终止），随后 kill() 兜底。
+    - FIX-002 Requirement 1/2（Windows Tree Cleanup Authority）：Windows 上
+      tree cleanup 成功必须基于足够强的 process-tree evidence——taskkill /T /F
+      实际尝试 + 成功 + 顶层确认退出。以下情况 **不得** 报告 safe cleanup：
+      taskkill 未执行 / taskkill 无可验证成功证据 / 只调用 proc.kill() /
+      只观察顶层 poll() != None。tree 无法确认 → tree_confirmed=False，
+      callers 必须 fail closed（no retry、registry 保留）。
+    - 非 Windows：保持原语义（直接子进程 kill 确认即安全；平台差异显式）。
     - kill grace 轮询被剩余 deadline 裁剪（Requirement 9/12）；清理自身有界
-      （Requirement 14：无无限 poll 循环）。
+      （Requirement 14：无无限 poll 循环）。taskkill 同样受绝对 deadline 约束
+      （Requirement 7），但 admission + cleanup reserve 保证正常 timeout
+      cleanup 时仍有真实 taskkill 时间窗口（Requirement 5）。
     """
+    is_nt = os.name == "nt"
     if proc.poll() is not None:
-        return True, "already-exited"
-    if os.name == "nt":
+        if is_nt:
+            # 顶层自行退出：无 taskkill 树级证据 → 无法证明 descendant tree 已终止。
+            # （不得把顶层退出自动等价为整树安全终止）
+            return TreeKillOutcome(
+                True, False, "already-exited", False, False,
+                "top-level process already exited but Windows descendant process "
+                "tree termination unconfirmed (no taskkill /T /F evidence)",
+            )
+        return TreeKillOutcome(True, True, "already-exited")
+    taskkill_attempted = False
+    taskkill_success = False
+    if is_nt:
+        # FIX-002 Requirement 7：taskkill 受绝对 deadline 约束（裁剪到剩余）；
+        # Requirement 11：deadline 耗尽（timeout<=0）→ taskkill 不执行 —— 但
+        # 后续 fallback 顶层 kill 成功也**不**构成 tree confirmed（fail closed）。
         taskkill_timeout = _clipped_timeout(deadline, TASKKILL_TIMEOUT)
-        if taskkill_timeout > 0 and _taskkill(proc.pid, timeout=taskkill_timeout):
-            # taskkill /T /F 树杀返回成功 + 顶层 poll 观察到终止 = 最强可用证据
-            if proc.poll() is not None:
-                return True, "taskkill-tree"
-    if proc.poll() is not None:
-        return True, "already-exited"
+        taskkill_attempted = taskkill_timeout > 0
+        if taskkill_attempted:
+            taskkill_success = _taskkill(proc.pid, timeout=taskkill_timeout)
+        if taskkill_success:
+            # taskkill /T /F 返回成功（树杀已发出）：有界等待顶层退出——
+            # 观察到顶层退出后，taskkill 成功 + 顶层确认退出 = 最强树级证据
+            grace = _clipped_timeout(deadline, KILL_GRACE_SECONDS)
+            poll_deadline = time.monotonic() + grace
+            while time.monotonic() < poll_deadline:
+                if proc.poll() is not None:
+                    return TreeKillOutcome(True, True, "taskkill-tree", True, True)
+                time.sleep(POLL_INTERVAL)
+            # taskkill 成功但顶层尚未观察到退出 → 继续 fallback kill（下面统一收口）
+    # fallback：顶层 kill（Requirement 9——proc.kill() 可以作为 fallback，但
+    # 在 Windows 上 fallback 顶层 kill 成功 ≠ process-tree cleanup confirmed）
     try:
         proc.kill()
     except Exception:
@@ -403,7 +501,17 @@ def _kill_process_tree(proc, deadline: float | None) -> tuple[bool, str]:
     poll_deadline = time.monotonic() + grace
     while time.monotonic() < poll_deadline:
         if proc.poll() is not None:
-            return True, "kill"
+            if is_nt:
+                if taskkill_success:
+                    # taskkill 成功（树杀证据）+ 顶层已确认退出 = 等价强证据
+                    return TreeKillOutcome(True, True, "taskkill+kill", True, True)
+                return TreeKillOutcome(
+                    True, False, "kill", taskkill_attempted, taskkill_success,
+                    "top-level process killed/confirmed exited but Windows "
+                    "descendant process tree termination unconfirmed (taskkill "
+                    "/T /F not verified)",
+                )
+            return TreeKillOutcome(True, True, "kill")
         time.sleep(POLL_INTERVAL)
     # grace 耗尽：最后再尝试一次直接 kill，然后必须观察到终止
     try:
@@ -411,25 +519,58 @@ def _kill_process_tree(proc, deadline: float | None) -> tuple[bool, str]:
     except Exception:
         pass
     if proc.poll() is not None:
-        return True, "kill"
-    return False, "none"
+        if is_nt:
+            if taskkill_success:
+                return TreeKillOutcome(True, True, "taskkill+kill", True, True)
+            return TreeKillOutcome(
+                True, False, "kill", taskkill_attempted, taskkill_success,
+                "top-level process killed/confirmed exited but Windows descendant "
+                "process tree termination unconfirmed (taskkill /T /F not verified)",
+            )
+        return TreeKillOutcome(True, True, "kill")
+    return TreeKillOutcome(
+        False, False, "none", taskkill_attempted, taskkill_success,
+        "process termination could not be confirmed after taskkill/kill sequence "
+        "(child may still be alive; fail closed, no retry)",
+    )
+
+
+def _cleanup_is_safe(cleanup: CleanupResult) -> bool:
+    """FIX-002 Requirement 2/9/10：cleanup safety contract 判定。
+
+    Windows：terminated_confirmed **且** tree_confirmed 才允许释放 ownership /
+    允许 retry（Registry Gate）；只 kill 顶层成功（或只观察顶层退出）不是
+    safe cleanup。非 Windows：保持原语义（terminated_confirmed 即安全）——
+    平台差异显式（Requirement 15）。
+    """
+    if os.name == "nt":
+        return cleanup.terminated_confirmed and cleanup.tree_confirmed
+    return cleanup.terminated_confirmed
 
 
 def _terminate_and_reap(proc, deadline: float | None) -> tuple[str, str, CleanupResult]:
     """kill 进程树 + 确认终止 + 排空 stdin/stdout/stderr 管道 + reap。
 
     返回 (stdout, stderr, CleanupResult)。绝不抛出（timeout 清理路径不得掩盖
-    原始失败）。语义（FIX-001 Requirement 1/3/4/12）：
-    - 终止被确认 → 有界排空管道（communicate 裁剪到剩余 deadline）；reap 失败
-      如实记录 ``reaped_confirmed=False``（进程已死，无并发风险，如实分类）。
-    - 终止**未**确认 → ``terminated_confirmed=False`` + failure_reason；
+    原始失败）。语义（FIX-001 Requirement 1/3/4/12 + FIX-002 Requirement 1/2/8）：
+    - Windows：cleanup safety = terminated_confirmed **且** tree_confirmed
+      （taskkill /T /F 树级证据）；两者缺一 → ``_cleanup_is_safe()=False``，
       callers 必须 fail closed（不得降级为普通 TimeoutExpired 后重试）。
+    - 非 Windows：终止被确认 → 有界排空管道（communicate 裁剪到剩余 deadline）；
+      reap 失败如实记录 ``reaped_confirmed=False``（进程已死，无并发风险，
+      如实分类）。
+    - 终止/tree **未**确认 → ``terminated_confirmed/tree_confirmed=False`` +
+      failure_reason；callers 必须 fail closed（不得降级为普通 TimeoutExpired
+      后重试）。
     """
-    terminated, method = _kill_process_tree(proc, deadline)
+    outcome = _kill_process_tree(proc, deadline)
     stdout, stderr = "", ""
     reaped = False
-    failure_reason: str | None = None
-    if terminated:
+    failure_reason: str | None = outcome.failure_reason
+    safe = outcome.terminated_confirmed and (
+        os.name != "nt" or outcome.tree_confirmed
+    )
+    if safe:
         for _ in range(REAP_ATTEMPTS):
             comm_timeout = _clipped_timeout(deadline, REAP_COMMUNICATE_TIMEOUT)
             if comm_timeout <= 0:
@@ -449,16 +590,19 @@ def _terminate_and_reap(proc, deadline: float | None) -> tuple[str, str, Cleanup
                 "process termination confirmed but pipes could not be drained "
                 "(reap unconfirmed; no concurrency risk)"
             )
-    else:
+    elif failure_reason is None:
         failure_reason = (
             "process termination could not be confirmed after taskkill/kill "
             "sequence (child may still be alive; fail closed, no retry)"
         )
     return stdout, stderr, CleanupResult(
-        terminated_confirmed=terminated,
+        terminated_confirmed=outcome.terminated_confirmed,
         reaped_confirmed=reaped,
-        method=method,
+        method=outcome.method,
         failure_reason=failure_reason,
+        tree_confirmed=outcome.tree_confirmed,
+        taskkill_attempted=outcome.taskkill_attempted,
+        taskkill_success=outcome.taskkill_success,
     )
 
 
@@ -529,11 +673,14 @@ def _run_single_attempt(
             except (OSError, ValueError) as exc:
                 spawn_error = f"process I/O failed: {type(exc).__name__}: {exc}"
                 stdout, stderr, cleanup = _terminate_and_reap(proc, deadline)
-            # 注册表所有权（Requirement 2）：confirmed-dead 才注销；未确认 → 保持注册
+            # 注册表所有权（Requirement 2 + FIX-002 Requirement 10 Registry Gate）：
+            # 只有 cleanup safety contract 满足（Windows = terminated **且**
+            # tree 确认；非 Windows = terminated 确认）才注销；未确认 → 保持注册
+            # —— 绝不能出现 alive/可能存活 child + 无 registry + retry
             if cleanup is not None:
-                if cleanup.terminated_confirmed:
+                if _cleanup_is_safe(cleanup):
                     _unregister_child(proc.pid)
-                # else: 保持注册 —— 绝不能出现 alive child + 无 registry + retry
+                # else: 保持注册（Windows tree 未确认同样不释放 ownership）
             else:
                 # communicate 正常返回 → 进程已退出（returncode 非 None）且已 reap
                 _unregister_child(proc.pid)
@@ -548,17 +695,27 @@ def _run_single_attempt(
 
     exited_naturally = proc is not None and cleanup is None and exit_code is not None
     if cleanup is not None:
-        cleanup_confirmed = cleanup.terminated_confirmed and cleanup.reaped_confirmed
-        cleanup_failure = not cleanup.terminated_confirmed
+        cleanup_safe = _cleanup_is_safe(cleanup)
+        cleanup_confirmed = cleanup_safe and cleanup.reaped_confirmed
+        cleanup_failure = not cleanup_safe
         cleanup_method = cleanup.method
         cleanup_reason = cleanup.failure_reason
+        cleanup_tree_confirmed = cleanup.tree_confirmed
+        taskkill_attempted = cleanup.taskkill_attempted
+        taskkill_success = cleanup.taskkill_success
     elif exited_naturally:
         cleanup_confirmed, cleanup_failure, cleanup_method, cleanup_reason = (
             True, False, "natural-exit", None,
         )
+        cleanup_tree_confirmed, taskkill_attempted, taskkill_success = (
+            True, False, False,
+        )
     else:
         cleanup_confirmed, cleanup_failure, cleanup_method, cleanup_reason = (
             None, False, None, None,
+        )
+        cleanup_tree_confirmed, taskkill_attempted, taskkill_success = (
+            None, None, None,
         )
 
     if spawn_error:
@@ -604,6 +761,9 @@ def _run_single_attempt(
         cleanup_failure=cleanup_failure,
         cleanup_method=cleanup_method,
         cleanup_reason=cleanup_reason,
+        cleanup_tree_confirmed=cleanup_tree_confirmed,
+        taskkill_attempted=taskkill_attempted,
+        taskkill_success=taskkill_success,
     )
     return AttemptOutcome(stdout if cls is None else None, record)
 
@@ -634,6 +794,11 @@ def _build_telemetry(
             "backoff_seconds": round(float(policy.backoff_seconds), 3),
             "overall_stage_budget": round(float(policy.overall_stage_budget), 3),
             "cleanup_reserve": round(float(policy.cleanup_reserve), 3),
+            # FIX-002 Requirement 17：admission 实际使用的安全预留
+            # （>= MIN_SAFE_CLEANUP_RESERVE；配置低于下限时被钳制）
+            "cleanup_reserve_effective": round(
+                float(max(policy.cleanup_reserve, MIN_SAFE_CLEANUP_RESERVE)), 3
+            ),
         },
         "attempt_count": len(attempts),
         "retried": len(attempts) > 1,
@@ -672,6 +837,9 @@ def _render_failure_message(telemetry: dict) -> str:
             f'timed_out={a.get("timed_out")} stdout_empty={a.get("stdout_empty")} '
             f'cleanup_confirmed={a.get("cleanup_confirmed")} '
             f'cleanup_failure={a.get("cleanup_failure")} '
+            f'cleanup_tree_confirmed={a.get("cleanup_tree_confirmed")} '
+            f'taskkill_attempted={a.get("taskkill_attempted")} '
+            f'taskkill_success={a.get("taskkill_success")} '
             f'exit={a.get("exit_code")} elapsed={a.get("elapsed_seconds", 0.0):.1f}s'
         )
     lf = telemetry.get("last_failure")
@@ -721,6 +889,9 @@ def permanent_stage_error(message: str, retry_reason: str) -> WorkBuddyPermanent
             "cleanup_failure": False,
             "cleanup_method": None,
             "cleanup_reason": None,
+            "cleanup_tree_confirmed": None,
+            "taskkill_attempted": None,
+            "taskkill_success": None,
         },
         "attempts": [],
     }
@@ -779,18 +950,27 @@ def run_workbuddy_with_retry(
                 if backoff > 0:
                     time.sleep(backoff)
                 remaining = max(0.0, stage_deadline - time.monotonic())
-        # FIX-001 Requirement 10：attempt timeout 不得超过 remaining - cleanup_reserve，
-        # 保证 timeout 后仍有有界清理窗口（绝不因清理超出 budget）。
+        # FIX-001 Requirement 10 + FIX-002 Requirement 5/6：attempt timeout 不得
+        # 超过 remaining - effective_cleanup_reserve，保证 timeout 后仍有有界清理
+        # 窗口（绝不因清理超出 budget；cleanup budget 在启动 attempt 之前就保留，
+        # 不是等 deadline 耗尽才发现没时间安全 kill tree）。
+        # FIX-002 Requirement 3：effective reserve 被 MIN_SAFE_CLEANUP_RESERVE
+        # 兜底（policy 直接构造传低值也无法破坏 Windows tree cleanup 安全性）。
+        effective_reserve = max(policy.cleanup_reserve, MIN_SAFE_CLEANUP_RESERVE)
         attempt_timeout = max(
-            0.0, min(policy.per_attempt_timeout, remaining - policy.cleanup_reserve)
+            0.0, min(policy.per_attempt_timeout, remaining - effective_reserve)
         )
-        if attempt_timeout <= MIN_ATTEMPT_TIMEOUT:
-            # Requirement 13/23C：剩余 budget 不足以安全跑完一次 attempt + 清理 → 不再启动
+        if attempt_timeout <= MIN_ATTEMPT_RUNTIME:
+            # FIX-002 Requirement 6（Attempt Admission Control）：剩余 budget 必须
+            # > minimum safe cleanup budget + minimum useful attempt runtime，
+            # 否则不启动该 attempt（fail closed / retries exhausted / budget
+            # exhausted）——绝不允许启动一个必然没有安全 cleanup 时间的 attempt。
             if not retry_suppressed_reason:
                 retry_suppressed_reason = (
                     f"insufficient safe budget for another attempt "
-                    f"(remaining {remaining:.1f}s <= cleanup reserve "
-                    f"{policy.cleanup_reserve:.1f}s)"
+                    f"(remaining {remaining:.1f}s <= safe cleanup reserve "
+                    f"{effective_reserve:.1f}s + minimum attempt runtime "
+                    f"{MIN_ATTEMPT_RUNTIME:.2f}s)"
                 )
             break
         try:

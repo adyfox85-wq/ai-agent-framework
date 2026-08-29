@@ -106,6 +106,22 @@ LISTENER_READY_TIMEOUT = 3.0  # 秒
 #   退出才 rearm（Requirement 7）；listener=None / DEGRADED / 每 poll 都不会
 #   自动 rearm——epoch 只随真实 exit 事件增长（Requirement 8）。
 
+# RW-012 FIX-005（shutdown/recovery 单一 lifecycle authority，TOCTOU 收口）：
+# - shutdown intent 发布与 listener lifecycle transition 共用同一个
+#   _lifecycle_lock：shutdown() / _exit_aaf() / _restart_bridge() 都在
+#   lifecycle authority 下发布 _shutting_down=True（不再 lock 外写标志）。
+# - _run_lifecycle_transition() 在 lock 内重新验证 _shutting_down：关闭
+#   「pre-lock check False → 等待锁 → shutdown 发布 → 取得锁后仍 rearm/
+#   创建 replacement」的 check-then-wait 竞态；等待锁期间 shutdown 已发布
+#   的 recovery 在锁内观察到 True → 不 cleanup / 不 rearm / 不创建。
+# - _apply_hotkey_locked()（唯一 listener creation authority）在锁内以
+#   _shutting_down 守卫：config reload / 外部触发 / restart-failure 恢复
+#   在 shutdown 发布后一律不创建、不重启 listener（shutdown 接管后无新
+#   recovery）。
+# - _clear_pending_ownership_locked() 的 rearm 只在非 shutdown 时发生：
+#   shutdown 期间的 delayed-exit cleanup 允许做 ownership bookkeeping，
+#   但绝不 rearm / 不开启新 recovery epoch（Requirement 9/17）。
+
 # 单实例 mutex（Restart 交接 / 防双开）
 _SINGLE_INSTANCE_MUTEX = "Local\\AAF_Bridge_SingleInstance_v0_4"
 _RESTART_RETRIES = 10  # 重启时旧实例退出后新实例获取 mutex 的重试次数
@@ -466,8 +482,11 @@ class Bridge:
           如果已被 replacement 接管则绝不清掉 replacement）
         - old 已确认退出（not alive 由调用方在同一个锁内检查）
 
-        清理 = ownership release 的真实 lifecycle 状态变化 → recovery rearm
-        一次（新有界 epoch）。返回是否发生了清理。
+        清理 = ownership release 的真实 lifecycle 状态变化 → 非 shutdown
+        时 recovery rearm 一次（新有界 epoch）。RW-012 FIX-005：shutdown
+        已发布（_shutting_down=True）时只做 ownership bookkeeping、绝不
+        rearm / 不开启新 recovery epoch（Requirement 9/17——退出不复活）。
+        返回是否发生了清理。
         """
         if self._pending_stop is not old:
             return False  # pending 已变化（另一路已处理）→ 不做任何事
@@ -475,8 +494,9 @@ class Bridge:
             return False  # self.listener 已是 replacement → 绝不清掉它
         self.listener = None
         self._pending_stop = None
-        # ownership blocker 已真实解除 → 开启一次新的有界 recovery epoch
-        self._recovery.rearm()
+        if not self._shutting_down:
+            # ownership blocker 已真实解除 → 开启一次新的有界 recovery epoch
+            self._recovery.rearm()
         return True
 
     def _delayed_exit_cleanup_locked(self) -> bool:
@@ -484,18 +504,25 @@ class Bridge:
 
         调用方必须已持有 _lifecycle_lock（本方法自身不获取锁）。锁内重新确认
         pending 存在且已退出 → identity-safe clear（_clear_pending_ownership_locked
-        双身份校验）→ ownership release → rearm 恰好一次。
+        双身份校验）→ ownership release → 非 shutdown 时 rearm 恰好一次
+        （FIX-005：shutdown 已发布时清理但不 rearm——Requirement 9）。
 
-        返回是否发生了清理（并 rearm 一次 recovery epoch）。
+        返回是否发生了清理。
         """
         pending = self._pending_stop
         if pending is None or pending.is_alive():
             return False  # 无 pending / 旧 listener 仍存活 → 不清理
         if self._clear_pending_ownership_locked(pending):
-            _log(
-                "AAF Bridge: 旧热键监听线程已确认退出（迟延退出），"
-                "清理 ownership reference，恢复策略 rearm 一次。"
-            )
+            if self._shutting_down:
+                _log(
+                    "AAF Bridge: 旧热键监听线程已确认退出（迟延退出），"
+                    "清理 ownership reference（退出中：不 rearm、不复活）。"
+                )
+            else:
+                _log(
+                    "AAF Bridge: 旧热键监听线程已确认退出（迟延退出），"
+                    "清理 ownership reference，恢复策略 rearm 一次。"
+                )
             return True
         return False
 
@@ -544,6 +571,11 @@ class Bridge:
         cleanup / restart-failure / 外部恢复入口）最终都汇入本方法创建
         listener，不存在第二套 listener creation 逻辑（Requirement 2/3/6）。
 
+        RW-012 FIX-005（Requirement 3/10/12）：锁内首先重新验证 shutdown——
+        shutdown intent 已发布（_shutting_down=True）时任何 trigger 一律
+        不创建 / 不重启 / 不替换 listener（config reload during shutdown
+        不 restart、不复活；shutdown 接管后不存在第二套创建路径）。
+
         stop-before-replace（Requirement 12）：
         - 先通过 listener-owned stop 契约停掉旧 listener（线程内注销 + 有界
           join），确认旧线程退出后才创建新 listener；主线程绝不直接
@@ -554,6 +586,12 @@ class Bridge:
         - 新 listener 启动后必须 wait_ready 成功且无 error 才算启动成功：
           wait_ready 超时 / error 均不 reset recovery/backoff、不报告 healthy。
         """
+        # RW-012 FIX-005：shutdown 已在 lifecycle authority 下发布 → 唯一
+        # creation authority 锁内拒绝任何创建（关闭 check-then-wait 竞态的
+        # 另一半：config reload / 外部触发在 shutdown 后不得复活 listener）
+        if self._shutting_down:
+            _log("AAF Bridge: 正在退出，忽略热键生命周期触发（不创建 listener）。")
+            return
         parsed = cfg_mod.parse_hotkey(self.cfg.get("hotkey", "ctrl+alt+a"))
         if parsed is None:
             if show_error:
@@ -611,10 +649,21 @@ class Bridge:
         listener=None / DEGRADED / 每次 poll 都不会自动 rearm（Requirement 8）。
         主动退出（_shutting_down）时整体跳过：不清理、不 rearm、不启动
         replacement（Requirement 13，退出不复活）。
+
+        RW-012 FIX-005（Requirement 3/4）：锁外的 _shutting_down 检查只是
+        快速路径；取得 lifecycle authority 后**在锁内重新验证** shutdown——
+        等待锁期间 shutdown 可能已发布（pre-lock check False → 等待 → 
+        shutdown 发布 True → 取得锁），此时必须观察到 True 并整体返回，
+        不 cleanup / 不 rearm / 不 begin_attempt / 不创建 replacement
+        （精确 check-then-wait TOCTOU 关闭，Codex FIX-004 blocker）。
         """
         if self._shutting_down:
             return
         with self._lifecycle_lock:
+            # FIX-005：锁内重新验证 shutdown（权威判定；等待锁期间的
+            # shutdown 发布必须被观察到，关闭 resurrection 竞态）
+            if self._shutting_down:
+                return
             # 1) delayed-exit ownership release（锁内 identity 重验证 + 恰好一次 rearm）
             self._delayed_exit_cleanup_locked()
             # 2) eligibility + reserve + replacement（同一锁作用域，单一 creation authority）
@@ -784,12 +833,15 @@ class Bridge:
         - 重启本身不触发 cancel / force kill（Phase E 停止动作只在用户从状态窗口显式触发）
         - 单实例 mutex 保证新旧不双开：旧实例退出后新实例取得所有权
         """
-        if self.listener is not None:
-            # RW-012 FIX-001：请求 listener stop（thread-owned unregister + 有界 join），
-            # 主线程不直接 UnregisterHotKey；进程随后退出，kernel 释放残余 registration
-            # RW-012 FIX-003：stop/ownership transition 与其余 lifecycle 路径共用
-            # 同一 _lifecycle_lock（单一 transition authority）
-            with self._lifecycle_lock:
+        # RW-012 FIX-001：请求 listener stop（thread-owned unregister + 有界 join），
+        # 主线程不直接 UnregisterHotKey；进程随后退出，kernel 释放残余 registration
+        # RW-012 FIX-003/FIX-005：stop/ownership transition 与其余 lifecycle 路径共用
+        # 同一 _lifecycle_lock（单一 transition authority）；shutdown intent 在同一
+        # authority 下发布（_shutting_down=True 与 stop 同临界区——发布后任何
+        # lifecycle transition 都能可靠观察到，Popen 失败时在同一 authority 下回滚）
+        with self._lifecycle_lock:
+            self._shutting_down = True
+            if self.listener is not None:
                 self._stop_listener()
         argv = build_restart_argv()
         try:
@@ -803,11 +855,15 @@ class Bridge:
                 creationflags=flags,
             )
         except OSError as e:
+            # 重启启动失败：回滚 shutdown intent（同一 authority 下）→ 本实例
+            # 继续运行，恢复热键（_apply_hotkey 此时未被 shutdown 守卫抑制）
+            with self._lifecycle_lock:
+                self._shutting_down = False
             ui.show_error("AAF Bridge — 重启失败", f"无法启动新 Bridge 进程: {e}\n当前实例继续运行。")
             self._apply_hotkey()  # 恢复热键
             return
-        # RW-012：重启是主动退出——禁止任何自恢复/复活（新实例由 mutex 交接接管）
-        self._shutting_down = True
+        # RW-012：重启是主动退出——禁止任何自恢复/复活（新实例由 mutex 交接接管）；
+        # shutdown intent 已在 lifecycle authority 下发布（见上）
         os._exit(0)  # 立即退出：kernel 释放 mutex，新实例接管
 
     def _exit_aaf(self) -> None:
@@ -818,13 +874,18 @@ class Bridge:
 
         RW-012：确认退出期间置 shutting_down——禁止触发 listener 自恢复
         （退出不复活）；用户取消 → 恢复常规运行（自恢复重新允许）。
+        RW-012 FIX-005：shutdown intent 在 lifecycle authority 下发布
+        （_lifecycle_lock 内写 _shutting_down）——发布/回滚与 lifecycle
+        transition 串行化，任何等待锁的 transition 都能可靠观察到。
         """
-        self._shutting_down = True
+        with self._lifecycle_lock:
+            self._shutting_down = True
         confirm = ui.ask_exit_aaf(self.root)
         if confirm:
             self.root.quit()
         else:
-            self._shutting_down = False
+            with self._lifecycle_lock:
+                self._shutting_down = False
 
     def shutdown(self) -> None:
         """Intentional shutdown（Exit 确认 / Ctrl+C）：listener stop 契约收尾。
@@ -835,9 +896,14 @@ class Bridge:
         RW-012 FIX-003：stop/ownership transition 在 _lifecycle_lock 内执行
         （与 _apply_hotkey / delayed-exit cleanup 同一 transition authority）；
         shutdown 不 rearm、不启动 replacement（Requirement 16）。
+        RW-012 FIX-005：shutdown intent 在同一 authority 内先于 stop 发布
+        （Requirement 2/6：acquire → mark _shutting_down=True → stop →
+        prevent any future recovery）——等待锁的 transition 在取得锁后
+        必然观察到 shutdown；后续任何 poll / config reload / recovery
+        触发都被守卫拒绝（shutdown 接管后不得再有新的 recovery）。
         """
-        self._shutting_down = True
         with self._lifecycle_lock:
+            self._shutting_down = True
             self._stop_listener()
 
     # ---------- Phase E / TASK-005-C：Stop / Force 动作（req 3/4/5/7） ----------

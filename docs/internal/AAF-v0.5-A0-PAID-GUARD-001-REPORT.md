@@ -272,3 +272,67 @@ FIX-002 一次性关闭（未扩张到 A1）：
 - 状态：**A0 仍为 WAITING** —— 本任务未启动 A1；A0 是否 CLOSED 取决于 WorkBuddy 独立复现
   （线程/进程 contention、one-winner 不变量、loser 不越过 Hermes invocation 边界）与
   Codex re-review 是否再报 blocking REQUEST_CHANGE。
+
+### 12.7 FIX-005：paid admission 无持久化 state 权威 → fail closed（Codex BLOCKING 收口）
+
+- Codex 阻断（FIX-003 review，非阻塞警告升级为唯一 blocking 残留）：`evaluate()`
+  在 `state_dir=None` 时仍可用进程内 `_CONSUMED_AUTHS` 放行 matched paid
+  authorization —— 两个独立进程各自 `evaluate(..., state_dir=None)` 都能返回
+  ALLOWED_AUTHORIZED_PAID（每进程空 `_CONSUMED_AUTHS` 互不可见），违反
+  Requirement 3/5（持久化 filesystem exclusive-create 才是跨进程权威）。
+- FIX-004 被 Paid Guard 自身阻断（Bridge 继承 FIX-003 授权 scope → hermes 未启动、
+  terminal WAITING，未执行任何修复）；AAF execution contract 不允许重跑 terminal
+  WAITING Task ID → **FIX-005 以新 Task ID 重发同一 repair scope**（Planner
+  Boundary 明示：不得 reinterpret 为新 scope、不得 redesign 已正确的原子 claim 逻辑）。
+- 新实现（最小修复，未重构生命周期/授权架构）：
+  - `_claim_auth()` 在 `state_dir is None` 时**直接返回 False**（新增
+    `_STATE_DIR_REQUIRED_ERR`：persistent state_dir REQUIRED —— filesystem
+    exclusive-create 是唯一跨进程准入权威，`_CONSUMED_AUTHS` 不是准入权威）；
+  - `_CONSUMED_AUTHS` 永远只是非权威拒绝快路径（只拒绝、绝不放行）——即便集合中
+    已有该 auth，也无法创造任何放行；
+  - paid admission 序列收紧为：精确授权匹配 → 有效持久化 state_dir → 原子
+    exclusive-create claim 成功 → ALLOWED_AUTHORIZED_PAID；任何前置失败
+    （无 state_dir / 目录被文件占用 / marker 路径被目录占用 / I/O 失败）→
+    BLOCKED（fail closed）；
+  - FIX-003 原子性/安全修复全部保持：exclusive-create 跨进程 authority、共享
+    state_dir 并发恰一 winner、replay 拒绝、crash 后授权保持已消费、persistence
+    不确定 fail closed；FIX-002 hostname/IP 严格端点判定、loopback-only
+    LOCAL_FREE、AAF_COST_FREE_MODELS 忽略均未改写；
+  - runner 不变（始终 `state_dir=output_dir`），正常 Runner 行为保持。
+- 测试（Requirement 8 A–H 全覆盖）：
+  - `tests/test_cost_guard_fix005.py` 新增 17 项：A 单次/线程并发/`_CONSUMED_AUTHS`
+    预置/函数级 —— matched paid auth + state_dir=None → 零 ALLOWED；B 6 独立进程 +
+    state_dir=None → 零 winner；C 6 独立进程 + 共享 state_dir → 恰一 winner +
+    fresh replay blocked；D 顺序 replay 首次 allowed 二次 blocked（含 fresh-process
+    等价）；E state_dir 是文件 / marker 被目录占用 / runner 级 persistence 不确定
+    → fail closed 且 Hermes 零 spawn；F LOCAL_FREE 无 state_dir 仍可用（ollama +
+    loopback base_url）；G paid/unknown 无授权仍 blocked；H FIX-002 endpoint
+    对抗抽样 / FREE env 忽略 / FIX-003 线程 contention one-winner 保持；
+  - 修订 3 项既存测试（Requirement 9：移除「state_dir=None 可产生一个 paid
+    winner」断言）：`test_cost_guard.py::test_c_exact_authorization_allows_paid`
+    与 `test_cost_guard_fix002.py::test_one_time_auth_first_admission_allowed_second_blocked`
+    改为显式传 `state_dir`；`test_cost_guard_fix003.py::test_thread_concurrency_inprocess_authority_only`
+    重写为 `test_thread_concurrency_state_dir_none_zero_winners`（8 线程 barrier →
+    零 ALLOWED、全部 BLOCKED、零 consumed）；
+  - `tests/_auth_claim_worker.py` 支持 `NONE` token → `state_dir=None`（进程级
+    fail-closed 实证通道）；
+  - fresh-runner Run N+1：`tests/fresh_runner_cost_guard_fix005_validation.py`
+    **6/6 场景 passed**（S1 单 fresh 进程 + None → BLOCKED；S2 6 进程 + None →
+    零 winner；S3 共享 state_dir 6 进程 → 恰一 winner + fresh replay blocked；
+    S4 replay 到达真实 runner 边界 → WAITING + BLOCKED + **hermes 未 spawn**；
+    S5 LOCAL_FREE → SUCCESS + ALLOWED_FREE + hermes 到达 invocation 边界；
+    S6 顺序 replay → BLOCKED）；运行时证据存于
+    `.aaf/AAF-v0.5-A0-PAID-GUARD-001-FIX-005/fresh-runner-validation/`（不提交）；
+  - 回归：既有 fresh-runner 驱动复跑全部保持绿色 —— FIX-003 驱动 5/5、FIX-002
+    驱动 9/9（S7/S8/S9 对抗场景在 fail-closed 新语义下不回归）；
+  - 回归（pytest）：定向 82 passed（test_cost_guard + fix002 + fix003 + fix005）；
+    分块全量 non-GUI **1371 passed / 1 skipped / 29 deselected**
+    （1354 FIX-003 基线 + 17 新增，零下降；3 个线程型文件单独 20 passed，
+    RW-029 既有环境 flake 按惯例隔离复跑，与 FIX-002/FIX-003 同款处理）。
+- 提交：`3c30a76`（feat 修复，2026-08-30，TASK: AAF-v0.5-A0-PAID-GUARD-001-FIX-005）。
+- 状态：**A0 仍为 WAITING** —— 修复已交付且 fail-closed 不变量由 fresh-process
+  证据覆盖；A0 是否 CLOSED 取决于 WorkBuddy 独立复现（state_dir=None → 零 paid
+  winner；共享 state_dir → 恰一并发 winner；blocked contender 不越过 Hermes
+  invocation 边界）与 Codex re-review 是否再报 blocking REQUEST_CHANGE。
+  Remote Sync：本任务提交**未推送**（Requirement 13：review 通过后再同步 accepted
+  commits；同步后 ahead/behind 归 0/0）。

@@ -42,7 +42,8 @@ A0 Delivered: Hermes Paid Guard（fail-closed task-scoped cost authorization）�
   - 实现：ai_agent_framework/cost_guard.py + runner 预调用 guard（subprocess 创建前）
     + adapters 透传（AAF_HERMES_MODEL / AAF_HERMES_PROVIDER → -m / --provider）
   - 授权：AAF_COST_AUTH="<Task ID>|<stage>|<model>[|<provider>]"（整串精确匹配；
-    FIX-002 起准入即消费——in-process + 执行目录 cost_auth_consumed.json，replay 拒绝）
+    FIX-002 起准入即消费；FIX-003 原子 claim——exclusive-create（open(...,"x")）为
+    跨进程权威，in-process 集合仅作非权威拒绝快路径；replay 拒绝、fail closed）
   - 本地判定（FIX-002）：base_url 解析后 hostname = exact localhost / loopback IP
     （127.0.0.0/8、::1）或 verified local Ollama；substring 匹配已移除（fail-closed）
   - FREE 元数据（FIX-002）：AAF_COST_FREE_MODELS 不再是权威 FREE 来源（A0 无远程

@@ -223,3 +223,52 @@ FIX-002 一次性关闭（未扩张到 A1）：
     / consumption marker 存在 / hermes 未 spawn。
 - 提交：`fa1adaa`（feat 修复，2026-08-29，TASK: AAF-v0.5-A0-PAID-GUARD-001-FIX-002）；Remote Sync：**SYNCED**（`git push origin main`：`5037eb4..fa1adaa main -> main`；ahead-behind 0/0）。
 - 状态：A0 修复完成；**Codex re-review 通过前 A0 不得标记 CLOSED**；A1 未启动。
+
+### 12.6 FIX-003：授权消费原子化（Codex BLOCKING #3 最终收口）
+
+- Codex 阻断（FIX-002 残留）：授权消费是 check-then-consume（TOCTOU）——`_auth_consumed()`
+  与 `_consume_auth()` 分离，并发/重入 admission 可同时观察到「未消费」并都返回
+  ALLOWED_AUTHORIZED_PAID；`_CONSUMED_AUTHS` 无法跨进程协调，普通 `Path.write_text()`
+  覆盖写没有 exclusive-claim 语义。
+- 新实现：`cost_guard._claim_auth()` 单一原子操作（check-then-consume 已整体移除）——
+  - 跨进程权威 = filesystem exclusive-create（`open(marker, "x")`，O_CREAT|O_EXCL /
+    CREATE_NEW 语义）：确定性子路径 `<state_dir>/cost_auth_consumed.json`，恰好一个
+    contender 能创建成功；
+  - marker 路径已被占用（文件/目录/符号链接；FileExistsError 或任何 OSError 且
+    `marker.exists()` 为真——Windows 上目录占用表现为 PermissionError，故按路径占用判定）
+    → 该授权已消费 → BLOCKED（fail closed）；
+  - 其他 I/O / 持久化失败（无法建立 marker）→ BLOCKED（fail closed，不静默放行）；
+  - claim 成功后进程崩溃 → marker 已存在，授权保持已消费（fail-closed 可接受，优于 replay）；
+  - `_CONSUMED_AUTHS` 降级为非权威只拒绝快路径（`_CONSUMED_LOCK` 保护；只拒绝、不放行，
+    不可能造成 fail-open）；
+  - 消费记录不再落盘授权原文 `consumed_auth`（Codex 非阻塞警告收口；sha256 指纹即可等值判定）；
+  - `_consume_auth` 保留为兼容别名（FIX-002 fresh-runner S9 / 旧单元测试契约不变）。
+  - 语义不变：scope 整串精确匹配（Task + stage + model（+provider））；未匹配/畸形授权不消费
+    任何状态；所有 A0 不变量（guard 先于 Hermes subprocess、blocked → 零 spawn、无网络/LLM
+    决策、Hermes 全局 config 不变、无静默付费 fallback、invocation-truth）保持不变。
+- 测试：`tests/test_cost_guard_fix003.py` 新增 13 项（Requirement 9 A–F 全覆盖）——线程并发
+  （barrier 起跑 8 线程，同一 auth + 同一 state_dir → 恰好 1 个 ALLOWED，其余 BLOCKED 且
+  authorization_consumed=true）、进程并发（6 个独立 python 进程 → 恰好 1 个 claim 成功，
+  另加 fresh 进程 replay blocked）、顺序 replay、不同 Task/model 授权不消费、未匹配不消费、
+  marker 被目录占用 fail closed、state_dir 是文件 fail closed、marker 内容仅指纹不落原文、
+  FIX-002 旧格式 marker 兼容拒绝、runner 级 replay 零 Hermes 调用（run_agent 零调用）。
+- fresh-runner Run N+1（全新 python 进程）：`tests/fresh_runner_cost_guard_fix003_validation.py`
+  **5/5 场景 passed**：
+  - S1 进程并发 contention（6 进程同一 auth + 同一 state_dir → 1 winner / 5 BLOCKED +
+    fresh replay blocked；marker 指纹正确、无原文）；
+  - S2 replay 到达真实 runner 边界（marker 已 claim，同 auth 重新提交 → WAITING +
+    BLOCKED_COST_APPROVAL + authorization_consumed=true + **hermes 未 spawn**）；
+  - S3 verified LOCAL_FREE（本地 ollama）→ SUCCESS + ALLOWED_FREE + hermes 到达 invocation 边界；
+  - S4 paid/unknown 无授权 → WAITING + BLOCKED + hermes 未 spawn；
+  - S5 顺序 replay（独立 execution 上下文）→ BLOCKED。
+  运行时证据存于 `.aaf/AAF-v0.5-A0-PAID-GUARD-001-FIX-003/fresh-runner-validation/`（不提交）。
+- 回归：定向 **65 passed**（52 FIX-002 基线 + 13 新增，零下降）；分块全量 non-GUI
+  **1354 passed / 0 failed**（1341 FIX-002 基线 + 13 新增）；单进程连跑仍触发既有
+  RW-029 环境 flake（`0x80000003`，bridge/launcher 线程 + GC，`test_phase_e_cancel_ui_e2e.py`
+  → `bridge/launcher.py:414`，两次复跑同一位置崩溃），该文件隔离复跑 7 passed —— 与 FIX-002
+  记录的既有 flake 一致，非本次变更引入；FIX-002 fresh-runner 驱动复跑 9/9 passed
+  （S7/S8/S9 对抗场景在原子 claim 下保持 fail-closed）。
+- 提交：`0d613a3`（feat 修复，2026-08-30，TASK: AAF-v0.5-A0-PAID-GUARD-001-FIX-003）。
+- 状态：**A0 仍为 WAITING** —— 本任务未启动 A1；A0 是否 CLOSED 取决于 WorkBuddy 独立复现
+  （线程/进程 contention、one-winner 不变量、loser 不越过 Hermes invocation 边界）与
+  Codex re-review 是否再报 blocking REQUEST_CHANGE。

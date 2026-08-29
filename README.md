@@ -1,4 +1,4 @@
-# AI Agent Framework v0.3
+# AI Agent Framework v0.4
 
 **本地多 Agent 协作框架** —— 减少你在 Planner / Executor / Validator / Reviewer 之间手工复制粘贴和传话的工作。
 
@@ -326,7 +326,8 @@ Planner → Bridge → Hermes → WorkBuddy → Codex → REPORT
 |---|---|
 | v0.2 | 历史自动化 MVP |
 | v0.3 | **CLOSED / stable personal-use baseline** |
-| v0.4 | NOT STARTED（由 Planner / 用户显式启动） |
+| v0.4 | **FROZEN / RELEASE READY（2026-08-29 Final Acceptance PASS；implementation baseline `1d3771fe8220e1b2e21c774840d680ec9f2dce61`；tag `v0.4`；最终交接见 docs/internal/handoffs/AI-Agent-Framework-v0.4-CLOSING-HANDOFF-2026-08-29.md）** |
+| v0.5+ | 未启动（仅在用户显式启动 v0.5 / Model Routing / 新功能开发时开启） |
 
 ## 测试
 

@@ -385,6 +385,36 @@ REPORT 聚合）不一定代表刚提交的新实现——可能缺失新字段�
 4. 若未来需要"修改自身代码的任务自身的 artifacts 反映新实现"，须由 Planner 立项
    fresh-process re-run 或 restart 机制，不在本观察范围内实现。
 
+## 16. Project Status Transparency Rule（项目状态透明规则）
+
+（2026-08-29，AAF-v0.4-FREEZE-001 正式登记；**长期协作规则，适用于任何项目、任何对话**，
+不限于 AAF 自身任务）
+
+**规则**：任何项目、任何对话推进时，Planner / AI 必须清楚展示：
+
+- 当前阶段（Current Stage）
+- 当前步骤（Current Step）
+- 已完成（Completed）
+- 未完成（Remaining）
+- 下一步（Next）
+- 阶段进度（Progress）
+- 主线 / 临时支线（Main line / Temporary side line）
+
+**临时支线规则**：如果因 blocker 插入临时工作，必须明确：
+
+1. 这是临时支线（temporary side line），不是主线；
+2. 为什么插入（blocker / 原因）；
+3. 完成后回到哪条主线（resume point）。
+
+**目的**：不得让用户从长上下文中自己推断「现在在做什么、做到哪了、还剩多少」。
+
+**落盘范围**：
+- 本文件（Policy）为 durable 落盘位置；
+- 同步登记：`docs/internal/handoffs/AI-Agent-Framework-v0.4-CLOSING-HANDOFF-2026-08-29.md`
+  （v0.4 final handoff）；
+- Obsidian / 全局 AI 协作规范应同步该规则（Global Collaboration Rule Sync Pending，
+  见 final handoff）。
+
 ---
 
 *Policy 变更须经 Planner 评审 + WorkBuddy/Codex 复核后落盘；本文件本身同样遵守

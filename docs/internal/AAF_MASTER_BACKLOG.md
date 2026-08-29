@@ -447,7 +447,7 @@ P3
 | Not RW-020 | RW-020 = RUNNING 状态残留，但 runner / agent 已死亡（Dead Runner / Orphaned RUNNING）。本问题 = runner 仍然存活并成功完成，但 Bridge 换代后 completion notification continuity 丢失。两者是不同的失败模式，不合并、不互相覆盖。 |
 | Important Boundary | 这不是 task lifecycle corruption：canonical task / REPORT 可以最终 SUCCESS，缺失的是 Bridge-side observation / reattachment / notification continuity。不允许 UI 自行修改 canonical terminal state。 |
 | Remaining Gap | - Bridge restart 后发现 in-flight task<br>- 完成后恢复 notification<br>- Planner Handoff / REPORT availability 提示<br>- 与未来 launch ownership / persistent registry 架构保持一致（设计 §6B.11–§6B.16 Bridge launch registry / §15 Phase E）<br>- 不重复实现 Core lifecycle |
-| Decision | 当前只登记。不重开 Phase B。不得在本任务实现 reattachment。<br>**AAF-v0.4-TASK-009 necessity check（2026-08-29）**：A. 仍可复现/当前（真实复现 3 次，未修复）；B. 与 RW-012 **不同 lifecycle owner / 不同根因**（RW-012 = listener 线程健康；本项 = launcher 内存 wait-thread completion callback 跨 Bridge 换代丢失）；C. **非最小改动**（需新 reattachment / notification recovery 机制，被 TASK-009 明确禁止）。→ **DEFERRED / OPEN P2，v0.4 freeze 显式 non-blocking**。 |
+| Decision | 当前只登记。不重开 Phase B。不得在本任务实现 reattachment。<br>**AAF-v0.4-TASK-009 necessity check（2026-08-29）**：A. 仍可复现/当前（真实复现 3 次，未修复）；B. 与 RW-012 **不同 lifecycle owner / 不同根因**（RW-012 = listener 线程健康；本项 = launcher 内存 wait-thread completion callback 跨 Bridge 换代丢失）；C. **非最小改动**（需新 reattachment / notification recovery 机制，被 TASK-009 明确禁止）。→ **DEFERRED / OPEN P2，v0.4 freeze 显式 non-blocking**。<br>**AAF-v0.4-FINAL-ACCEPTANCE-002（2026-08-29）**：确认 DEFERRED / OPEN P2 分类，无新 blocking evidence，v0.4 non-blocking。 |
 | Target | Bridge 换代（Restart / Exit / relaunch）后仍能发现 in-flight task，并在其完成后恢复 completion notification / Planner Handoff / REPORT availability 提示。 |
 | Related | RW-020（明确区分，见上）、RW-014（Task Stop / Cancel）、RW-016（Duplicate Task Status UX）；设计文档 `docs/design/AAF-DESKTOP-SHELL-MINIMAL-DESIGN.md` §6B（launch registry / ownership 恢复协议）、§7（Bridge Background Runtime）、§15（Phase E Safe Cancel Lifecycle）——仅引用未来架构关系，不提前实现 Phase E |
 | Do Not Forget | Framework execution success 和用户 completion notification 是两个不同事实。REPORT 已成功生成 ≠ 用户一定收到完成提示。 |
@@ -566,7 +566,7 @@ P3
 | ID | RW-027 |
 | Title | WorkBuddy Stage Reliability / Bounded Transient Retry |
 | Category | Framework execution reliability / WorkBuddy transport layer |
-| Status | **SOLVED**（AAF-v0.4-TASK-011 交付 + FIX-001 收口 + **FIX-002 关闭最后一个 blocking defect**，2026-08-29；confirmed-dead-before-retry + single absolute stage deadline + **Windows tree cleanup authority + safe cleanup reserve minimum + attempt admission control** 全量落地、implementation + 测试通过（1289 passed / 1 skipped / 9 deselected）；独立 WorkBuddy 验证 + Codex 审查为 route 最后闸门） |
+| Status | **SOLVED**（AAF-v0.4-TASK-011 交付 + FIX-001 收口 + **FIX-002 关闭最后一个 blocking defect**，2026-08-29；confirmed-dead-before-retry + single absolute stage deadline + **Windows tree cleanup authority + safe cleanup reserve minimum + attempt admission control** 全量落地、implementation + 测试通过（1289 passed / 1 skipped / 9 deselected）；独立 WorkBuddy 验证 + Codex 审查通过；Final Acceptance PASS（AAF-v0.4-FINAL-ACCEPTANCE-002，2026-08-29）确认 SOLVED 状态） |
 | Priority | P1 |
 | Evidence / Origin | freeze 前连续真实复现：CLOSURE-002（codebuddy exit=0 + 空 stdout + stderr「Empty stream: upstream gateway sent only placeholder chunks without any model output (chunks=1, bytes=748)」，Framework 正确 FRAMEWORK_ERROR，Codex 未运行，任务停 WAITING）；CLOSURE-003（codebuddy 单次 subprocess.run(timeout=3600) 挂死至 TimeoutExpired，真实 1 小时等待）。根因：WorkBuddy stage 只有单次 subprocess.run(timeout=3600)，无 transient recovery 层 |
 | Problem | 一次 gateway/CLI transient failure（placeholder-only 输出 / 超时）直接终止整条 Framework task：required validator 无有效结果 → Codex 不运行 → 无人值守任务停在 WAITING；且固定 3600s 硬等待造成长静默 |
@@ -592,9 +592,28 @@ P3
 | Problem | 早期 validation 失败（exit=2）在 GUI 宿主中不可诊断；用户不知道 TASK 哪里写错 |
 | Current Implementation | 无（本任务不实现该 UX） |
 | Remaining Gap | 需要把 validation 失败原因（TaskValidationError 文本）带到 Bridge UI/通知 |
-| Decision | 登记为后续 UX 改进项；不得扩大当前 TASK-011 scope 去实现 |
+| Decision | 登记为后续 UX 改进项；不得扩大当前 TASK-011 scope 去实现。<br>**AAF-v0.4-FINAL-ACCEPTANCE-002（2026-08-29）**：确认分类 = DEFERRED P2 diagnostics UX / non-blocking（validation fail-closed 正确性已确认，缺口仅为 TaskValidationError 可见性）。 |
 | Target | 后续 UX 任务：validation 失败时 UI 显示具体错误（如 duplicate Route / missing field） |
 | Do Not Forget | 该事项持续记录在 Final Acceptance checklist；实现时不得改变 validation fail-closed 语义 |
+
+---
+
+## RW-029 — Windows 全量 pytest 环境 0x80000003 观察（test-environment observation）
+
+| 字段 | 内容 |
+|---|---|
+| ID | RW-029 |
+| Title | Windows 全量 pytest 环境偶发 0x80000003（测试环境观察，非产品 runtime 缺陷） |
+| Category | Tests / Test environment observation |
+| Status | **OBSERVATION**（AAF-v0.4-FINAL-ACCEPTANCE-002 分类：DEFERRED / NON-BLOCKING test-env observation，2026-08-29） |
+| Priority | P3 |
+| Evidence / Origin | 2026-08-29 Windows 全量 pytest 环境（既有 non-GUI pytest / Bridge 残留线程环境）曾出现 0x80000003。隔离证据未指向本次变更；当前无证据证明正常生产 AAF runtime 必然受影响。 |
+| Problem | 测试环境层面偶发 0x80000003（残留线程 / 调试器干扰 / 环境因素候选）；不是 Framework implementation regression |
+| Current Implementation | 无（未修复；仅登记） |
+| Remaining Gap | 需在测试环境层面定位（残留线程 / Windows 调试器 / 其他环境因素），不属于产品 runtime 缺陷 |
+| Decision | 只登记为 DEFERRED / NON-BLOCKING observation；不扩大 v0.4 freeze scope。除非 repository 证据表明产品 runtime 受影响，否则不升级、不因该观察重开 v0.4 或启动新开发线 |
+| Target | 后续维护任务在测试环境层面调查（如线程残留 / 调试器干扰 / 全量 suite 隔离） |
+| Do Not Forget | 该观察不构成 v0.4 correctness blocker；与 RW-025（时钟 flake）同类：测试环境观察 ≠ 产品缺陷 |
 
 ---
 
@@ -855,7 +874,7 @@ Obsidian working knowledge → stable conclusion → Framework task → 提升�
 | ID | CAP-001 |
 | Title | Model Observability（模型观测事实层） |
 | Category | Capability（只读基础能力） |
-| Status | **IMPLEMENTED — 待 Codex APPROVE 正式确认（AAF-v0.4-TASK-010-FIX-001 evidence correction 已交付）** |
+| Status | **IMPLEMENTED**（AAF-v0.4-FINAL-ACCEPTANCE-002 Codex APPROVE 确认，2026-08-29） |
 | Priority | P1 |
 | Evidence / Origin | AAF-v0.4-TASK-010 交付：`ai_agent_framework/model_observation.py` + `model_observation.json`（单一 machine authority，schema_version=1）+ 每 stage `stage_timing`（started/finished/elapsed）+ REPORT 紧凑摘要 |
 | Current Implementation | runner 每 stage 记录时序并执行只读 discovery；观测记录含 agent/provider/model/model_source/reasoning_effort/cost_class/cost_metadata/cost_multiplier/discovered_at/discovery_status/capabilities/notes；`AAF_MODEL_OBSERVATION=0` 可整层关闭 |
@@ -871,7 +890,7 @@ Obsidian working knowledge → stable conclusion → Framework task → 提升�
 | ID | CAP-002 |
 | Title | Model Discovery（从真实 Agent 接口发现模型信息） |
 | Category | Capability（只读发现能力） |
-| Status | **IMPLEMENTED（以真实 Agent 接口为限）— 待 Codex APPROVE 正式确认（AAF-v0.4-TASK-010-FIX-001 evidence correction 已交付）** |
+| Status | **IMPLEMENTED（以真实 Agent 接口为限）**（AAF-v0.4-FINAL-ACCEPTANCE-002 Codex APPROVE 确认，2026-08-29） |
 | Priority | P1 |
 | Evidence / Origin | 真实 CLI 只读 probe（TASK-010 + FIX-001，2026-08-29）：Hermes v0.20.5（`config get model` / `config get auxiliary` / `status`）；CodeBuddy 2.141.0（`codebuddy --version` 动态 probe；FIX-001 修正 TASK-010 手写 2.137.1 无证据值；`config get model` / `--help`）；codex-cli 0.150.0-alpha.12.2（`exec --help` / `~/.codex/config.toml` / `--version`） |
 | Current Implementation | 每 agent 独立 discover_*：Hermes 主模型 + auxiliary slots（本地 Ollama 可发现）；CodeBuddy 当前模型 UNKNOWN（config 不暴露）+ CLI help 文档化模型 ID；Codex 默认模型 server-side 不可枚举（documented limitation）+ `-m/--model` 显式选择能力 |
@@ -931,7 +950,7 @@ Obsidian working knowledge → stable conclusion → Framework task → 提升�
 | RW-009 | ChatGPT Project / Conversation disaster recovery | PARTIAL | P0 |
 | RW-010 | Desktop App / Windows Program Packaging | OPEN | P2 |
 | RW-011 | Router local constraint classification incident | SOLVED | P1 |
-| RW-012 | Bridge hotkey listener runtime reliability | OPEN | P1 |
+| RW-012 | Bridge hotkey listener runtime reliability | SOLVED (v0.4) | P1 |
 | RW-013 | Router self-triggering reference trap | OPEN | P1 |
 | RW-014 | Task Stop / Cancel Capability | PARTIAL | P1 |
 | RW-015 | Chinese-first Desktop / Tray User Interface | OPEN | P2 |
@@ -948,6 +967,7 @@ Obsidian working knowledge → stable conclusion → Framework task → 提升�
 | RW-026 | Automated pytest 弹出真实桌面 Bridge modal（FIX-UI-A-001；GUI E2E 未结构性排除） | SOLVED | P1 |
 | RW-027 | WorkBuddy Stage Reliability / Bounded Transient Retry | SOLVED | P1 |
 | RW-028 | pythonw 早期校验失败 UI 仅显示 exit=2（TaskValidationError 不可见） | OBSERVATION | P2 |
+| RW-029 | Windows 全量 pytest 环境 0x80000003 观察（test-env） | OBSERVATION | P3 |
 | BND-001 | Planner-layer Anti-Drift Validation | PARTIAL | P2 |
 | CTX-001 | Context Length / Conversation Rollover UX | PARTIAL | P1 |
 | CTX-002 | TASK / Stage Prompt / REPORT Context Bloat（层层全文叠加） | SOLVED | P1 |

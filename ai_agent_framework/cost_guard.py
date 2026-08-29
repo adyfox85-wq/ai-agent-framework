@@ -27,11 +27,15 @@ closed——Hermes 进程不启动，任务进入 WAITING（COST_APPROVAL_REQUIR
   不再作为权威 FREE 来源，一律忽略（诊断 note 保留）。
 - COST_UNKNOWN（内部）：effective model 无法解析（fail closed）。
 
-授权表示（为何最小；FIX-002 修订）：单环境变量 + 整串精确匹配 + **准入即消费**。
-不引入数据库 / 审批服务 / 长生命周期 token：env 只存在于发起进程；精确匹配成功后
-授权立即被消费（in-process 集合 + 执行目录内消费记录 ``cost_auth_consumed.json``），
-同一授权值在同一执行上下文内不可二次准入（replay 拒绝、fail closed）；Task ID 在
-scope 内 → 对其他任务天然失效（不泄漏到后续任务）；消费状态不确定 → fail closed。
+授权表示（为何最小；FIX-002 修订；FIX-003 原子 claim）：单环境变量 + 整串精确匹配 +
+**准入即原子消费（claim）**。不引入数据库 / 审批服务 / 长生命周期 token：env 只存在于
+发起进程；精确匹配成功后授权被**单一原子操作 claim**——跨进程权威 = 执行目录内
+消费记录 ``cost_auth_consumed.json`` 的 filesystem exclusive-create
+（``open(..., "x")``，O_CREAT|O_EXCL 语义），恰好一个 contender 能创建成功
+（FIX-003；替换 FIX-002 的 check-then-consume TOCTOU）；in-process 集合仅作
+非权威拒绝快路径（只拒绝、不放行）。同一授权值在同一执行上下文内不可二次准入
+（replay 拒绝、fail closed）；Task ID 在 scope 内 → 对其他任务天然失效（不泄漏到
+后续任务）；claim 状态不确定（marker 已存在 / I/O 失败）→ fail closed。
 
 
 Hermes 全局 config 不被本模块修改（只读查询 ``hermes config get model`` 是
@@ -49,6 +53,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import winreg
 from datetime import datetime
@@ -97,10 +102,11 @@ _OLLAMA_PROVIDER = "ollama"
 
 _SEPARATOR = "|"
 
-# 一次性授权消费：in-process 集合 + 执行目录内消费记录文件（见 _consume_auth）。
-# 不构建数据库 / 审批服务 / 永久子系统（A0 最小；消费状态不确定 → fail closed）。
+# 一次性授权消费（FIX-003）：原子 claim（exclusive-create 为跨进程权威）+ in-process
+# 只拒绝快路径。不构建数据库 / 审批服务 / 永久子系统（A0 最小；claim 状态不确定 → fail closed）。
 CONSUMPTION_FILENAME = "cost_auth_consumed.json"
 _CONSUMED_AUTHS: set[str] = set()
+_CONSUMED_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -366,67 +372,80 @@ def _authorization_matches(auth: str | None, scope: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 一次性授权消费（FIX-002；Codex BLOCKING #3）
+# 一次性授权消费（FIX-002 引入；FIX-003：check-then-consume → 单一原子 claim）
 # ---------------------------------------------------------------------------
 
 
 def _auth_fingerprint(auth: str) -> str:
-    """授权值的稳定指纹（sha256；消费记录里不存放明文之外的等价标识）。"""
+    """授权值的稳定指纹（sha256；消费记录不落盘授权原文，仅等价标识）。"""
     return hashlib.sha256(auth.encode("utf-8")).hexdigest()
 
 
-def _auth_consumed(auth: str, state_dir: str | os.PathLike | None) -> bool:
-    """auth 是否已被消费（in-process 集合 或 state_dir 内消费记录）。
+_CLAIM_ALREADY_CONSUMED = (
+    "authorization already consumed (one-time) — replay rejected; "
+    "a NEW authorization value is required for another admission"
+)
 
-    消费状态不确定（记录损坏/读取失败）→ 视为已消费（fail closed）。
+
+def _claim_auth(
+    auth: str, scope: str, state_dir: str | os.PathLike | None
+) -> tuple[bool, str]:
+    """原子 claim 一次性授权（FIX-003；替换 FIX-002 的 check-then-consume TOCTOU）。
+
+    单一原子操作，不再“先检查是否已消费、再消费”：
+    - in-process 快路径（``_CONSUMED_LOCK`` 保护）：只拒绝（已在本进程消费过），
+      不放行任何东西 —— 非权威优化，不可能造成 fail-open；
+    - 跨进程权威 = 文件系统 exclusive-create：确定性子路径
+      ``<state_dir>/cost_auth_consumed.json`` 用 ``open(marker, "x")``
+      （O_CREAT|O_EXCL / CREATE_NEW）创建，恰好一个 contender 能成功；
+    - marker 路径已被占用（文件/目录/符号链接；FileExistsError 或任何 OSError 且
+      ``marker.exists()`` 为真）→ 该授权已被 claim/消费 → 返回 False（BLOCK）；
+    - 其余 I/O / 持久化失败（无法建立 marker）→ 返回 False（fail closed，不静默放行）；
+    - claim 成功后进程崩溃 → marker 已存在，授权保持已消费（fail-closed 结果可接受，
+      优于 replay）。
+
+    返回 (ok, err)。ok=True 仅当本次调用赢得了 claim。
     """
-    if auth in _CONSUMED_AUTHS:
-        return True
-    if state_dir is None:
-        return False
-    marker = Path(state_dir) / CONSUMPTION_FILENAME
-    try:
-        data = json.loads(marker.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return False
-    except (OSError, ValueError, TypeError):
-        return True  # 读取失败/损坏 → 状态不确定 → fail closed
-    consumed_fp = data.get("consumed_auth_fingerprint")
-    if not isinstance(consumed_fp, str):
-        return True  # 记录损坏 → fail closed
-    return _auth_fingerprint(auth) == consumed_fp
+    with _CONSUMED_LOCK:
+        if auth in _CONSUMED_AUTHS:
+            return False, _CLAIM_ALREADY_CONSUMED
+        if state_dir is not None:
+            marker = Path(state_dir) / CONSUMPTION_FILENAME
+            payload = {
+                "schema_version": SCHEMA_VERSION,
+                "decision": DECISION_ALLOWED_AUTHORIZED_PAID,
+                "scope": scope,
+                "consumed_auth_fingerprint": _auth_fingerprint(auth),
+                "consumed_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            try:
+                marker.parent.mkdir(parents=True, exist_ok=True)
+            except FileExistsError:
+                # state_dir 路径本身是已存在文件 → marker 无法建立 → fail closed
+                return False, (
+                    "cannot persist consumption marker (state_dir is not a "
+                    "directory) — fail closed"
+                )
+            except OSError as exc:
+                return False, f"cannot persist consumption marker ({exc})"
+            try:
+                with open(marker, "x", encoding="utf-8") as fh:
+                    fh.write(json.dumps(payload, ensure_ascii=False, indent=2))
+            except OSError as exc:
+                if marker.exists():
+                    # 路径已被占用（含目录/符号链接等非 FileExistsError 平台差异）
+                    # → 他人已 claim → 视为已消费（fail closed）
+                    return False, _CLAIM_ALREADY_CONSUMED
+                return False, f"cannot persist consumption marker ({exc})"
+        _CONSUMED_AUTHS.add(auth)
+        return True, ""
 
 
 def _consume_auth(
     auth: str, scope: str, state_dir: str | os.PathLike | None
 ) -> tuple[bool, str]:
-    """在准入边界消费授权（FIX-002）。
-
-    - 先标记 in-process（同进程 re-entrant / duplicate evaluate → 第二次 blocked）
-    - 再持久化到执行目录（跨进程 resume/re-entry 不可 replay）
-    - 持久化失败 → 撤回 in-process 标记并返回错误 → 调用方 fail closed
-    返回 (ok, error)。
-    """
-    _CONSUMED_AUTHS.add(auth)
-    if state_dir is not None:
-        marker = Path(state_dir) / CONSUMPTION_FILENAME
-        payload = {
-            "schema_version": SCHEMA_VERSION,
-            "decision": DECISION_ALLOWED_AUTHORIZED_PAID,
-            "scope": scope,
-            "consumed_auth_fingerprint": _auth_fingerprint(auth),
-            "consumed_auth": auth,
-            "consumed_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        try:
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        except OSError as exc:
-            _CONSUMED_AUTHS.discard(auth)
-            return False, f"cannot persist consumption marker ({exc})"
-    return True, ""
+    """兼容别名（FIX-002 名称保留）：委托给原子 ``_claim_auth``。"""
+    return _claim_auth(auth, scope, state_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -488,28 +507,22 @@ def evaluate(
         scope = scope_string(task_id, stage, model, provider)
         required_scope = scope
         if _authorization_matches(auth_value, scope):
-            if _auth_consumed(auth_value, state_dir):
-                decision = DECISION_BLOCKED_COST_APPROVAL
+            # FIX-003：单一原子 claim（exclusive-create 跨进程权威），
+            # 不再 check-then-consume —— 并发/重入 admission 不可能同时看到
+            # “未消费”并双双放行；恰好一个 contender 赢得 claim。
+            claimed, claim_err = _claim_auth(auth_value, scope, state_dir)
+            if claimed:
+                decision = DECISION_ALLOWED_AUTHORIZED_PAID
+                authorization_matched = True
                 authorization_consumed = True
                 notes.append(
-                    "authorization already consumed (one-time) — replay rejected; "
-                    "a NEW authorization value is required for another admission"
+                    "exact task/stage/model authorization atomically claimed at "
+                    "admission boundary (one-time; same auth cannot admit twice)"
                 )
             else:
-                consumed, err = _consume_auth(auth_value, scope, state_dir)
-                if consumed:
-                    decision = DECISION_ALLOWED_AUTHORIZED_PAID
-                    authorization_matched = True
-                    authorization_consumed = True
-                    notes.append(
-                        "exact task/stage/model authorization matched and consumed "
-                        "at admission boundary (one-time; same auth cannot admit twice)"
-                    )
-                else:
-                    decision = DECISION_BLOCKED_COST_APPROVAL
-                    notes.append(
-                        f"authorization consumption failed — fail closed ({err})"
-                    )
+                decision = DECISION_BLOCKED_COST_APPROVAL
+                authorization_consumed = claim_err == _CLAIM_ALREADY_CONSUMED
+                notes.append(claim_err)
         else:
             decision = DECISION_BLOCKED_COST_APPROVAL
             if auth_value:

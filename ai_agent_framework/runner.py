@@ -25,6 +25,7 @@ from .context_packet import (
     write_manifest,
     write_stage_result,
 )
+from . import cost_guard as cost_guard_mod
 from . import proc_identity
 from . import project_boundary
 from . import task_lifecycle
@@ -479,7 +480,23 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     stage_started_iso = datetime.now().isoformat(timespec='seconds')
                     stage_started_mono = time.monotonic()
                 try:
-                    result_text = run_agent(agent, prompt, workspace)
+                    if agent == 'hermes':
+                        # v0.5 A0 Paid Guard（fail-closed，TASK: AAF-v0.5-A0-PAID-GUARD-001）：
+                        # Hermes subprocess 创建前求值成本授权。付费/成本未知模型在无
+                        # 精确 task-scoped 授权时 → BLOCKED_COST_APPROVAL（Hermes 不启动，
+                        # blocked 文本以 FRAMEWORK_ERROR 开头 → 链中断 → WAITING；
+                        # resume 时不会把 blocked result 当已完成结果复用）。
+                        guard_record = cost_guard_mod.evaluate(task_id, agent)
+                        (output_dir / cost_guard_mod.ARTIFACT_FILENAME).write_text(
+                            json.dumps(guard_record, ensure_ascii=False, indent=2),
+                            encoding='utf-8',
+                        )
+                        if guard_record['decision'] == cost_guard_mod.DECISION_BLOCKED_COST_APPROVAL:
+                            result_text = cost_guard_mod.blocked_stage_text(guard_record)
+                        else:
+                            result_text = run_agent(agent, prompt, workspace)
+                    else:
+                        result_text = run_agent(agent, prompt, workspace)
                 except Exception as exc:
                     result_text = f'FRAMEWORK_ERROR\n{type(exc).__name__}: {exc}'
                 # TASK-011：WorkBuddy stage attempt telemetry（machine artifact；

@@ -8,6 +8,7 @@ import winreg
 from pathlib import Path
 
 from .context_packet import read_stage_result
+from . import cost_guard as cost_guard_mod
 from .subprocess_utils import no_console_kwargs
 from .task_validation import parse_task_fields
 from .workbuddy_retry import (
@@ -484,6 +485,15 @@ def run_agent(agent: str, prompt: str, workspace: Path, timeout: int = 3600) -> 
         exe = _require('hermes')
         # hermes v0.20.1 无 --query-file；用 -q 单查询 + -Q 静默 + --source tool 隔离
         args = [exe, 'chat', '--in', str(workspace), '-q', prompt, '-Q', '--ignore-rules', '--source', 'tool']
+        # v0.5 A0 Paid Guard：AAF_HERMES_MODEL（+ AAF_HERMES_PROVIDER）显式覆盖时
+        # 透传给实际 invocation，保证 guard 解析的 effective model == 实际调用模型
+        # （无覆盖时 args 与旧版完全一致；不修改 Hermes 全局 config）。
+        ov_model = os.environ.get(cost_guard_mod.ENV_MODEL, '').strip()
+        if ov_model:
+            args += ['-m', ov_model]
+            ov_provider = os.environ.get(cost_guard_mod.ENV_PROVIDER, '').strip()
+            if ov_provider:
+                args += ['--provider', ov_provider]
         stdin_data = None
     elif agent == 'workbuddy':
         # TASK-011：WorkBuddy stage 走有界 transient retry（transport 层）。

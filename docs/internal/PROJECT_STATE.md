@@ -27,9 +27,33 @@
 > 本文件不是历史快照。后续每完成一个重要阶段、发生 Framework
 > 级变更、版本状态变化或关键风险变化，都应更新本文件。
 >
-> 下方 v0.3 及更早内容属于历史状态，保留不删除；当前状态以顶部 v0.4 块为准。
+> 下方 v0.4 及更早内容属于历史/冻结状态，保留不删除；当前状态以顶部 v0.5 块为准。
 
 ------------------------------------------------------------------------
+
+## 0. v0.5 Current Status（当前开发线）
+
+> v0.5 开发线于 2026-08-29 由用户显式启动（TASK: AAF-v0.5-A0-PAID-GUARD-001）。
+> v0.4 保持 FROZEN 不变；下方 v0.4 区块为冻结历史记录，不重写。
+
+``` text
+Version: v0.5（IN PROGRESS）
+A0 Delivered: Hermes Paid Guard（fail-closed task-scoped cost authorization）—— 2026-08-29
+  - 实现：ai_agent_framework/cost_guard.py + runner 预调用 guard（subprocess 创建前）
+    + adapters 透传（AAF_HERMES_MODEL / AAF_HERMES_PROVIDER → -m / --provider）
+  - 授权：AAF_COST_AUTH="<Task ID>|<stage>|<model>[|<provider>]"（整串精确匹配；env per-run 一次性）
+  - FREE 元数据：AAF_COST_FREE_MODELS（显式声明；未知成本绝不视为免费）
+  - 机器可读决策：cost_guard.json（ALLOWED_FREE / ALLOWED_AUTHORIZED_PAID / BLOCKED_COST_APPROVAL）
+  - blocked → Hermes 进程零创建 + 任务 WAITING（COST_APPROVAL_REQUIRED）
+  - Hermes 全局 config 零修改；无网络/LLM 调用用于决策
+  - 证据：34 项定向测试 + 全量 non-GUI 1323 passed（1289 基线 + 34 新增，零下降）
+    + fresh-runner Run N+1 6/6 场景（见 docs/internal/AAF-v0.5-A0-PAID-GUARD-001-REPORT.md）
+Status: IN PROGRESS（A0 交付；正式 COMPLETE 判定留待 WorkBuddy 独立验证 + Codex 审查 + Planner 确认）
+Next (A1+): Hermes candidate Tier registry / Selection Engine / Shadow Routing / WorkBuddy 经济路由 /
+  Codex 成本优化 / 精确计价 / Cost Gate UX（本任务显式不做）
+```
+
+---
 
 ## 0. v0.4 Current Status（当前状态）
 

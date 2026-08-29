@@ -1,4 +1,4 @@
-"""AAF-v0.4-TASK-011 — WorkBuddy Stage Reliability / Bounded Retry tests.
+"""AAF-v0.4-TASK-011 + FIX-001 — WorkBuddy Stage Reliability / Bounded Retry tests.
 
 Test matrix（Requirement 20）+ 真实 incident regressions（Requirement 21）：
 A. attempt1 empty → attempt2 success        → stage success / Codex eligible
@@ -15,9 +15,21 @@ K. model/config unchanged across retries
 + CLOSURE-002（exit=0 + placeholder-only stderr）与 CLOSURE-003（TimeoutExpired）
   两个真实 incident 的回归。
 
-全部使用 mocked subprocess / fake CLI（Requirement 22）；唯一的真实子进程测试用
-python sleep（非 CodeBuddy，不消耗积分、不等待真实 3600s）。不驱动任何 GUI
-（Requirement 23）。
+FIX-001（confirmed-dead-before-retry + single absolute stage deadline）：
+22A. taskkill 失败 + kill 失败 + 进程存活 → 无 retry / fail closed / 不注销
+22B. taskkill 失败但 fallback kill 确认退出 → cleanup confirmed / retry 允许
+22C. 确认终止后 reap 失败 → 按资源安全语义如实分类（retryable + evidence）
+22D. registry 保留 unsafe child 直到 terminal handling
+22E. 下一 attempt/run 不能与 unsafe child 重叠（Registry Gate）
+23A. attempt timeout + cleanup + backoff 消费同一绝对 deadline
+23B. cleanup 等待被剩余 deadline 裁剪（无独立全尺寸等待）
+23C. 剩余安全 budget 不足 → 不启动下一次 attempt
+23D. reported stage elapsed 尊重配置 budget（确定性容差）
+23E. cleanup reserve 防止首次 attempt 吃掉全部 budget
+24.  既有 retry 矩阵保持 + telemetry 暴露 cleanup/deadline evidence
+
+全部使用 mocked subprocess / fake CLI（Requirement 25）；唯一的真实子进程测试用
+python sleep（非 CodeBuddy，不消耗积分、不等待真实 3600s）。不驱动任何 GUI。
 """
 import itertools
 import json
@@ -48,9 +60,16 @@ class FakeProc:
     ('timeout',)                                     → 抛 subprocess.TimeoutExpired
     ('sleep_timeout', seconds)                       → sleep 后抛 TimeoutExpired
     kill 后 communicate = drain 语义（返回 drained_*，returncode=-9）。
+
+    FIX-001 扩展（清理失败路径，Requirement 22/25）：
+    - alive_after_kill=True: kill() 后 poll() 仍返回 None（进程“杀不死”，仍存活）
+    - kill_raises: kill() 抛指定异常（kill 调用本身失败）
+    - reap_raises=True: kill 后 communicate 仍抛 OSError（reap 失败）
+    - communicate_timeouts: 记录每次 communicate 的 timeout 参数（deadline 裁剪证据）
     """
 
-    def __init__(self, pid, behavior_iter, drained_out='', drained_err=''):
+    def __init__(self, pid, behavior_iter, drained_out='', drained_err='',
+                 alive_after_kill=False, kill_raises=None, reap_raises=False):
         self.pid = pid
         self.behaviors = behavior_iter
         self.drained_out = drained_out
@@ -59,13 +78,22 @@ class FakeProc:
         self.killed = False
         self.communicate_calls = 0
         self.inputs = []
+        self.communicate_timeouts = []
         self.spawn_args = None
         self.spawn_kwargs = None
+        self.alive_after_kill = alive_after_kill
+        self.kill_raises = kill_raises
+        self.reap_raises = reap_raises
 
     def communicate(self, input=None, timeout=None):
         self.communicate_calls += 1
         self.inputs.append(input)
+        self.communicate_timeouts.append(timeout)
         if self.killed:
+            if self.alive_after_kill:
+                raise OSError('process still alive (simulated)')
+            if self.reap_raises:
+                raise OSError('pipe drain failed (simulated reap failure)')
             self.returncode = -9
             return self.drained_out, self.drained_err
         try:
@@ -89,17 +117,26 @@ class FakeProc:
         raise AssertionError(f'unknown behavior {kind!r}')
 
     def poll(self):
+        if self.alive_after_kill and self.killed:
+            return None  # 已被 kill 但进程仍存活（final liveness check 必须失败）
         return self.returncode
 
     def kill(self):
+        if self.kill_raises:
+            exc = self.kill_raises if isinstance(self.kill_raises, Exception) else OSError('kill failed (simulated)')
+            raise exc
         self.killed = True
-        self.returncode = -9
+        if not self.alive_after_kill:
+            self.returncode = -9
 
 
-def install_fake_popen(monkeypatch, behaviors, drained_out='', drained_err=''):
+def install_fake_popen(monkeypatch, behaviors, drained_out='', drained_err='',
+                       taskkill_result=True):
     """替换 retry 层 _Popen；spawn 时断言无并发 active child（Requirement H）。
 
     behaviors 是一个共享迭代器：所有 attempt 按顺序消费同一脚本序列。
+    taskkill_result: 脚本化 taskkill 返回值（True=树杀成功；False=taskkill 失败），
+    或一个 callable ``fn(pid, timeout=None)``（用于断言 deadline 裁剪证据）。
     """
     spawns = []
     counter = itertools.count(1000)
@@ -116,11 +153,16 @@ def install_fake_popen(monkeypatch, behaviors, drained_out='', drained_err=''):
         return proc
 
     monkeypatch.setattr(wb_retry_mod, '_Popen', fake_popen)
-    monkeypatch.setattr(wb_retry_mod, '_taskkill', lambda pid: True)
+    if callable(taskkill_result):
+        monkeypatch.setattr(wb_retry_mod, '_taskkill', taskkill_result)
+    else:
+        monkeypatch.setattr(
+            wb_retry_mod, '_taskkill', lambda pid, timeout=None: taskkill_result
+        )
     return spawns
 
 
-def make_policy(max_attempts=2, timeout=60.0, backoff=0.0, budget=None):
+def make_policy(max_attempts=2, timeout=60.0, backoff=0.0, budget=None, reserve=0.0):
     budget = (
         budget if budget is not None
         else (max_attempts * timeout + (max_attempts - 1) * backoff)
@@ -130,12 +172,14 @@ def make_policy(max_attempts=2, timeout=60.0, backoff=0.0, budget=None):
         per_attempt_timeout=timeout,
         backoff_seconds=backoff,
         overall_stage_budget=budget,
+        cleanup_reserve=reserve,
     )
 
 
-def run_retry(monkeypatch, behaviors, policy=None, prompt='PROMPT', workspace=None):
+def run_retry(monkeypatch, behaviors, policy=None, prompt='PROMPT', workspace=None,
+              taskkill_result=True):
     """直接调用 retry 编排层（fake CLI）。返回 (output, telemetry, spawns)。"""
-    spawns = install_fake_popen(monkeypatch, behaviors)
+    spawns = install_fake_popen(monkeypatch, behaviors, taskkill_result=taskkill_result)
     policy = policy or make_policy()
     ws = workspace or Path('.')
     out, telemetry = wb_retry_mod.run_workbuddy_with_retry(
@@ -488,7 +532,10 @@ def test_backoff_included_in_stage_elapsed(monkeypatch):
     )
     assert out == 'ok'
     assert telemetry['attempt_count'] == 3
-    assert telemetry['stage_total_elapsed_seconds'] >= 2 * 0.1  # 两次 backoff
+    # 两次 backoff 必须真实 sleep 并计入 elapsed（不是 tight loop）。Windows 定时器
+    # 合并/相位使 sleep(n) 可能提前 ~13ms 返回（实测 sleep(0.2)≈0.187s），故用
+    # 明确容差 2*0.1-0.03：仍严格证明两次 sleep 都发生了（0 则必 < 0.1）。
+    assert telemetry['stage_total_elapsed_seconds'] >= 2 * 0.1 - 0.03  # 两次 backoff
 
 
 # ---------------------------------------------------------------------------
@@ -745,3 +792,312 @@ def test_runner_retry_disabled_single_attempt(tmp_path, monkeypatch):
     assert result_md.startswith('FRAMEWORK_ERROR')
     assert '1 attempt(s)' in result_md
     assert '## Current Status\nWAITING' in report_path.read_text(encoding='utf-8')
+
+
+# ---------------------------------------------------------------------------
+# FIX-001 Requirement 22 — Cleanup Failure（confirmed-dead-before-retry）
+# ---------------------------------------------------------------------------
+
+
+def test_22a_cleanup_unconfirmed_no_retry_fail_closed(monkeypatch):
+    """22A: attempt1 timeout → taskkill 失败 → kill 失败 → 进程仍存活 → cleanup 未确认。
+
+    Expected（Requirement 3/7/15）：无 attempt 2、child 不被静默注销（registry
+    保留 PID）、stage fail closed（WorkBuddyCleanupError + CLEANUP_FAILURE）、
+    诊断说明 cleanup 未确认。
+    """
+    spawned = []
+    counter = itertools.count(2000)
+    behavior_iter = iter([('timeout',), ('output', 'ok', '')])
+
+    def fake_popen(*args, **kwargs):
+        proc = FakeProc(next(counter), behavior_iter,
+                        alive_after_kill=True, kill_raises=OSError('kill failed'))
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(wb_retry_mod, '_Popen', fake_popen)
+    monkeypatch.setattr(wb_retry_mod, '_taskkill', lambda pid, timeout=None: False)
+    # budget=1.0 → attempt timeout=min(60,1.0)=1.0；('timeout',) 立即抛 → 清理有 ~1s
+    policy = make_policy(max_attempts=2, timeout=60.0, budget=1.0, reserve=0.0)
+    with pytest.raises(wb_retry_mod.WorkBuddyCleanupError) as exc:
+        wb_retry_mod.run_workbuddy_with_retry(
+            ['codebuddy'], {'A': '1'}, 'P', Path('.'), policy
+        )
+    telemetry = exc.value.telemetry
+    try:
+        assert len(spawned) == 1  # 无 attempt 2
+        assert telemetry['attempt_count'] == 1
+        assert telemetry['outcome'] == 'CLEANUP_FAILURE'
+        assert telemetry['cleanup_failure_occurred'] is True
+        assert telemetry['retry_suppressed_reason'] == (
+            'previous child process termination unconfirmed '
+            '(child remains registered; no retry)'
+        )
+        a0 = telemetry['attempts'][0]
+        assert a0['cleanup_failure'] is True
+        assert a0['cleanup_confirmed'] is False
+        assert a0['cleanup_method'] == 'none'
+        assert a0['failure_class'] == 'non_retryable'
+        assert 'cleanup could not be confirmed' in a0['retry_reason']
+        assert spawned[0].pid in wb_retry_mod.active_child_pids()  # 未静默注销
+        msg = str(exc.value)
+        assert 'cleanup could not be confirmed' in msg  # 显式诊断
+        assert 'no retry' in msg
+    finally:
+        wb_retry_mod._ACTIVE_CHILD_PIDS.discard(spawned[0].pid)  # terminal handling
+
+
+def test_22b_taskkill_fails_kill_confirms_retry_allowed(monkeypatch):
+    """22B: taskkill 返回失败但 fallback kill 确认退出 → cleanup confirmed，retry 可进行。"""
+    out, telemetry, spawns = run_retry(
+        monkeypatch, [('timeout',), ('output', 'ok', '')], taskkill_result=False
+    )
+    assert out == 'ok'
+    assert telemetry['attempt_count'] == 2
+    assert telemetry['outcome'] == 'SUCCESS'
+    a0 = telemetry['attempts'][0]
+    assert a0['cleanup_failure'] is False
+    assert a0['cleanup_confirmed'] is True
+    assert a0['cleanup_method'] == 'kill'  # taskkill 失败 → kill 确认
+    assert a0['failure_class'] == 'retryable_transient'
+    assert spawns[0].killed is True
+    assert wb_retry_mod.active_child_pids() == []
+
+
+def test_22c_reap_failure_after_confirmed_termination_retryable(monkeypatch):
+    """22C: 确认终止后 communicate/reap 失败 → 按真实资源安全语义分类。
+
+    进程已确认死亡 → 无并发 child 风险 → retry 允许（retryable_transient）；
+    但 cleanup_confirmed=False 如实记录 reap 未确认（evidence，不伪装成功）。
+    """
+    spawned = []
+    counter = itertools.count(3000)
+    behavior_iter = iter([('timeout',), ('output', 'ok', '')])
+
+    def fake_popen(*args, **kwargs):
+        proc = FakeProc(next(counter), behavior_iter, reap_raises=True)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(wb_retry_mod, '_Popen', fake_popen)
+    monkeypatch.setattr(wb_retry_mod, '_taskkill', lambda pid, timeout=None: True)
+    out, telemetry = wb_retry_mod.run_workbuddy_with_retry(
+        ['codebuddy'], {'A': '1'}, 'P', Path('.'), make_policy()
+    )
+    assert out == 'ok'
+    assert telemetry['attempt_count'] == 2
+    assert telemetry['outcome'] == 'SUCCESS'
+    a0 = telemetry['attempts'][0]
+    assert a0['timed_out'] is True
+    assert a0['cleanup_failure'] is False    # 终止已确认 → 非安全失败
+    assert a0['cleanup_confirmed'] is False  # reap 未确认 → 如实记录
+    assert 'reap unconfirmed' in (a0['cleanup_reason'] or '')
+    assert a0['failure_class'] == 'retryable_transient'
+    assert spawned[0].returncode == -9  # 已确认死亡
+    assert wb_retry_mod.active_child_pids() == []  # 死亡 → 注销合法（无并发风险）
+
+
+def test_22de_registry_retains_unsafe_child_blocks_next_run(monkeypatch):
+    """22D+22E: registry 保留 unsafe child 直到 terminal handling；下一个 run /
+    attempt 不能与可能存活的 child 重叠（spawn 前 fail closed）。"""
+    spawned = []
+    counter = itertools.count(4000)
+    behavior_iter = iter([('timeout',), ('output', 'ok', '')])
+
+    def fake_popen(*args, **kwargs):
+        proc = FakeProc(next(counter), behavior_iter,
+                        alive_after_kill=True, kill_raises=OSError('kill failed'))
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(wb_retry_mod, '_Popen', fake_popen)
+    monkeypatch.setattr(wb_retry_mod, '_taskkill', lambda pid, timeout=None: False)
+    policy = make_policy(max_attempts=2, timeout=60.0, budget=1.0, reserve=0.0)
+    with pytest.raises(wb_retry_mod.WorkBuddyCleanupError):
+        wb_retry_mod.run_workbuddy_with_retry(
+            ['codebuddy'], {'A': '1'}, 'P', Path('.'), policy
+        )
+    unsafe_pid = spawned[0].pid
+    try:
+        assert unsafe_pid in wb_retry_mod.active_child_pids()  # 22D：保留 ownership
+        # 22E：下一次 run 在 spawn 前被 Registry Gate 拦截（绝不与 unsafe child 并发）
+        with pytest.raises(wb_retry_mod.WorkBuddyConcurrencyError):
+            wb_retry_mod.run_workbuddy_with_retry(
+                ['codebuddy'], {'A': '1'}, 'P', Path('.'), make_policy()
+            )
+        assert unsafe_pid in wb_retry_mod.active_child_pids()  # 仍然保留
+    finally:
+        wb_retry_mod._ACTIVE_CHILD_PIDS.discard(unsafe_pid)
+
+
+# ---------------------------------------------------------------------------
+# FIX-001 Requirement 23 — Hard Budget（single absolute stage deadline）
+# ---------------------------------------------------------------------------
+
+
+def test_23a_attempt_cleanup_backoff_share_same_deadline(monkeypatch):
+    """23A: attempt timeout + cleanup + backoff 全部消费同一绝对 deadline。
+
+    attempt1 立即 timeout + 清理 + backoff 后，attempt2 的 timeout 从同一
+    deadline 派生（被大幅裁剪），attempt3 不再启动（deadline 已到）。
+    """
+    policy = make_policy(max_attempts=3, timeout=60.0, backoff=0.2, budget=1.0, reserve=0.0)
+    with pytest.raises(wb_retry_mod.WorkBuddyRetriesExhausted) as exc:
+        run_retry(
+            monkeypatch,
+            [('timeout',), ('sleep_timeout', 60.0), ('timeout',)],
+            policy=policy,
+        )
+    telemetry = exc.value.telemetry
+    assert telemetry['attempt_count'] == 2  # attempt3 未启动（deadline 已到）
+    assert telemetry['outcome'] == 'RETRIES_EXHAUSTED'
+    a0, a1 = telemetry['attempts']
+    assert a0['timeout_used'] == pytest.approx(1.0, abs=0.05)  # 首次吃满剩余
+    assert a1['timeout_used'] < 0.9  # 清理+backoff 消费后，attempt2 timeout 被裁剪
+    assert a0['cleanup_confirmed'] is True
+    # attempt2 的清理发生在 deadline 恰好耗尽时：终止仍被确认（kill），但 reap
+    # 等待被裁剪到 0 剩余（Requirement 12/13）→ cleanup_confirmed=False 如实记录，
+    # cleanup_failure=False（进程已死，无并发风险）
+    assert a1['cleanup_failure'] is False
+    assert a1['cleanup_confirmed'] is False
+    assert 'reap unconfirmed' in (a1['cleanup_reason'] or '')
+    assert telemetry['retry_suppressed_reason'] is not None
+    assert 'deadline' in telemetry['retry_suppressed_reason']
+    assert telemetry['stage_total_elapsed_seconds'] <= 1.0 + 0.3  # 硬上限 + 小容差
+
+
+def test_23b_cleanup_waits_clipped_to_remaining_deadline(monkeypatch):
+    """23B: taskkill / grace / reap 等待全部被剩余 deadline 裁剪——绝不使用
+    独立全尺寸等待（30s taskkill 不得在 deadline 后继续）。"""
+    taskkill_calls = []
+
+    def spy_taskkill(pid, timeout=None):
+        taskkill_calls.append((pid, timeout))
+        return True
+
+    policy = make_policy(max_attempts=2, timeout=0.3, budget=0.9, reserve=0.0)
+    out, telemetry, _ = run_retry(
+        monkeypatch, [('timeout',), ('output', 'ok', '')],
+        policy=policy, taskkill_result=spy_taskkill,
+    )
+    assert out == 'ok'
+    assert telemetry['attempt_count'] == 2
+    assert len(taskkill_calls) >= 1
+    t0 = taskkill_calls[0][1]
+    assert t0 is not None and 0 < t0 < 30.0  # 被裁剪（< 全尺寸 30s）
+    a0 = telemetry['attempts'][0]
+    assert a0['cleanup_confirmed'] is True
+    assert a0['cleanup_failure'] is False
+    assert telemetry['stage_total_elapsed_seconds'] <= 0.9 + 0.25
+
+
+def test_23c_second_attempt_not_started_insufficient_safe_budget(monkeypatch):
+    """23C: 剩余 budget 不足以安全跑完 attempt + 清理 → 不启动第二次 attempt
+    （fail closed，retry suppressed 诊断）。"""
+    # attempt1 用掉 0.4s（timeout=0.4），剩余 ~0.55 < cleanup_reserve 0.6
+    policy = make_policy(max_attempts=2, timeout=60.0, budget=1.0, reserve=0.6)
+    with pytest.raises(wb_retry_mod.WorkBuddyRetriesExhausted) as exc:
+        run_retry(monkeypatch, [('sleep_timeout', 60.0), ('output', 'ok', '')], policy=policy)
+    telemetry = exc.value.telemetry
+    assert telemetry['attempt_count'] == 1  # attempt2 未启动
+    assert telemetry['outcome'] == 'RETRIES_EXHAUSTED'
+    assert 'insufficient safe budget' in telemetry['retry_suppressed_reason']
+    assert telemetry['stage_total_elapsed_seconds'] <= 1.0 + 0.25
+    # attempt1 timeout 受 reserve 限制：min(60, 1.0-0.6) = 0.4
+    assert telemetry['attempts'][0]['timeout_used'] == pytest.approx(0.4, abs=0.05)
+
+
+def test_23d_stage_elapsed_respects_budget(monkeypatch):
+    """23D: reported stage elapsed 尊重配置的 budget（确定性容差内）。"""
+    policy = make_policy(max_attempts=3, timeout=60.0, backoff=0.0, budget=0.9, reserve=0.0)
+    with pytest.raises(wb_retry_mod.WorkBuddyRetriesExhausted) as exc:
+        run_retry(
+            monkeypatch,
+            [('timeout',), ('sleep_timeout', 60.0), ('timeout',)],
+            policy=policy,
+        )
+    telemetry = exc.value.telemetry
+    assert telemetry['stage_total_elapsed_seconds'] <= 0.9 + 0.3
+    # 成功路径同样有界（budget 足够时正常完成）
+    policy_ok = make_policy(max_attempts=2, timeout=60.0, backoff=0.0, budget=3.0)
+    out, telemetry_ok, _ = run_retry(
+        monkeypatch, [('timeout',), ('output', 'ok', '')], policy=policy_ok
+    )
+    assert out == 'ok'
+    assert telemetry_ok['stage_total_elapsed_seconds'] <= 3.0 + 0.2
+
+
+def test_23e_cleanup_reserve_limits_first_attempt(monkeypatch):
+    """23E: cleanup reserve 防止首次 attempt 吃掉全部 stage budget——
+    attempt timeout <= remaining - cleanup_reserve（不因 attempt 耗尽 budget 而
+    无安全清理时间）。"""
+    # budget=100, reserve=30 → 首次 attempt timeout = min(90, 70) = 70（< 90）
+    policy = make_policy(max_attempts=2, timeout=90.0, budget=100.0, reserve=30.0)
+    with pytest.raises(wb_retry_mod.WorkBuddyRetriesExhausted) as exc:
+        run_retry(monkeypatch, [('timeout',), ('timeout',)], policy=policy)
+    telemetry = exc.value.telemetry
+    assert telemetry['attempt_count'] == 2
+    a0, a1 = telemetry['attempts']
+    assert a0['timeout_used'] == pytest.approx(70.0, abs=0.5)
+    assert a1['timeout_used'] == pytest.approx(70.0, abs=0.5)
+    assert a0['cleanup_confirmed'] is True
+    assert a1['cleanup_confirmed'] is True
+    # 预留窗口确实存在：timeout + reserve <= budget
+    assert a0['timeout_used'] + 30.0 <= 100.0 + 0.5
+
+
+def test_policy_cleanup_reserve_default_and_env(monkeypatch):
+    """FIX-001 Requirement 10/19: cleanup_reserve 默认 60s，env 可覆盖；budget 下限
+    至少容纳一次完整 attempt + reserve。"""
+    for var in ('AAF_WORKBUDDY_MAX_ATTEMPTS', 'AAF_WORKBUDDY_TIMEOUT',
+                'AAF_WORKBUDDY_BACKOFF', 'AAF_WORKBUDDY_STAGE_BUDGET',
+                'AAF_WORKBUDDY_CLEANUP_RESERVE'):
+        monkeypatch.delenv(var, raising=False)
+    p = wb_retry_mod.load_workbuddy_policy()
+    assert p.cleanup_reserve == 60.0
+    assert p.overall_stage_budget == 2 * 900.0 + 30.0  # 公式不变
+    monkeypatch.setenv('AAF_WORKBUDDY_CLEANUP_RESERVE', '15')
+    monkeypatch.setenv('AAF_WORKBUDDY_TIMEOUT', '100')
+    monkeypatch.setenv('AAF_WORKBUDDY_STAGE_BUDGET', '50')
+    p2 = wb_retry_mod.load_workbuddy_policy()
+    assert p2.cleanup_reserve == 15.0
+    assert p2.overall_stage_budget == 115.0  # max(50, 100+15)
+
+
+# ---------------------------------------------------------------------------
+# FIX-001 Requirement 24 — telemetry extension（cleanup / deadline evidence）
+# ---------------------------------------------------------------------------
+
+
+def test_24_telemetry_cleanup_and_budget_fields(monkeypatch):
+    """Requirement 19/24: attempt telemetry 暴露 cleanup_confirmed / cleanup_failure /
+    cleanup_method / deadline / budget / actual elapsed / attempt timeout used。"""
+    out, telemetry, _ = run_retry(monkeypatch, [('timeout',), ('output', 'ok', '')])
+    assert out == 'ok'
+    assert telemetry['stage_deadline_monotonic'] is not None
+    assert telemetry['stage_total_elapsed_seconds'] >= 0
+    assert telemetry['policy']['cleanup_reserve'] == 0.0
+    a0 = telemetry['attempts'][0]
+    assert a0['cleanup_confirmed'] is True
+    assert a0['cleanup_failure'] is False
+    assert a0['cleanup_method'] in ('taskkill-tree', 'kill', 'already-exited')
+    assert a0['timeout_used'] > 0
+    # 成功 attempt（natural-exit）也带 cleanup evidence
+    a1 = telemetry['attempts'][1]
+    assert a1['cleanup_confirmed'] is True
+    assert a1['cleanup_method'] == 'natural-exit'
+    assert a1['cleanup_failure'] is False
+    json.dumps(telemetry)  # 可序列化（machine artifact）
+
+
+def test_24_fail_verdict_never_retries_with_cleanup_fields(monkeypatch):
+    """Requirement 16/24: 有效业务 FAIL verdict → 不 retry（transport 与业务 authority
+    分离）；record 的 cleanup evidence 如实（natural-exit）。"""
+    out, telemetry, _ = run_retry(monkeypatch, [('output', 'FAIL: B1 broken', '')])
+    assert out == 'FAIL: B1 broken'
+    assert telemetry['attempt_count'] == 1
+    assert telemetry['retried'] is False
+    assert telemetry['cleanup_failure_occurred'] is False
+    assert telemetry['attempts'][0]['cleanup_confirmed'] is True
+    assert telemetry['attempts'][0]['cleanup_method'] == 'natural-exit'

@@ -54,8 +54,12 @@ STAGE_FIELDS = (
     # AAF-v0.4-TASK-010（Model Observability / Execution Metrics Foundation）：
     # stage_timing = 执行时序（started/finished/elapsed）；model_observation_ref =
     # 指向 model_observation.json（单一 authority）的引用，不含重复模型数据。
+    # AAF-v0.4-TASK-011（WorkBuddy Stage Reliability）：execution_retries =
+    # WorkBuddy stage attempt 摘要（attempt_count / retried / outcome / artifact 路径；
+    # 详细 attempt evidence 在 workbuddy_attempts.json，属 supporting evidence）。
     "stage_timing",
     "model_observation_ref",
+    "execution_retries",
 )
 
 _SUMMARY_LIMIT = 400

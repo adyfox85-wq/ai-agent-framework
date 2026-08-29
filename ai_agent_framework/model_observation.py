@@ -860,11 +860,23 @@ def _stage_elapsed(output_dir: Path | str, agent: str) -> float | None:
         return None
 
 
+def _stage_retry_info(output_dir: Path | str, agent: str) -> dict | None:
+    """从 ``<agent>_result.json`` 读取 execution_retries（TASK-011；无 → None）。"""
+    path = Path(output_dir) / f"{agent}_result.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        er = data.get("execution_retries")
+        return er if isinstance(er, dict) else None
+    except Exception:
+        return None
+
+
 def model_report_data(output_dir: Path | str, route_agents: list[str]) -> dict:
     """为 REPORT 组装紧凑数据：{agent: {"observation": ..., "stage_elapsed": ...}}。
 
     详细 discovery metadata 只存在于 model_observation.json（lazy artifact）；
-    REPORT 只消费这里的紧凑摘要。
+    REPORT 只消费这里的紧凑摘要。TASK-011：附加 execution_retries
+    （attempt_count 供 REPORT 一行式显示，不膨胀）。
     """
     registry = load_registry(output_dir)
     observations = registry.get("observations") or {}
@@ -874,6 +886,7 @@ def model_report_data(output_dir: Path | str, route_agents: list[str]) -> dict:
         out[agent] = {
             "observation": entry,
             "stage_elapsed": _stage_elapsed(output_dir, agent),
+            "execution_retries": _stage_retry_info(output_dir, agent),
         }
     return out
 
@@ -891,9 +904,14 @@ def render_compact_summary(model_observations: dict, output_dir: Path | str | No
         version = obs.get("version") or "UNKNOWN"  # FIX-001：版本动态证据，无则 UNKNOWN
         elapsed = (entry or {}).get("stage_elapsed")
         elapsed_s = f"{elapsed:.2f}s" if isinstance(elapsed, (int, float)) else "UNKNOWN"
+        # TASK-011：WorkBuddy stage 实际 retry 过 → 附 attempt_count（未 retry 不显示）
+        er = (entry or {}).get("execution_retries") or {}
+        attempts_s = ""
+        if isinstance(er.get("attempt_count"), int) and er.get("attempt_count", 0) > 1:
+            attempts_s = f" attempts={er['attempt_count']}"
         lines.append(
             f"- {agent}: model={model} provider={provider} source={source} "
-            f"effort={effort} cost={cost} version={version} stage={elapsed_s}"
+            f"effort={effort} cost={cost} version={version} stage={elapsed_s}{attempts_s}"
         )
     if output_dir is not None:
         lines.append(f"- Artifact (machine authority): {Path(output_dir) / ARTIFACT_FILENAME}")

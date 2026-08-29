@@ -5,7 +5,51 @@ from pathlib import Path
 import pytest
 
 from ai_agent_framework import subprocess_utils
+from ai_agent_framework import workbuddy_retry as wb_retry_mod
 from ai_agent_framework.adapters import build_prompt, run_agent
+
+
+class _FakeProc:
+    """Popen fake（WorkBuddy retry 路径）：communicate 返回 (stdout, stderr) 或抛超时。"""
+
+    def __init__(self, pid=1, stdout='', stderr=''):
+        self.pid = pid
+        self.returncode = None
+        self.killed = False
+        self._out = stdout
+        self._err = stderr
+        self.communicated_input = None
+        self.spawn_kwargs = None
+
+    def communicate(self, input=None, timeout=None):
+        self.communicated_input = input
+        if self.killed:
+            self.returncode = -9
+            return self._out, self._err
+        self.returncode = 0
+        return self._out, self._err
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+
+def _fake_popen(monkeypatch, proc=None, captured=None):
+    """把 WorkBuddy retry 层的 _Popen 替换为 fake；返回记录 dict。"""
+    captured = captured if captured is not None else {}
+    fake = proc if proc is not None else _FakeProc(stdout='PASS fake')
+
+    def fake_popen(*args, **kwargs):
+        captured.update(args=args[0], cwd=kwargs.get('cwd'), input=None,
+                        env=kwargs.get('env'), kwargs=kwargs)
+        fake.spawn_kwargs = kwargs
+        return fake
+
+    monkeypatch.setattr(wb_retry_mod, '_Popen', fake_popen)
+    return fake, captured
 
 
 def test_validator_prompt_includes_task_and_previous_result(tmp_path: Path):
@@ -19,22 +63,7 @@ def test_validator_prompt_includes_task_and_previous_result(tmp_path: Path):
 
 def test_workbuddy_long_prompt_uses_stdin_not_commandline(tmp_path: Path, monkeypatch):
     """长 prompt（>50KB）必须走 stdin，CLI 参数保持短，避免 WinError 206。"""
-    captured = {}
-
-    def fake_run(args, cwd, input, text, encoding, errors, capture_output, timeout, env, **kwargs):
-        captured['args'] = args
-        captured['input'] = input
-        captured['cwd'] = cwd
-        captured['env'] = env
-        captured['kwargs'] = kwargs
-
-        class FakeProc:
-            returncode = 0
-            stdout = 'PASS fake'
-            stderr = ''
-        return FakeProc()
-
-    monkeypatch.setattr(subprocess, 'run', fake_run)
+    fake, captured = _fake_popen(monkeypatch)
 
     # 构造 80KB 的 Hermes result，拼出明显超 Windows 命令行限制的 prompt
     long_result = 'H' * (80 * 1024)
@@ -42,6 +71,7 @@ def test_workbuddy_long_prompt_uses_stdin_not_commandline(tmp_path: Path, monkey
     prompt = build_prompt('workbuddy', task, {'hermes': long_result}, tmp_path)
     assert len(prompt) > 50 * 1024  # 确认确实超长
 
+    monkeypatch.setenv('AAF_WORKBUDDY_RETRY', '0')  # 单次 attempt，聚焦 invocation 语义
     out = run_agent('workbuddy', prompt, tmp_path)
     assert out == 'PASS fake'
 
@@ -49,8 +79,8 @@ def test_workbuddy_long_prompt_uses_stdin_not_commandline(tmp_path: Path, monkey
     joined = ' '.join(captured['args'])
     assert 'H' * 100 not in joined
     assert len(joined) < 2048
-    # 2) 长内容从 stdin 传输
-    assert captured['input'] == prompt
+    # 2) 长内容从 stdin 传输（communicate(input=...)）
+    assert fake.communicated_input == prompt
     # 3) 官方 headless 参数保留
     assert '-p' in captured['args']
     assert '--output-format' in captured['args']
@@ -94,19 +124,26 @@ def _capture_run(monkeypatch, captured: dict):
 
 @pytest.mark.skipif(os.name != 'nt', reason='CREATE_NO_WINDOW 是 Windows-only flag')
 def test_agents_use_create_no_window_on_windows(tmp_path: Path, monkeypatch):
-    """Windows：Hermes / WorkBuddy / Codex 三条路径统一经 subprocess.run 传 CREATE_NO_WINDOW。"""
+    """Windows：Hermes / WorkBuddy / Codex 三条路径统一传 CREATE_NO_WINDOW。
+
+    WorkBuddy 走 TASK-011 retry 层（Popen）；Hermes / Codex 走 subprocess.run。
+    """
     captured: dict = {}
+    fake_wb, _ = _fake_popen(monkeypatch)
     _capture_run(monkeypatch, captured)
 
     for agent in ('hermes', 'workbuddy', 'codex'):
         if agent == 'workbuddy':
             prompt = build_prompt('workbuddy', 'TASK', {'hermes': 'ok'}, tmp_path)
+            monkeypatch.setenv('AAF_WORKBUDDY_RETRY', '0')  # 单次 attempt
+            run_agent(agent, prompt, tmp_path)
+            flags = fake_wb.spawn_kwargs.get('creationflags', 0)
         else:
             prompt = build_prompt(agent, 'TASK', {}, tmp_path)
-        run_agent(agent, prompt, tmp_path)
-        flags = captured['kwargs'].get('creationflags', 0)
+            run_agent(agent, prompt, tmp_path)
+            flags = captured['kwargs'].get('creationflags', 0)
         assert flags & subprocess.CREATE_NO_WINDOW, (
-            f'{agent}: 未传 CREATE_NO_WINDOW → 会新建可见 console 窗口 (kwargs={captured["kwargs"]})'
+            f'{agent}: 未传 CREATE_NO_WINDOW → 会新建可见 console 窗口'
         )
 
 

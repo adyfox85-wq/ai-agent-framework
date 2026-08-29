@@ -1168,6 +1168,15 @@ None identified
     完全等价。
 6.  verdict 聚合仍依赖 Agent
     输出遵守当前结论格式规范，后续正式化时应记录该契约。
+7.  WorkBuddy stage 已实现有界 transient retry（AAF-v0.4-TASK-011，RW-027
+    SOLVED）：per-attempt timeout 默认 900s（实测成功 stage ~556s）替代统一
+    3600s 硬等待；max_attempts=2（`AAF_WORKBUDDY_MAX_ATTEMPTS` 可配）、
+    backoff 30s、overall stage budget 硬上限、timeout 进程树清理；Hermes/Codex
+    不自动获得 retry，`AAF_WORKBUDDY_RETRY=0` 整体关闭。详见
+    `ai_agent_framework/workbuddy_retry.py` 与 backlog RW-027。
+8.  pythonw 早期 validation 失败（exit=2）在 Bridge UI 只显示 enter=2、
+    具体 TaskValidationError 不可见（backlog RW-028，OBSERVATION）——仅登记，
+    不在本阶段实现。
 
 这些事项当前不要求生成新的 FIX TASK，除非出现新的可复现阻断证据。
 

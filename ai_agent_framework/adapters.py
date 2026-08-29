@@ -10,6 +10,12 @@ from pathlib import Path
 from .context_packet import read_stage_result
 from .subprocess_utils import no_console_kwargs
 from .task_validation import parse_task_fields
+from .workbuddy_retry import (
+    WorkBuddyPermanentError,
+    WorkBuddyStageError,
+    permanent_stage_error,
+    run_workbuddy_with_retry,
+)
 
 
 ROLE_INSTRUCTIONS = {
@@ -439,7 +445,38 @@ def _codex_fallback() -> str | None:
         return None
 
 
+# TASK-011：WorkBuddy retry telemetry 一次性槽位。run_agent 执行后由 runner 读取
+# （pop 语义；单线程 runner 内安全）。保持 run_agent 调用签名不变，不破坏既有
+# (agent, prompt, workspace) mock 形态。
+_workbuddy_telemetry: dict | None = None
+
+
+def pop_workbuddy_telemetry() -> dict | None:
+    """取出最近一次 WorkBuddy retry 执行的 telemetry（一次性；无 → None）。"""
+    global _workbuddy_telemetry
+    value = _workbuddy_telemetry
+    _workbuddy_telemetry = None
+    return value
+
+
+def _workbuddy_invocation(prompt: str, env: dict) -> tuple[list[str], str, dict]:
+    """WorkBuddy/CodeBuddy 精确 invocation（single source of truth，TASK-011）。
+
+    官方 headless：``-p`` 为 print 模式；完整 prompt 走 stdin（input=），
+    避免 50KB+ 长 prompt 超出 Windows 命令行长度限制（WinError 206）。
+    retry 的每次 attempt 复用同一 (args, stdin_data, env)——绝不传 --model、
+    不换 provider、不升级付费层级、不修改用户配置。
+    """
+    exe = _require('codebuddy')
+    args = [exe, '-p', '--output-format', 'text', '-y']
+    stdin_data = prompt
+    env['CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS'] = '1'
+    return args, stdin_data, env
+
+
 def run_agent(agent: str, prompt: str, workspace: Path, timeout: int = 3600) -> str:
+    global _workbuddy_telemetry
+    _workbuddy_telemetry = None  # 每次调用重置（单线程 runner 内安全）
     workspace = workspace.resolve()
     # 子进程统一使用 Windows 新会话 PATH；workbuddy 额外禁用后台任务
     env = {**os.environ, 'PATH': _windows_path()}
@@ -449,12 +486,31 @@ def run_agent(agent: str, prompt: str, workspace: Path, timeout: int = 3600) -> 
         args = [exe, 'chat', '--in', str(workspace), '-q', prompt, '-Q', '--ignore-rules', '--source', 'tool']
         stdin_data = None
     elif agent == 'workbuddy':
-        exe = _require('codebuddy')
-        # 官方 headless：-p 为 print 模式；完整 prompt 走 stdin（input=），
-        # 避免 50KB+ 长 prompt 超出 Windows 命令行长度限制（WinError 206）。
-        args = [exe, '-p', '--output-format', 'text', '-y']
-        stdin_data = prompt
-        env['CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS'] = '1'
+        # TASK-011：WorkBuddy stage 走有界 transient retry（transport 层）。
+        # invocation 只构建一次，每次 attempt 复用同一 (args, stdin_data, env)——
+        # same agent / same current CodeBuddy model & default config / same prompt /
+        # same workspace / same execution role；绝不换模型/provider/付费层级。
+        # timeout 参数对 workbuddy 不再生效：由 AAF_WORKBUDDY_* 策略控制
+        # （per-attempt timeout / max_attempts / backoff / overall stage budget）。
+        try:
+            args, stdin_data, env = _workbuddy_invocation(prompt, env)
+        except RuntimeError as exc:
+            if 'MISSING_COMMAND' in str(exc):
+                # 永久性（missing executable）：快速失败，不无意义 retry
+                err = permanent_stage_error(
+                    f'WorkBuddy stage cannot start (permanent, no retry): {exc}',
+                    retry_reason=f'missing executable: {exc}',
+                )
+                _workbuddy_telemetry = err.telemetry
+                raise err from exc
+            raise
+        try:
+            output, telemetry = run_workbuddy_with_retry(args, env, stdin_data, workspace)
+        except WorkBuddyStageError as exc:
+            _workbuddy_telemetry = exc.telemetry or None
+            raise
+        _workbuddy_telemetry = telemetry
+        return output
     elif agent == 'codex':
         exe = _require('codex')
         args = [exe, 'exec', '--sandbox', 'read-only', '--cd', str(workspace), '--skip-git-repo-check', '-']

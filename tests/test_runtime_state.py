@@ -116,6 +116,7 @@ def test_reader_corrupt_json_raises(tmp_path):
 def test_runner_integration_writes_stage_phases(tmp_path, monkeypatch):
     """执行链后 task.json 含 stage=COMPLETED + phases 记录（fake agents）。"""
     import subprocess
+    from ai_agent_framework import workbuddy_retry as wb_retry_mod
     from ai_agent_framework.runner import run
 
     task_file = tmp_path / "T.md"
@@ -136,7 +137,23 @@ def test_runner_integration_writes_stage_phases(tmp_path, monkeypatch):
             stderr = ""
         return P()
 
+    class FakeProc:
+        pid = 1
+
+        def __init__(self, *a, **k):
+            self.returncode = 0
+
+        def communicate(self, input=None, timeout=None):
+            return "**Result: PASS**\nfake ok", ""
+
+        def poll(self):
+            return 0
+
+        def kill(self):
+            self.returncode = -9
+
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(wb_retry_mod, "_Popen", lambda *a, **k: FakeProc())
     report = run(task_file, ws, out)
     assert report.exists()
     data = json.loads((out / "task.json").read_text(encoding="utf-8"))

@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .adapters import build_prompt_measured, run_agent
+from . import adapters as adapters_mod
 from . import cancel as cancel_mod
 from . import control as control_mod
 from . import model_observation as model_observation_mod
@@ -481,6 +482,16 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     result_text = run_agent(agent, prompt, workspace)
                 except Exception as exc:
                     result_text = f'FRAMEWORK_ERROR\n{type(exc).__name__}: {exc}'
+                # TASK-011：WorkBuddy stage attempt telemetry（machine artifact；
+                # supporting evidence——canonical 结果仍只有 <agent>_result.md/json）。
+                wb_retry_meta = None
+                if agent == 'workbuddy':
+                    wb_retry_meta = adapters_mod.pop_workbuddy_telemetry()
+                    if wb_retry_meta:
+                        (output_dir / 'workbuddy_attempts.json').write_text(
+                            json.dumps(wb_retry_meta, ensure_ascii=False, indent=2),
+                            encoding='utf-8',
+                        )
                 if mo_enabled:
                     stage_elapsed = round(time.monotonic() - stage_started_mono, 3)
                 results[agent] = result_text
@@ -519,6 +530,16 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     stage_elapsed_seconds=stage_elapsed,
                     model_observation_ref=model_ref,
                 )
+                if wb_retry_meta:
+                    # TASK-011：attempt 摘要进 stage result（Model Observation 可读
+                    # attempt_count；详细 attempt evidence 在 workbuddy_attempts.json）
+                    stage['execution_retries'] = {
+                        'agent': 'workbuddy',
+                        'attempt_count': wb_retry_meta.get('attempt_count'),
+                        'retried': bool(wb_retry_meta.get('retried')),
+                        'outcome': wb_retry_meta.get('outcome'),
+                        'artifact_path': str(output_dir / 'workbuddy_attempts.json'),
+                    }
                 write_stage_result(output_dir, stage)
                 valid = _result_is_valid(result_text)
                 _ls('RUNNING', stage=stage_name, agent=agent, phase_state=('SUCCESS' if valid else 'FAILED'))

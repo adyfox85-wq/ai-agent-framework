@@ -136,5 +136,5 @@ self-hosting 边界：本任务由当前 Run N（实现前启动的 runner 进�
 ## 11. Git / 状态
 
 - git status：实现前基线 = main @ 5bdefa6（v0.4 freeze metadata）；本次变更仅新增/修改上述实现文件（`.aaf/` 运行时证据保持 untracked，按 RW-017 现状不清理不提交）。
-- commit：见本次提交（feat(v0.5-A0): …，TASK: AAF-v0.5-A0-PAID-GUARD-001）。
-- Remote Sync：提交后由既有流程评估（本机网络环境按惯例处理 push）。
+- commit：`3a0f72595de4832c887cb45466c67b2f60a959f6`（feat(v0.5-A0): Hermes Paid Guard — fail-closed task-scoped cost authorization，TASK: AAF-v0.5-A0-PAID-GUARD-001）。
+- Remote Sync：**SYNCED**（`git push origin main` 成功：`5bdefa6..3a0f725 main -> main`；ahead-behind 0/0）。

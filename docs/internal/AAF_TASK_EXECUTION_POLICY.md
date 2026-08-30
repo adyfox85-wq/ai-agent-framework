@@ -232,6 +232,74 @@ changed_files / evidence_paths / findings / warnings
 `commit_changed:false` 不能证明本轮 tracked modifications 已同步——必须以
 Task Remote Sync 为准。
 
+## 5.2 Structured-Result Authority Hierarchy（协议纠正 v0.5，2026-08-31）
+
+> 本节由 `AAF-v0.5-A1-CLOSURE-PROTOCOL-CORRECTION-001`（只读协议诊断 + 正式执行政策纠正）
+> 依据仓库当前实现逐项核对后确立（证据为代码指针，见下）。本节是 structured-result /
+> provenance 验收语义的 canonical 政策；与旧 TASK 级假设冲突时，以本节为准。
+
+**Verified producer / schema facts（code evidence）：**
+
+- `AAF_STRUCTURED_RESULT_BEGIN/END` 由 Framework adapter contract 注入：
+  `adapters.py::_structured_contract_block(agent)`（`adapters.py:66-92`）；Hermes prompt
+  组装时追加该块（`adapters.py:302` `blocks.append(_structured_contract_block('hermes'))`）。
+  因此契约注入时，Agent 输出该块是 **Framework 要求**，不是 Agent 的自选行为。
+- Hermes raw 契约 schema（`context_packet.py::_STRUCTURED_SCHEMAS["hermes"]`，
+  `context_packet.py:98-108`）：required = `status`；optional = `commit` / `changed_files` /
+  `warnings` / `findings`。**`commit_changed` 不在 Hermes raw 契约中。**
+- Framework 归一化 stage 结果 `<agent>_result.json` 由 `context_packet.build_stage_result`
+  （`context_packet.py:261-427`）构建、`runner.py` 在每 stage 后写盘（`runner.py:542-565`），
+  是 lifecycle / provenance 决策的机器权威。
+
+**Authority hierarchy（两个 schema 严格分离）：**
+
+1. Agent raw 结构化块（`AAF_STRUCTURED_RESULT`）= executor raw payload，
+   由 agent 契约 schema 约束（Hermes：status / commit / changed_files / warnings）。
+2. Framework 归一化 `<agent>_result.json` = 机器权威 stage 结果，用于 lifecycle /
+   provenance 判定。两者 schema 不同，不得混用、不得互相要求字段。
+
+**Provenance field semantics（谁报告 vs 谁观察）：**
+
+| 字段 | raw agent 契约 | Framework 归一化结果 |
+|---|---|---|
+| status | Hermes 报告（SUCCESS/FAILED） | Framework 验证有效性（非空且非 FRAMEWORK_ERROR）后归一化 |
+| commit | Hermes 自报（optional） | Framework 观察：`head_after` = stage 后 `git_head(workspace)`（`runner.py:547`） |
+| commit_changed | **不在 raw 契约** | Framework 派生：`bool(head_before and head_after and head_before != head_after)`（`context_packet.py:397`；`head_before` = stage 前观察，`runner.py:460`） |
+| changed_files | Hermes 自报（optional） | Framework 观察：`git_changed_files(workspace)`（`runner.py:548`，过滤 PRE_ALLOWED_UNTRACKED） |
+
+Agent 自报的 commit / changed_files 仅停留在 raw payload；归一化结果中的 commit /
+commit_changed / changed_files 一律以 Framework 观察为准。
+
+**Corrected acceptance rules（正式政策，TASK 与 reviewer 均须遵守）：**
+
+- `AAF_STRUCTURED_RESULT` 是 adapter contract 注入时 Framework 要求的 Agent 输出；
+  **TASK 不得要求抑制该块**（FIX-003/FIX-004 的 "DO NOT manually emit" 假设与
+  实际 contract 冲突，见下方 Historical Treatment）。
+- raw agent schema 与归一化 stage-result schema 是**两个不同 schema**；缺少 raw
+  契约中不存在的字段（如 Hermes raw 块缺 `commit_changed`）**不是 provenance failure**，
+  不得据此 REQUEST_CHANGE。
+- Git / lifecycle provenance 权威 = 归一化 `<agent>_result.json` + Framework 观察的
+  Git 证据；`commit_changed` 在 Framework stage-result 层评估——除非未来 raw agent
+  契约正式 versioning 加入该字段。
+- raw agent 自报与 Framework 观察的 Git 事实冲突时，**Framework 归一化事实权威**；
+  差异可单独 surface（不改变归一化值）。
+- Framework 要求输出的结构化块存在 = 正常协议行为，不得因"存在该块"本身 REQUEST_CHANGE。
+
+**Historical treatment（历史真相保持）：**
+
+FIX-003 / FIX-004 的 TASK 要求（Hermes raw 块必须含 `commit_changed`；不得手动输出
+`AAF_STRUCTURED_RESULT` 块）与 Framework 实际 contract 不符。历史 artifacts 与
+reviewer 判定**不可变、不重写**；先前 reviewer 正确执行了其 immutable TASK——
+错误在 TASK 层的协议假设（producer / schema / authority 判定），不在 reviewer 判断。
+本节 = 事后协议诊断的正式记录（不是对历史判定的改写）。
+
+**Why FIX-003/FIX-004 repeated（closure-loop lesson）：**
+
+同一 machine-output 形态反复出现 REQUEST_CHANGE / FIX 任务时，先验证：
+① producer（该输出由谁注入 / 谁要求）；② schema（该层契约实际字段集）；
+③ authority layer（raw agent 块 vs 归一化 `<agent>_result.json` 谁裁决）。
+校验后再开 FIX，避免在错误前提上重复闭环。详见 backlog RW-032。
+
 ## 6. Context Manifest / Integrity
 
 每个运行目录生成 `context_manifest.json`（`context_packet.write_manifest`），至少记录：

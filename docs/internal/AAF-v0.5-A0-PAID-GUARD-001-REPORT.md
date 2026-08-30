@@ -336,3 +336,65 @@ FIX-002 一次性关闭（未扩张到 A1）：
   invocation 边界）与 Codex re-review 是否再报 blocking REQUEST_CHANGE。
   Remote Sync：本任务提交**未推送**（Requirement 13：review 通过后再同步 accepted
   commits；同步后 ahead/behind 归 0/0）。
+
+### 12.8 FIX-006：持久化 state_dir fail-open class 收口（Codex FIX-005 review BLOCKING）
+
+- Codex 阻断（FIX-005 review，REQUEST_CHANGE）：`_claim_auth()` 只拒绝
+  `state_dir is None`；`state_dir=""` 经 `Path("")` 解析为**相对当前工作目录**
+  的 marker —— 不同 CWD 的独立进程各自都能成为 winner（ambiguous CWD-derived
+  persistence authority），且 marker 会落入调用者 CWD，而非明确、持久、共享的
+  授权状态目录。Runner 恒传 output_dir 只降低生产路径可达性，不能满足公共
+  `evaluate()` / `_claim_auth()` 的 fail-closed 契约（TASK 明确要求
+  None / missing / invalid / unusable 全部 fail closed）。
+- 新实现（最小 scope，只关闭本 blocker；未 redesign 生命周期 / 授权架构）：
+  - 新增 `_state_dir_validation_error()`：paid admission 的持久化 state_dir
+    必须是**显式提供的、非空的、绝对路径**；None / 空串 / 纯空白 /
+    `Path("")` CWD fallback / `"."` / 相对路径（`"./relative-state"`、
+    `"relative-state"`、`"C:foo"` 驱动器相对、`"\foo"` 盘符相对）/ 畸形
+    （NUL 字节）/ 类型非法（bytes / int 等）→ fail-closed 错误文本；
+  - `_claim_auth()` 在任何消费检查与任何文件系统写入**之前**先校验 state_dir
+    —— invalid 输入**不创建任何 marker（包括 CWD 内）**；mkdir/open 异常处理
+    拓宽为 `(OSError, ValueError)`（畸形路径不得以异常逃逸 evaluate）；
+  - FIX-003 原子性（exclusive-create 跨进程权威、并发恰一 winner、replay 拒绝、
+    crash 后保持已消费、persistence 不确定 fail closed）与 FIX-002 端点/FREE
+    修复全部保持；runner 不变（恒传 `state_dir=output_dir`，正常 Runner 行为
+    保持；CLI 缺省 `--output .aaf-run` 为相对路径 → paid 任务 fail closed，
+    属契约内安全方向）；LOCAL_FREE 路径从不触碰 state_dir 校验。
+- 测试（TASK Verification 最低集全覆盖）：
+  - `tests/test_cost_guard_fix006.py` 新增 **24 项**：A None / "" / 纯空白 /
+    `Path("")` / "." / 相对路径 / bytes / int / NUL → BLOCKED 且 CWD 零 marker、
+    零相对目录创建（受控 CWD 断言）+ 函数级 `_claim_auth`/`_consume_auth` 全
+    invalid 输入 False + validator 直测；B **6 独立进程 + 各自不同 CWD +
+    invalid state（"" / "./relative-state" / "." / 纯空白）→ 零 winner**，且
+    任何 CWD 零 marker、零相对目录；C 有效绝对共享 state_dir + 6 进程并发 →
+    恰一 winner；D 顺序 replay 首次 allowed 二次 blocked（含 fresh-process
+    等价）；E 绝对路径是文件 / 路径中间组件是文件（unusable）/ marker 被目录
+    占用 → fail closed（consume 语义正确）+ runner 级**相对 output_dir** →
+    WAITING + BLOCKED + Hermes 零 spawn + 无 consumption marker；F LOCAL_FREE
+    不受影响（None / "" / "." 均 ALLOWED_FREE）；G paid 无授权 blocked；
+    H FIX-002 endpoint 对抗抽样 / FREE env 忽略 / FIX-005 None 语义保持；
+  - fresh-runner Run N+1：`tests/fresh_runner_cost_guard_fix006_validation.py`
+    **7/7 场景 passed**（S1 fresh 进程 + ""（受控 CWD）→ BLOCKED + CWD 零
+    marker；S2 6 fresh 进程不同 CWD + invalid state → 零 winner + 各 CWD
+    零写入；S3 共享绝对 state_dir 6 进程 → 恰一 winner + fresh replay blocked；
+    S4 **真实 runner + 相对 output_dir** → WAITING + BLOCKED + consumed=false
+    + **hermes 未 spawn** + 无 marker；S5 LOCAL_FREE → SUCCESS + ALLOWED_FREE
+    + hermes 到达 invocation 边界；S6 顺序 replay → BLOCKED；S7 绝对路径是
+    文件 / 中间组件是文件 → BLOCKED）；运行时证据存于
+    `.aaf/AAF-v0.5-A0-PAID-GUARD-001-FIX-006/fresh-runner-validation/`
+    （不提交）；
+  - 回归：既有 fresh-runner 驱动复跑全部保持绿色 —— FIX-005 驱动 6/6、
+    FIX-003 驱动 5/5、FIX-002 驱动 9/9（对抗场景在 fail-closed 新语义下不回归）；
+  - 回归（pytest）：定向 **106 passed**（test_cost_guard + fix002 + fix003 +
+    fix005 + fix006）；分块全量 non-GUI **1395 passed / 1 skipped / 29
+    deselected**（1371 FIX-005 基线 + 24 新增，零下降；3 个线程型文件单独
+    20 passed，RW-029 既有环境 flake 0x80000003 按惯例隔离复跑，与
+    FIX-002/FIX-003/FIX-005 同款处理）。
+- 提交：`e188ee4`（feat 修复，2026-08-30，TASK: AAF-v0.5-A0-PAID-GUARD-001-FIX-006）。
+- 状态：**A0 仍为 WAITING** —— 修复已交付且 fail-closed 不变量由 fresh-process
+  证据覆盖；A0 是否 CLOSED 取决于 WorkBuddy 独立复现（空/相对/纯空白 state_dir
+  → 零 paid winner 且 CWD 零 marker；有效绝对共享 state_dir → 恰一并发 winner；
+  blocked contender 不越过 Hermes invocation 边界）与 Codex re-review 是否再报
+  blocking REQUEST_CHANGE（**Codex 返回 APPROVE 前 A0 不视为 CLOSED**）。
+  Remote Sync：本任务提交**未推送**（Requirement 13：review 通过后再同步
+  accepted commits；同步后 ahead/behind 归 0/0）。

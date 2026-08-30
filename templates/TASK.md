@@ -7,6 +7,11 @@
 Task ID:
 Task Name:
 Workspace:
+Risk:
+（可选；Planner 显式声明的结构化 task risk：LOW|MEDIUM|HIGH|CRITICAL，唯一合法词汇，
+不做大小写/同义词猜测。缺失 = 向后兼容，任务仍可执行，但 Hermes shadow risk =
+RISK_UNAVAILABLE——missing ≠ LOW；存在但非法 = 校验严格拒绝。Planner 显式 Risk 即
+structured provenance，不从正文/标题推断。）
 
 Objective:
 （本轮 delta 的目标。长度增加必须有本轮新增信息依据。）

@@ -9,6 +9,8 @@ import re
 import os
 from pathlib import Path
 
+from ai_agent_framework.risk_contract import RISK_CLASSES  # 唯一 risk 词汇 authority（A1 契约）
+
 BEGIN_MARKER = "AAF_TASK_BEGIN"
 END_MARKER = "AAF_TASK_END"
 
@@ -17,6 +19,9 @@ SINGLE_LINE_FIELDS = {
     "task id": "task_id",
     "task name": "task_name",
     "workspace": "workspace",
+    # AAF-v0.5-A2-SHADOW-ROUTING-003：可选结构化 task risk（Planner 显式声明）。
+    # 缺失 = 向后兼容；存在但非法 = 严格拒绝（fail-closed，不静默降级）。
+    "risk": "risk",
 }
 
 # 多行必填字段（Objective / Acceptance）：从字段行收集到下一个节
@@ -28,6 +33,20 @@ MULTI_LINE_FIELDS = {
 # 下一节检测：markdown 标题（# ...）或 大写字段行（如 Requirements: / Scope:）
 # 大节边界：# 或 ## 标题（### 及更深是内容子节，不截断）、或大写字段名
 _SECTION_RE = re.compile(r"^[ \t]*(#{1,2}[ \t]+\S|[A-Z][A-Za-z /()\-]{2,40}:)")
+
+# AAF-v0.5-A2-SHADOW-ROUTING-003：Risk 是**顶层**字段（template 位置 = Workspace 之后、
+# Objective 之前）。识别边界 = 首个 Objective 节起始；Objective 之后的 `Risk:` 行是
+# 正文 prose，不得当作字段声明（与 framework task_validation 同一规则）。
+_OBJECTIVE_START_RE = re.compile(
+    r"(?im)^[ \t]*(?:#+[ \t]*)?Objective[ \t]*[:：][ \t]*\S[^\r\n]*$"
+    r"|^[ \t]*(?:#+[ \t]*)?Objective[ \t]*[:：]?[ \t]*$"
+)
+
+
+def _risk_preamble(body: str) -> str:
+    """返回 Risk 字段可识别的顶层 preamble（首个 Objective 节之前）。"""
+    m = _OBJECTIVE_START_RE.search(body or "")
+    return body if m is None else body[: m.start()]
 
 # 不安全文件名字符（Task ID 用作文件名）
 _UNSAFE_FILENAME_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
@@ -132,7 +151,11 @@ def parse_task(body: str) -> dict[str, str]:
     body = body.replace("\r\n", "\n").replace("\r", "\n")
     result: dict[str, str] = {}
     for key, name in SINGLE_LINE_FIELDS.items():
-        result[name] = _read_single_line_field(body, key)
+        if name == "risk":
+            # AAF-v0.5-A2-SHADOW-ROUTING-003：Risk 只在顶层 preamble 识别（正文推断被禁止）
+            result[name] = _read_single_line_field(_risk_preamble(body), key)
+        else:
+            result[name] = _read_single_line_field(body, key)
     for key, name in MULTI_LINE_FIELDS.items():
         result[name] = _read_multiline_field(body, key)
     return result
@@ -158,6 +181,11 @@ def validate_task_text(
     if acc_occurrences > 1:
         errors.append("Acceptance 字段重复声明（fail-closed，不得 first/last wins）")
 
+    # AAF-v0.5-A2-SHADOW-ROUTING-003：Risk 唯一性（顶层 preamble 内）fail-closed
+    risk_preamble = _risk_preamble(body)
+    if len(re.findall(r"(?im)^[ \t]*(?:#+[ \t]*)?Risk[ \t]*(?:[:：]|$)", risk_preamble)) > 1:
+        errors.append("Risk 字段重复声明（fail-closed，不得 first/last wins）")
+
     for name, label in [
         ("task_id", "Task ID"),
         ("task_name", "Task Name"),
@@ -171,6 +199,16 @@ def validate_task_text(
     task_id = fields.get("task_id", "")
     if task_id and _UNSAFE_FILENAME_RE.search(task_id):
         errors.append(f"Task ID 包含不安全文件名字符: {task_id}")
+
+    # AAF-v0.5-A2-SHADOW-ROUTING-003：可选结构化 task risk（早期 UX Guard，
+    # 与 framework task_validation 的正式校验保持一致）：缺失 = 向后兼容；
+    # 存在但非法 = 严格拒绝（不静默降级、不做大小写/同义词猜测）。
+    risk_value = (fields.get("risk") or "").strip()
+    if risk_value and risk_value not in RISK_CLASSES:
+        errors.append(
+            f"非法 Risk 字段: {risk_value!r}（只接受 {', '.join(RISK_CLASSES)}；"
+            "Planner 显式 Risk 必须是结构化词汇，不做大小写/同义词猜测）"
+        )
 
     if not expected_workspace:
         errors.append("Bridge 当前未绑定 Workspace（请先设置 current_workspace）")

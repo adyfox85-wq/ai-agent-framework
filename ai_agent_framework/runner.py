@@ -545,13 +545,22 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     # 只接 Hermes stage（Requirement 1，不扩到 WorkBuddy/Codex）；非阻塞
                     # （任何失败 → 无 artifact，绝不影响 Agent 执行）；shadow 路径不发起
                     # 任何额外 CLI / provider / LLM 调用——只消费上面的 observation 并写
-                    # audit JSON（Requirement 5）。当前 runtime 无 authoritative risk source
-                    # → 如实记录 RISK_UNAVAILABLE no-decision（Requirement 3 fail-safe）。
+                    # audit JSON（Requirement 5）。
+                    # v0.5 A2-003：TASK Risk 字段 = Planner 显式声明的结构化 task risk
+                    # （唯一权威词汇 risk_contract.RISK_CLASSES；snapshot 已通过
+                    # validate_task_text，非法值在 Validation 阶段 fail-closed）。runner
+                    # 只读解析 snapshot 顶层 Risk 字段并透传给 shadow observation——
+                    # risk_source 固定标记为 task/planner provenance；缺失 → 保持
+                    # RISK_UNAVAILABLE（绝不从 prose / Task Name / Route / 路径推断）。
                     shadow_ref = None
                     if agent == 'hermes':
                         try:
+                            task_risk = parse_task_fields(task).get('Risk') or None
                             shadow_record = shadow_obs_mod.observe_shadow_stage(
-                                output_dir, agent, observation=observation
+                                output_dir, agent, observation=observation,
+                                risk_class=task_risk,
+                                risk_source=(shadow_obs_mod.TASK_RISK_SOURCE
+                                             if task_risk is not None else None),
                             )
                         except Exception:
                             shadow_record = None

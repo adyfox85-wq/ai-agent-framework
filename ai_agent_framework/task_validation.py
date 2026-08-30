@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .risk_contract import RISK_CLASSES  # 唯一 risk 词汇 authority（A1 契约）
+
 # 正式必填字段（TASK 文件内）
 # 注：Workspace 由 CLI 参数 --workspace 强制（argparse required），
 # 与 v0.2 现有语义一致（旧格式 TASK 文件内无 Workspace 字段）；
@@ -42,6 +44,11 @@ OPTIONAL_FIELDS = (
     "Route Hint",
     "Execution Policy",
     "Planner Notes",
+    # AAF-v0.5-A2-SHADOW-ROUTING-003：Planner 显式声明的结构化 task risk。
+    # 唯一合法词汇 = risk_contract.RISK_CLASSES（LOW/MEDIUM/HIGH/CRITICAL），
+    # 不创建第二套 risk authority。缺失 = 向后兼容（任务仍可执行，shadow
+    # risk = RISK_UNAVAILABLE）；存在但非法 = 严格拒绝（fail-closed）。
+    "Risk",
 )
 
 VALIDATION_FAILED_MARKER = "TASK_VALIDATION_FAILED"
@@ -119,6 +126,22 @@ def _read_single_line_field(body: str, field_key: str) -> str:
 # 大节边界：# 或 ## 标题（### 及更深是内容子节，不截断）、或大写字段名
 _SECTION_RE = re.compile(r"^[ \t]*(#{1,2}[ \t]+\S|[A-Z][A-Za-z /()\-]{2,40}[:：])")
 
+# AAF-v0.5-A2-SHADOW-ROUTING-003：Risk 是**顶层**字段（template 位置 = Workspace 之后、
+# Objective 之前）。识别边界 = 首个 Objective 节起始（`Objective:` / `# Objective` /
+# `Objective` 独立行；含同行值）。Objective 之前 = 顶层字段 preamble；之后的任何
+# `Risk:` 行是正文 prose（如 Requirements 里描述字段语法的行），不得当作字段声明
+# （Requirement 1「顶层字段」+ Requirement 2/4「不从 prose 推断」）。
+_OBJECTIVE_START_RE = re.compile(
+    r"(?im)^[ \t]*(?:#+[ \t]*)?Objective[ \t]*[:：][ \t]*\S[^\r\n]*$"
+    r"|^[ \t]*(?:#+[ \t]*)?Objective[ \t]*[:：]?[ \t]*$"
+)
+
+
+def _risk_preamble(body: str) -> str:
+    """返回 Risk 字段可识别的顶层 preamble（首个 Objective 节之前）。"""
+    m = _OBJECTIVE_START_RE.search(body or "")
+    return body if m is None else body[: m.start()]
+
 
 def _read_multiline_field(body: str, field_key: str) -> str:
     """匹配 Objective / Acceptance（同行值或后续多行）。"""
@@ -162,6 +185,10 @@ def parse_task_fields(task_text: str) -> dict[str, str]:
                 fields[key] = _read_multiline_field(task_text, alias)
                 if fields[key]:
                     break
+        elif key == "Risk":
+            # AAF-v0.5-A2-SHADOW-ROUTING-003：Risk 只在顶层 preamble（首个 Objective
+            # 节之前）识别——Objective 之后的 `Risk:` 行是 prose（正文推断被禁止）。
+            fields[key] = _read_single_line_field(_risk_preamble(task_text), key)
         else:
             fields[key] = _read_single_line_field(task_text, key)
     return fields
@@ -233,6 +260,22 @@ def validate_task_text(task_text: str) -> ValidationResult:
     route_result = parse_explicit_route(task_text)
     if route_result.status is RouteStatus.INVALID:
         errors.append(f"非法显式 Route: {route_result.error or 'invalid route structure'}")
+
+    # AAF-v0.5-A2-SHADOW-ROUTING-003：显式 Risk fail-closed。Planner 显式声明的
+    # 结构化 task risk——只接受 risk_contract.RISK_CLASSES（LOW/MEDIUM/HIGH/CRITICAL），
+    # 不做大小写猜测、同义词映射或正文推断；字段存在但值非法 → 明确拒绝（不静默
+    # 降级）；字段缺失 → 向后兼容（任务仍可执行，shadow risk = RISK_UNAVAILABLE）。
+    # 只在顶层 preamble（首个 Objective 之前）识别；重复声明 → fail-closed
+    # （不得 first/last wins，与 Acceptance/Route 唯一性契约一致）。
+    risk_preamble = _risk_preamble(task_text)
+    if count_field_occurrences(risk_preamble, "Risk") > 1:
+        errors.append("Risk 字段重复声明（fail-closed，不得 first/last wins）")
+    risk_value = fields.get("Risk", "").strip()
+    if risk_value and risk_value not in RISK_CLASSES:
+        errors.append(
+            f"非法 Risk 字段: {risk_value!r}（只接受 {', '.join(RISK_CLASSES)}；"
+            "Planner 显式 Risk 必须是结构化词汇，不做大小写/同义词猜测）"
+        )
 
     return ValidationResult(valid=not errors, errors=errors)
 

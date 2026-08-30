@@ -64,6 +64,15 @@ STAGE_AGENT_HERMES = "hermes"
 # risk 可用性 token（Requirement 3：RISK_UNAVAILABLE / 等效 no-decision）
 RISK_UNAVAILABLE = "RISK_UNAVAILABLE"
 
+# AAF-v0.5-A2-SHADOW-ROUTING-003：TASK Risk 字段的固定 provenance 描述（Planner
+# 显式声明的结构化 risk；runner 解析 immutable TASK.snapshot.md 的顶层 Risk 字段
+# 后以此作为 risk_source——绝不从 TASK prose / Task Name / Route / 路径推断）。
+TASK_RISK_SOURCE = (
+    "TASK.Risk field — planner-declared explicit risk in the immutable "
+    "TASK.snapshot.md (validated against risk_contract.RISK_CLASSES; no "
+    "inference from prose/name/route/path)"
+)
+
 # actual vs shadow 一致性 token（Requirement 2：actual vs shadow 是否一致）
 MATCH_SAME = "SAME"
 MATCH_DIFFERENT = "DIFFERENT"

@@ -36,7 +36,12 @@ closed——Hermes 进程不启动，任务进入 WAITING（COST_APPROVAL_REQUIR
 非权威拒绝快路径（只拒绝、不放行）。**FIX-005（FIX-004 re-issue）**：paid
 admission 必须存在可用的持久化 ``state_dir``（filesystem exclusive-create 是
 唯一跨进程准入权威）；state_dir 缺失/无效/不可用时，matched authorization 一律
-fail closed，绝不因 in-process 集合放行。同一授权值在同一执行上下文内不可二次准入
+fail closed，绝不因 in-process 集合放行。**FIX-006（Codex FIX-005 review
+BLOCKING）**：持久化 ``state_dir`` 必须是**显式提供的、非空的、绝对路径**——
+None / 空串 / 纯空白 / ``Path("")`` CWD fallback / ``"."`` / 相对路径 /
+畸形或类型非法路径 / 任何 CWD 派生 persistence authority 一律 fail closed，
+且**不创建任何 marker（包括 CWD 内）**；只有合法绝对路径才能建立跨进程 claim
+权威。同一授权值在同一执行上下文内不可二次准入
 （replay 拒绝、fail closed）；Task ID 在 scope 内 → 对其他任务天然失效（不泄漏到
 后续任务）；claim 状态不确定（marker 已存在 / I/O 失败）→ fail closed。
 
@@ -109,6 +114,9 @@ _SEPARATOR = "|"
 # 只拒绝快路径。不构建数据库 / 审批服务 / 永久子系统（A0 最小；claim 状态不确定 → fail closed）。
 # FIX-005（FIX-004 re-issue）：paid admission 必须存在可用的持久化 state_dir ——
 # filesystem exclusive-create 是唯一准入权威；state_dir=None → fail closed。
+# FIX-006（Codex FIX-005 review BLOCKING）：state_dir 必须为显式提供的非空绝对路径；
+# None / 空 / 纯空白 / Path("") CWD fallback / "." / 相对 / 畸形 / CWD 派生权威一律
+# fail closed（_state_dir_validation_error），且不创建任何 marker（含 CWD 内）。
 CONSUMPTION_FILENAME = "cost_auth_consumed.json"
 _CONSUMED_AUTHS: set[str] = set()
 _CONSUMED_LOCK = threading.Lock()
@@ -119,6 +127,65 @@ _STATE_DIR_REQUIRED_ERR = (
     "established without it; _CONSUMED_AUTHS is NOT an admission authority "
     "(fail closed)"
 )
+
+_STATE_DIR_INVALID_PREFIX = (
+    "persistent state_dir is NOT a valid paid-admission authority — an "
+    "explicitly supplied, non-empty, ABSOLUTE, usable persistent state_dir is "
+    "REQUIRED (the filesystem exclusive-create claim is the cross-process "
+    "authority; a CWD-derived/relative persistence authority is ambiguous and "
+    "never creates any marker)"
+)
+
+
+def _state_dir_validation_error(
+    state_dir: str | os.PathLike | None,
+) -> str | None:
+    """FIX-006：校验 state_dir 是否可作为 paid admission 的持久化跨进程 claim 权威。
+
+    返回 fail-closed 错误文本；合法（显式提供的非空绝对路径）→ None。以下输入
+    全部是 ambiguous persistence authority → 必须 BLOCKED，且调用方**不得创建
+    任何 marker**（包括 CWD 内）：
+
+    - None → ``_STATE_DIR_REQUIRED_ERR``（FIX-005 语义保持）；
+    - 非 str / 非 os.PathLike（或 ``__fspath__`` 返回非 str，如 bytes/int）→
+      类型非法（Path() 会 TypeError，不能让异常逃逸 evaluate）；
+    - 空串 / 纯空白 → ``Path("")`` / ``Path("   ")`` 会静默落到 CWD（FIX-005
+      review 阻塞点：``Path("")`` 解析为相对 CWD 的 marker）；
+    - 含 NUL 字节 → 畸形路径（Path/mkdir/open 会 ValueError）；
+    - 其余 str：``Path(raw).is_absolute()`` 为 False（``"."`` / ``"./x"`` /
+      ``"relative-state"`` / ``"C:foo"`` 驱动器相对 / ``"\\foo"`` 盘符相对）
+      → 相对或 CWD 派生，拒绝。
+    """
+    if state_dir is None:
+        return _STATE_DIR_REQUIRED_ERR
+    try:
+        raw = os.fspath(state_dir)
+    except TypeError:
+        return (
+            f"{_STATE_DIR_INVALID_PREFIX} (unsupported state_dir type "
+            f"{type(state_dir).__name__!r})"
+        )
+    if not isinstance(raw, str):
+        return (
+            f"{_STATE_DIR_INVALID_PREFIX} (unsupported state_dir type "
+            f"{type(raw).__name__!r} — str or os.PathLike[str] required)"
+        )
+    if not raw.strip():
+        return (
+            f"{_STATE_DIR_INVALID_PREFIX} (state_dir {raw!r} is empty or "
+            "whitespace-only — it would silently fall back to the current "
+            "working directory, an ambiguous CWD-derived persistence authority)"
+        )
+    if "\x00" in raw:
+        return f"{_STATE_DIR_INVALID_PREFIX} (state_dir contains a NUL byte — malformed path)"
+    p = Path(raw)
+    if not p.is_absolute():
+        return (
+            f"{_STATE_DIR_INVALID_PREFIX} (state_dir {raw!r} is NOT an absolute "
+            f"path — it resolves relative to the current working directory "
+            f"{os.getcwd()!r}, an ambiguous CWD-derived persistence authority)"
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -405,10 +472,13 @@ def _claim_auth(
     """原子 claim 一次性授权（FIX-003；替换 FIX-002 的 check-then-consume TOCTOU）。
 
     单一原子操作，不再“先检查是否已消费、再消费”：
-    - **state_dir=None → 直接失败（FIX-005 / FIX-004 re-issue）**：paid admission
-      的唯一跨进程权威 = filesystem exclusive-create；没有可用的持久化 state_dir
-      就无法建立原子 claim —— `_CONSUMED_AUTHS` 只是非权威拒绝快路径，绝不放行。
-      任何 matched paid authorization 在无持久化权威时都必须 fail closed。
+    - **state_dir 必须为显式提供的非空绝对路径（FIX-006）**：paid admission
+      的唯一跨进程权威 = filesystem exclusive-create；None / 空串 / 纯空白 /
+      ``Path("")`` CWD fallback / ``"."`` / 相对路径 / 畸形或类型非法路径 /
+      任何 CWD 派生 persistence authority 一律直接失败（``_state_dir_validation_error``），
+      且**不创建任何 marker（包括 CWD 内）**。`_CONSUMED_AUTHS` 只是非权威
+      拒绝快路径，绝不放行。任何 matched paid authorization 在无合法持久化权威时
+      都必须 fail closed。
     - in-process 快路径（``_CONSUMED_LOCK`` 保护）：只拒绝（已在本进程消费过），
       不放行任何东西 —— 非权威优化，不可能造成 fail-open；
     - 跨进程权威 = 文件系统 exclusive-create：确定性子路径
@@ -416,17 +486,20 @@ def _claim_auth(
       （O_CREAT|O_EXCL / CREATE_NEW）创建，恰好一个 contender 能成功；
     - marker 路径已被占用（文件/目录/符号链接；FileExistsError 或任何 OSError 且
       ``marker.exists()`` 为真）→ 该授权已被 claim/消费 → 返回 False（BLOCK）；
-    - 其余 I/O / 持久化失败（无法建立 marker）→ 返回 False（fail closed，不静默放行）；
+    - 其余 I/O / 持久化失败（无法建立 marker，含 ValueError 畸形路径）→ 返回
+      False（fail closed，不静默放行）；
     - claim 成功后进程崩溃 → marker 已存在，授权保持已消费（fail-closed 结果可接受，
       优于 replay）。
 
     返回 (ok, err)。ok=True 仅当本次调用赢得了 claim。
     """
     with _CONSUMED_LOCK:
-        if state_dir is None:
-            # FIX-005：无持久化 filesystem authority → 无法原子 claim → fail closed。
+        state_err = _state_dir_validation_error(state_dir)
+        if state_err is not None:
+            # FIX-005/FIX-006：无合法持久化 filesystem authority（None / 空 /
+            # 相对 / CWD 派生 / 畸形）→ 无法原子 claim → fail closed。
             # 即便 auth 已在 _CONSUMED_AUTHS 中（本进程曾消费），也绝不因此放行。
-            return False, _STATE_DIR_REQUIRED_ERR
+            return False, state_err
         if auth in _CONSUMED_AUTHS:
             return False, _CLAIM_ALREADY_CONSUMED
         marker = Path(state_dir) / CONSUMPTION_FILENAME
@@ -445,12 +518,15 @@ def _claim_auth(
                 "cannot persist consumption marker (state_dir is not a "
                 "directory) — fail closed"
             )
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
+            # OSError：权限/非法字符/路径过长/中间组件是文件等不可用路径；
+            # ValueError：畸形路径（如 NUL，_state_dir_validation_error 已拦，
+            # 此处兜底）→ fail closed
             return False, f"cannot persist consumption marker ({exc})"
         try:
             with open(marker, "x", encoding="utf-8") as fh:
                 fh.write(json.dumps(payload, ensure_ascii=False, indent=2))
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             if marker.exists():
                 # 路径已被占用（含目录/符号链接等非 FileExistsError 平台差异）
                 # → 他人已 claim → 视为已消费（fail closed）
@@ -484,7 +560,13 @@ def evaluate(
     state_dir —— filesystem exclusive-create（``open(marker, "x")``）是唯一
     跨进程准入权威；state_dir=None / 缺失 / 无效 / 不可用（无法提供持久化原子
     claim 权威）时，matched paid authorization 一律 BLOCKED（fail closed），
-    绝不因 ``_CONSUMED_AUTHS`` 等 in-process 集合放行。消费在准入边界完成（FIX-002）。
+    绝不因 ``_CONSUMED_AUTHS`` 等 in-process 集合放行。
+    **FIX-006（Codex FIX-005 review BLOCKING）**：state_dir 必须为**显式提供的、
+    非空、绝对路径**——None / 空串 / 纯空白 / ``Path("")`` CWD fallback /
+    ``"."`` / 相对路径（如 ``"./relative-state"``）/ 畸形或类型非法路径 / 任何
+    CWD 派生 persistence authority 一律 fail closed（``_state_dir_validation_error``），
+    且**不创建任何 marker（包括 CWD 内）**；只有合法绝对路径才能建立跨进程
+    claim 权威。消费在准入边界完成（FIX-002）。
 
     返回 machine-readable record（可直接序列化为 cost_guard.json）：
 

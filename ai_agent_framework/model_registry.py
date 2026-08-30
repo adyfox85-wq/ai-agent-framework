@@ -270,15 +270,18 @@ def registry_to_dict(entries: dict[str, RegistryEntry]) -> dict[str, Any]:
 def registry_from_dict(data: dict[str, Any]) -> dict[str, RegistryEntry]:
     """从 dict 重建 registry；schema 版本缺失/不支持 / key 与条目 key 不一致 → ValueError。
 
-    schema_version 校验（fail closed）：
+    schema_version 校验（fail closed，严格类型）：
     - 缺失（``None``）→ ValueError（不承诺未声明版本的 registry 文档）。
-    - 不等于 ``SCHEMA_VERSION`` 的值（含 999 等未来/未知版本、非 int 类型）→ ValueError。
+    - 类型不是真实 ``int``（bool / float / str / list / dict 等，即使值相等
+      如 ``True``、``1.0``）→ ValueError，绝不静默强转。
+    - 值不等于 ``SCHEMA_VERSION``（含 999 等未来/未知版本）→ ValueError。
     """
     if not isinstance(data, dict) or not isinstance(data.get("entries"), dict):
         raise ValueError("registry dict must contain an 'entries' mapping")
-    if data.get("schema_version") != SCHEMA_VERSION:
+    schema_version = data.get("schema_version")
+    if type(schema_version) is not int or schema_version != SCHEMA_VERSION:
         raise ValueError(
-            f"unsupported registry schema_version: {data.get('schema_version')!r} "
+            f"unsupported registry schema_version: {schema_version!r} "
             f"(supported: {SCHEMA_VERSION})"
         )
     entries: dict[str, RegistryEntry] = {}

@@ -386,6 +386,51 @@ def test_valid_registry_entries_still_load_unchanged():
 
 
 # ---------------------------------------------------------------------------
+# I3. schema_version 严格类型校验（FIX-002：仅真实 int == SCHEMA_VERSION 被接受）
+# ---------------------------------------------------------------------------
+
+
+def test_strict_schema_version_accepts_exact_int_only():
+    """仅真实 int 类型且值 == SCHEMA_VERSION 被接受；bool/float 不因值相等被接受。"""
+    assert type(SCHEMA_VERSION) is int
+    assert type(True) is not int and type(1.0) is not int  # 防止 isinstance 式实现回归
+    data = registry_to_dict(baseline_registry())
+    data["schema_version"] = int(SCHEMA_VERSION)
+    restored = registry_from_dict(data)
+    assert restored == baseline_registry()
+
+
+@pytest.mark.parametrize(
+    "bad_version",
+    [
+        True,      # bool 是 int 子类，值 == 1，必须拒绝
+        False,     # 值 == 0，必须拒绝
+        1.0,       # 值 == 1，float，必须拒绝
+        1.5,       # 其它 float
+        "1",       # 数字字符串
+        None,      # 显式 None
+        [1],       # 序列
+        {"v": 1},  # 映射
+        (1,),      # 元组
+    ],
+)
+def test_strict_schema_version_rejects_malformed_types(bad_version):
+    """值相等但类型不合规的版本必须 fail closed（ValueError），绝不静默强转。"""
+    data = registry_to_dict(baseline_registry())
+    data["schema_version"] = bad_version
+    with pytest.raises(ValueError, match="schema_version"):
+        registry_from_dict(data)
+
+
+def test_strict_schema_version_rejects_unsupported_integer():
+    """不受支持的真实 int（999）必须 fail closed。"""
+    data = registry_to_dict(baseline_registry())
+    data["schema_version"] = 999
+    with pytest.raises(ValueError, match="schema_version"):
+        registry_from_dict(data)
+
+
+# ---------------------------------------------------------------------------
 # J. 基线事实纪律（Requirement 5：未验证 = UNKNOWN）
 # ---------------------------------------------------------------------------
 

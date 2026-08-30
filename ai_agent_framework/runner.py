@@ -28,6 +28,7 @@ from .context_packet import (
 from . import cost_guard as cost_guard_mod
 from . import proc_identity
 from . import project_boundary
+from . import shadow_observation as shadow_obs_mod
 from . import task_lifecycle
 from .report import agent_result_blocked, build_report, verdict_blocked
 from .reconcile import reconcile_terminal_artifacts
@@ -524,6 +525,7 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 # summary 不完整 / 与 narrative 不一致 → 显式 PARTIAL/UNKNOWN。
                 structured, structured_status = extract_and_validate_structured(agent, result_text)
                 model_ref = None
+                shadow_ref = None  # v0.5 A2-002：telemetry 关闭时同样不产生 shadow artifact
                 if mo_enabled:
                     # 只读 discovery（帮助/config 查询；不发付费推理、不改任何配置）；
                     # registry（model_observation.json）是 model observation 单一 authority，
@@ -539,6 +541,25 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                             'authority': str(output_dir / model_observation_mod.ARTIFACT_FILENAME),
                             'entry': agent,
                         }
+                    # v0.5 A2-002：Hermes shadow observation（observation-only bypass）。
+                    # 只接 Hermes stage（Requirement 1，不扩到 WorkBuddy/Codex）；非阻塞
+                    # （任何失败 → 无 artifact，绝不影响 Agent 执行）；shadow 路径不发起
+                    # 任何额外 CLI / provider / LLM 调用——只消费上面的 observation 并写
+                    # audit JSON（Requirement 5）。当前 runtime 无 authoritative risk source
+                    # → 如实记录 RISK_UNAVAILABLE no-decision（Requirement 3 fail-safe）。
+                    shadow_ref = None
+                    if agent == 'hermes':
+                        try:
+                            shadow_record = shadow_obs_mod.observe_shadow_stage(
+                                output_dir, agent, observation=observation
+                            )
+                        except Exception:
+                            shadow_record = None
+                        if shadow_record is not None:
+                            shadow_ref = {
+                                'authority': str(output_dir / shadow_obs_mod.ARTIFACT_FILENAME),
+                                'entry': agent,
+                            }
                 head_after = git_head(workspace)
                 stage = build_stage_result(
                     agent=agent,
@@ -565,6 +586,10 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                         'outcome': wb_retry_meta.get('outcome'),
                         'artifact_path': str(output_dir / 'workbuddy_attempts.json'),
                     }
+                if shadow_ref:
+                    # v0.5 A2-002：shadow observation authority 引用（不复制记录内容；
+                    # 详细 shadow 决策/状态在 shadow_observation.json）。
+                    stage['shadow_observation_ref'] = dict(shadow_ref)
                 write_stage_result(output_dir, stage)
                 valid = _result_is_valid(result_text)
                 _ls('RUNNING', stage=stage_name, agent=agent, phase_state=('SUCCESS' if valid else 'FAILED'))

@@ -21,6 +21,12 @@ ToDesk-sensitive clipboard E2E；用 monkeypatch 的 show_info/show_error
 记录器证明成功路径零 modal 调用。计时器通过 monkeypatch
 `ui_mod.COPY_FEEDBACK_MS` 缩短后以真实 Tk after 事件循环驱动。
 
+AAF-RUNTIME-UX-GUI-TEST-LEAK-001：测试侧隔离——ui_root fixture 把
+`tk.Toplevel` 替换为「构造后立即 withdraw」的子类，使本文件所有 Tk 测试
+（含 show_finished 的完成窗）在普通 pytest 回归中不映射到真实桌面，
+杜绝「任务已完成」窗口闪现；生产 `bridge/ui.show_finished` 未改动，
+正式 AAF 完成窗口行为不变。
+
 另含 Bridge 层测试：`Bridge._copy_last_report` 保留 handoff 构建 +
 `ui.clipboard_set_text` 写剪贴板逻辑，返回 bool，且不再调用任何提示弹窗。
 """
@@ -105,12 +111,24 @@ def _pump(root: tk.Tk, n: int = 20) -> None:
 
 
 @pytest.fixture()
-def ui_root():
+def ui_root(monkeypatch):
     try:
         root = tk.Tk()
     except tk.TclError as e:
         pytest.skip(f"Tk 不可用（无显示环境）: {e}")
     root.withdraw()
+
+    # AAF-RUNTIME-UX-GUI-TEST-LEAK-001：测试侧隔离——普通 pytest 回归中，
+    # 本文件内创建的每个 Toplevel（含 show_finished 的完成窗）在构造后立即
+    # withdraw，绝不映射到真实桌面，杜绝「任务已完成 / RW024-* / C:\out\REPORT.md」
+    # 窗口闪现。窗口逻辑上仍存在（可查找、可按钮 invoke、after 事件仍调度），
+    # 全部断言语义不变；生产 bridge/ui.show_finished 未做任何修改。
+    class _WithdrawnToplevel(tk.Toplevel):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.withdraw()
+
+    monkeypatch.setattr(tk, "Toplevel", _WithdrawnToplevel)
     yield root
     try:
         root.destroy()
@@ -418,3 +436,36 @@ def test_j_backlog_rw024_matches_implementation():
     assert "不弹第二 modal" in section or "不弹第二个 modal" in section, (
         "Current Implementation 必须保持无第二 modal 约束"
     )
+
+
+# ========== K. 普通回归隔离：完成窗口不得映射到真实桌面 ==========
+
+def _visible_toplevels(root: tk.Tk) -> list[tk.Toplevel]:
+    return [w for w in _find_toplevels(root) if w.winfo_viewable()]
+
+
+def test_k_normal_run_toplevels_never_visible(ui_root, modal_spy):
+    """AAF-RUNTIME-UX-GUI-TEST-LEAK-001：普通 pytest 回归中，show_finished
+    创建的完成窗口必须保持 withdrawn——逻辑上存在（可查找、可按钮 invoke），
+    但绝不映射到真实桌面，杜绝「任务已完成」窗口闪现。
+
+    该隔离是测试侧行为（ui_root fixture 的 _WithdrawnToplevel），
+    生产 bridge/ui.show_finished 的正式可见行为不受影响。
+    """
+    root = ui_root
+    ui_mod.show_finished(root, "RW024-K", r"C:\out\REPORT.md", lambda: True)
+    win = _find_finished_window(root)
+    assert win is not None, "测试逻辑仍能找到完成窗口（窗口未被删除）"
+    _pump(root)
+
+    # 窗口存在且可交互，但处于 withdrawn 状态：不向真实桌面显示
+    assert str(win.state()) == "withdrawn", "完成窗口必须处于 withdrawn 状态"
+    assert not win.winfo_viewable(), "普通回归中完成窗口不得映射到真实桌面"
+
+    # 复制交互后仍无任何可见 Toplevel；窗口保持打开，成功路径仍零 modal
+    _button(win, "复制报告").invoke()
+    _pump(root)
+    assert _visible_toplevels(root) == [], "普通回归不得产生任何可见 Toplevel"
+    assert _find_finished_window(root) is win, "窗口仍保持打开（行为语义不变）"
+    assert modal_spy["info"] == [] and modal_spy["error"] == [], "成功路径仍零 modal"
+

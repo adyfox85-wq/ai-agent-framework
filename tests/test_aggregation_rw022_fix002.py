@@ -404,8 +404,12 @@ def test_git_changed_files_excludes_pre_allowed_untracked(tmp_path):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("x", encoding="utf-8")
     files = git_changed_files(tmp_path)
-    # tracked 修改 + 非预允许 untracked 保留（porcelain 行经 strip，无前导空格）
+    # tracked 修改保留
     assert "M tracked.txt" in files
-    assert "?? scratch.txt" in files
+    # FIX-002（v0.5-A1-CLOSURE-PROTOCOL-CORRECTION-001-FIX-002）：任意普通
+    # untracked（含非预允许的 scratch.txt）一律不是 tracked change，必须排除——
+    # 排除是通用 tracked/untracked 判定，不再保留非预允许 untracked。
+    assert not any("??" in f for f in files)
+    assert not any("scratch" in f for f in files)
     # 常驻预允许 untracked 项（含 scripts/ 目录折叠）被过滤
     assert not any(".aaf" in f or "PROCESS_CHECK" in f or "start_bridge_hidden" in f or "scripts" in f for f in files)

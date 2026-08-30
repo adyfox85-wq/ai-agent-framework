@@ -256,27 +256,45 @@ def _dedupe_by_path(lines: list[str]) -> list[str]:
     return out
 
 
+def _is_untracked_line(line: str) -> bool:
+    """porcelain 行是否为 untracked（``??`` 前缀）。
+
+    ``git status --porcelain`` 中 untracked 项一律以 ``??`` 开头（-uall 逐文件
+    列出，目录不折叠）。归一化 changed_files 只含 stage 相关的 **tracked** 变化：
+    任意普通 untracked 文件（``?? arbitrary-file.txt``）都不是 tracked change，
+    一律排除——这是通用的 tracked/untracked 判定，不依赖 PRE_ALLOWED_UNTRACKED
+    白名单枚举（后者仅属 Remote Sync 语义 tracked_tree_status 的特例）。
+    """
+    return line.startswith("??")
+
+
 def git_changed_files(
     workspace: Path | str,
     head_before: str | None = None,
     head_after: str | None = None,
 ) -> list[str]:
-    """stage 实际改变的仓库文件（porcelain 风格行；排除预允许 untracked 常驻项）。
+    """stage 实际改变的仓库 tracked 文件（porcelain 风格行；untracked 一律排除）。
 
-    语义（AAF-v0.5-A1-CLOSURE-PROTOCOL-CORRECTION-001-FIX-001）：
-    归一化 changed_files = 本 stage 实际改变的 effective file paths——不是
-    "stage 结束后仍 dirty 的文件"。由 Framework Git 观察派生：
+    语义（AAF-v0.5-A1-CLOSURE-PROTOCOL-CORRECTION-001-FIX-001 + FIX-002）：
+    归一化 changed_files = 本 stage 实际改变的 effective **tracked** 文件——不是
+    "stage 结束后仍 dirty 的文件"，也不含任意 pre-existing untracked 状态。
+    由 Framework Git 观察派生：
 
     1. head_before / head_after 提供且 HEAD 改变 → 先并入 head_before..head_after
        提交中实际改变的 tracked 文件（``_git_diff_changed_lines``）——stage
        创建 commit 且工作区干净时，已提交文件仍然可见（不再塌缩为 []）；
-    2. 再并入 stage 后剩余的 tracked 工作区修改（``git status --porcelain -uall``）；
+       stage 期间新加入并提交的 tracked 文件以 ``A path`` 进入（commit-range
+       证据，不与剩余 untracked 混淆）；
+    2. 再并入 stage 后剩余的 tracked 工作区 / 索引修改（``git status --porcelain
+       -uall``，排除一切 ``??`` untracked 行——通用的 tracked/untracked 判定，
+       不依赖 PRE_ALLOWED_UNTRACKED 白名单枚举）；
     3. 按 path 确定性去重（首次出现保留：committed 在前、dirty 在后）。
 
-    FIX-002 Req 8（保持）：stage 的 changed_files 字段不得被常驻 untracked 项
-    污染——.aaf/、AAF_TASK004_PROCESS_CHECK.txt、scripts/start_bridge_hidden.vbs
-    等 PRE_ALLOWED_UNTRACKED 条目不是本任务的 tracked change，必须过滤。
-    用 -uall 逐文件列出 untracked（否则目录折叠如 '?? scripts/' 会掩盖预允许项）。
+    FIX-002（v0.5-A1-CLOSURE-PROTOCOL-CORRECTION-001-FIX-002）：任意普通
+    untracked 文件（``?? arbitrary-file.txt``）、PRE_ALLOWED_UNTRACKED 常驻项
+    及其他 untracked 仓库噪音都不是 tracked change，不得进入归一化结果——
+    即使 ``git status`` 报告 ``??``。stage 中 git-add 后未提交的 tracked 新文件
+    （索引 ``A``）属于 tracked 变化，仍保留。
 
     非 git 仓库 / 失败 → []。head_before/head_after 缺省（None）→ 只报告工作区
     状态（旧调用语义不变）。
@@ -286,7 +304,7 @@ def git_changed_files(
         committed = _git_diff_changed_lines(workspace, head_before, head_after)
     dirty: list[str] = [
         line for line in _porcelain_all(workspace)
-        if not _is_pre_allowed_untracked(line)
+        if not _is_untracked_line(line)
     ]
     return _dedupe_by_path([*committed, *dirty])
 

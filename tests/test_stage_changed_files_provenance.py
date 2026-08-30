@@ -19,6 +19,12 @@ normalized stage changed_files 语义修正。
 - 行风格 = porcelain 风格（状态前缀 + 空格 + path），repo-relative
 - 非 git 仓库 / 失败 → []
 
+FIX-002（AAF-v0.5-A1-CLOSURE-PROTOCOL-CORRECTION-001-FIX-002）新增：
+- 任意普通 untracked 文件（非 PRE_ALLOWED_UNTRACKED）也一律排除——排除是
+  通用 tracked/untracked 判定（`??` 行），不依赖白名单枚举
+- stage 前 untracked、stage 中 git-add/commit 的 tracked 新文件经 commit-range
+  证据保留（A path）；已 git-add 未 commit 的索引添加同样保留（索引 A 行）
+
 全部用真实 git 仓库（tmp_path + git.exe）验证，不 mock subprocess。
 """
 import json
@@ -79,6 +85,72 @@ def _commit_all(ws, message: str) -> str:
     _git(ws, "add", "-A")
     _git(ws, "commit", "-q", "-m", message)
     return _head(ws)
+
+
+# ============ FIX-002：普通 untracked 不污染（通用 tracked/untracked 判定） ============
+# Requirement 2/3/6：任意 pre-existing untracked 文件（非 PRE_ALLOWED_UNTRACKED）
+# 不得进入 normalized changed_files——排除是通用语义，不依赖白名单枚举。
+
+def test_arbitrary_untracked_excluded_no_stage_change(tmp_path):
+    """pre-existing 任意 untracked + 无 stage 变化 => changed_files == []。"""
+    ws = tmp_path / "ws"
+    before = _init_repo(ws)
+    (ws / "arbitrary-file.txt").write_text("noise\n", encoding="utf-8")
+    files = git_changed_files(ws, head_before=before, head_after=_head(ws))
+    assert files == []
+
+
+def test_arbitrary_untracked_excluded_with_tracked_dirty(tmp_path):
+    """pre-existing 任意 untracked + tracked dirty stage 变化 => 只有 tracked 路径。"""
+    ws = tmp_path / "ws"
+    before = _init_repo(ws)
+    (ws / "arbitrary-file.txt").write_text("noise\n", encoding="utf-8")
+    (ws / "README.md").write_text("dirty v2\n", encoding="utf-8")
+    files = git_changed_files(ws, head_before=before, head_after=_head(ws))
+    assert files == ["M README.md"]
+
+
+def test_arbitrary_untracked_excluded_with_clean_commit(tmp_path):
+    """pre-existing 任意 untracked + clean committed stage 变化 => 只有 committed 路径。"""
+    ws = tmp_path / "ws"
+    before = _init_repo(ws, files={"real.md": "v1\n"})
+    (ws / "arbitrary-file.txt").write_text("noise\n", encoding="utf-8")
+    (ws / "real.md").write_text("v2\n", encoding="utf-8")
+    _git(ws, "add", "real.md")   # stage 只提交自己的文件，无关 untracked 保持 untracked
+    _git(ws, "commit", "-q", "-m", "commit real change")
+    after = _head(ws)
+    files = git_changed_files(ws, head_before=before, head_after=after)
+    assert files == ["M real.md"]
+    assert not any("arbitrary-file" in f for f in files)
+
+
+def test_untracked_added_and_committed_included_via_commit_range(tmp_path):
+    """Requirement 4：stage 前 untracked、stage 中 git-add+commit 的 tracked 新文件
+    必须经 commit-range 证据保留（A path）；一直未跟踪的无关 untracked 仍排除。"""
+    ws = tmp_path / "ws"
+    before = _init_repo(ws)
+    (ws / "newfile.txt").write_text("new\n", encoding="utf-8")          # stage 前 untracked
+    (ws / "arbitrary-unrelated.txt").write_text("noise\n", encoding="utf-8")  # 始终 untracked
+    _git(ws, "add", "newfile.txt")      # 只 stage 新文件，不 add 无关 untracked
+    _git(ws, "commit", "-q", "-m", "commit new file")
+    after = _head(ws)
+    files = git_changed_files(ws, head_before=before, head_after=after)
+    assert "A newfile.txt" in files
+    assert not any("arbitrary-unrelated" in f for f in files)
+    assert not any(f.startswith("??") for f in files)
+
+
+def test_staged_tracked_addition_without_commit_included(tmp_path):
+    """tracked 添加（已 git add 进索引）即使未 commit 也保留（索引 A 行）；
+    未 stage 的 untracked 仍排除。"""
+    ws = tmp_path / "ws"
+    before = _init_repo(ws)
+    (ws / "staged.txt").write_text("new\n", encoding="utf-8")
+    (ws / "arbitrary.txt").write_text("noise\n", encoding="utf-8")
+    _git(ws, "add", "staged.txt")
+    files = git_changed_files(ws, head_before=before, head_after=_head(ws))
+    assert "A  staged.txt" in files
+    assert not any("arbitrary.txt" in f for f in files)
 
 
 # ============ Case B：commit 后工作区干净，已提交文件仍可见 ============

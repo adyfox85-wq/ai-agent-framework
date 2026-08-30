@@ -248,7 +248,7 @@ Task Remote Sync 为准。
   `context_packet.py:98-108`）：required = `status`；optional = `commit` / `changed_files` /
   `warnings` / `findings`。**`commit_changed` 不在 Hermes raw 契约中。**
 - Framework 归一化 stage 结果 `<agent>_result.json` 由 `context_packet.build_stage_result`
-  （`context_packet.py:261-427`）构建、`runner.py` 在每 stage 后写盘（`runner.py:543-568`），
+  （`context_packet.py:345-511`）构建、`runner.py` 在每 stage 后写盘（`runner.py:543-568`），
   是 lifecycle / provenance 决策的机器权威。
 
 **Authority hierarchy（两个 schema 严格分离）：**
@@ -264,8 +264,8 @@ Task Remote Sync 为准。
 |---|---|---|
 | status | Hermes 报告（SUCCESS/FAILED） | Framework 验证有效性（非空且非 FRAMEWORK_ERROR）后归一化 |
 | commit | Hermes 自报（optional） | Framework 观察：`head_after` = stage 后 `git_head(workspace)`（`runner.py:542`） |
-| commit_changed | **不在 raw 契约** | Framework 派生：`bool(head_before and head_after and head_before != head_after)`（`context_packet.py:463`；`head_before` = stage 前观察，`runner.py:460`） |
-| changed_files | Hermes 自报（optional） | Framework 观察：stage 实际改变的 tracked 文件 = `head_before..head_after` 提交文件 ∪ 剩余 tracked 工作区修改（`git_changed_files(workspace, head_before, head_after)`，`runner.py:549`；porcelain 风格行、按 path 确定性去重、过滤 PRE_ALLOWED_UNTRACKED；commit 后工作区干净时已提交文件仍可见，不塌缩为 []） |
+| commit_changed | **不在 raw 契约** | Framework 派生：`bool(head_before and head_after and head_before != head_after)`（`context_packet.py:481`；`head_before` = stage 前观察，`runner.py:460`） |
+| changed_files | Hermes 自报（optional） | Framework 观察：stage 实际改变的 tracked 文件 = `head_before..head_after` 提交文件 ∪ 剩余 tracked 工作区修改（`git_changed_files(workspace, head_before, head_after)`，`runner.py:549`；porcelain 风格行、按 path 确定性去重；**任意 `??` untracked 行一律排除**——通用 tracked/untracked 判定，非 PRE_ALLOWED_UNTRACKED 白名单枚举；commit 后工作区干净时已提交文件仍可见，不塌缩为 []） |
 
 Agent 自报的 commit / changed_files 仅停留在 raw payload；归一化结果中的 commit /
 commit_changed / changed_files 一律以 Framework 观察为准。
@@ -448,8 +448,15 @@ REPORT 聚合）不一定代表刚提交的新实现——可能缺失新字段�
    后续 runtime artifact 反推新代码已生效。
 2. 同一 TASK 中新提交代码生成的历史 artifacts 属于旧代码路径产物，如实记录来源，
    不得手工修补冒充新实现产物（保持真实 self-hosting execution evidence）。
-3. `changed_files` 字段的权威事实 = agent 结构化块显式声明的 commit 文件；runner
-   生成值（旧代码 raw porcelain）只作可观测性，不一致时以 commit 实况为准并登记。
+3. `changed_files` 的权威事实 = Framework 归一化 `<agent>_result.json` 中由
+   Framework Git 观察派生的 tracked 文件集（`head_before..head_after` 提交文件 ∪
+   剩余 tracked 工作区修改；任意 `??` untracked 一律不入列）——见 §5.2 权威层级。
+   agent 结构化块显式声明的 commit 文件只停留于 raw payload（可观测性），与
+   Framework 观察不一致时以归一化 Framework 观察为准并登记；若本任务 artifacts
+   出自旧代码进程，按本条规则 2 如实记录来源，不得反以 agent 声明为权威。
+   （FIX-002 修订：旧文 "changed_files 权威 = agent 结构化块声明的 commit 文件、
+   runner 生成值只作可观测性" 与 §5.2 的归一化 Framework 机器权威直接冲突，
+   本修订废止旧 authority 模型，统一为 §5.2。）
 4. 若未来需要"修改自身代码的任务自身的 artifacts 反映新实现"，须由 Planner 立项
    fresh-process re-run 或 restart 机制，不在本观察范围内实现。
 

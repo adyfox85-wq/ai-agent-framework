@@ -2,7 +2,7 @@
 
 > Task: A1 Registry + Risk — Establish A1 model registry and risk contracts（foundation only）
 > Executor: Hermes（AAF Executor stage）2026-08-30
-> Status: **IMPLEMENTED（foundation slice）** — 正式 COMPLETE 判定留待 WorkBuddy 独立验证 + Codex 审查 + Planner 确认（本任务不自行宣布 A1 full closed：Selection Engine / Shadow Routing 等 remaining slices 未实现，见 §6）
+> Status: **IMPLEMENTED（foundation slice）→ A1 CLOSED / COMPLETE**（2026-08-30 AAF-v0.5-A1-CLOSURE-AUDIT-001-FIX-001 边界裁决后正式关闭：本任务交付的 Registry + Risk 契约 = A1 正式 scope 全部实现，WorkBuddy 独立验证 + Codex APPROVE（FIX-001/FIX-002 收口）后 foundation 已同步；原状态行 "Selection Engine / Shadow Routing 等 remaining slices 未实现" 中的各项经裁决全部归类 A2+（Shadow Routing = A2 显式；Selection Engine / Hermes candidate tier 赋值 / 运行时 qualification 观测 = A2+，见 §10），非 A1 剩余 blocker）
 
 ## 1. 结论（先给结论）
 
@@ -126,4 +126,4 @@ python -m pytest tests/test_phase_e_cancel_ui_e2e.py tests/test_phase_e_force_e2
 
 - WorkBuddy 独立验证 + Codex 架构/政策保真/范围审查由 route 阶段（hermes → workbuddy → codex）执行并记录；若发现 blocking 按惯例开 FIX。
 - 已知限制（如实）：基线 registry 不含任何 capability tier / 健康结论（无证据）；qualification 观测需 A2+（shadow / 实况）填充；codex 模型 catalog 不可枚举（documented limitation）。
-- A1 = STARTED（foundation slice delivered）；**未**宣布 A1 full closed（Selection Engine / Shadow Routing / Hermes candidate tier 赋值 / 运行时 qualification 观测等 remaining slices 未实现）。
+- A1 = STARTED（foundation slice delivered）→ **A1 = CLOSED / COMPLETE**（2026-08-30 AAF-v0.5-A1-CLOSURE-AUDIT-001-FIX-001 边界裁决）：本行原列 "Selection Engine / Shadow Routing / Hermes candidate tier 赋值 / 运行时 qualification 观测等 remaining slices" 经逐项裁决全部归类 A2+——Shadow Routing = A2（显式：本报告 §6 与 A1 TASK Req 11）、运行时 qualification 观测 = A2+（显式：本行上文与 backlog RW-030 —— "qualification 观测需 A2+（shadow / 实况）填充"；A1 TASK Req 4 只要求契约能表示未来观测）、Selection Engine = A2+（推断：A1 契约的消费方/选择机制，A1 显式禁止自动模型选择）、Hermes candidate tier 赋值 = A2+（推断：需观测/校准证据源填充，A1 TASK Req 5 显式禁止无证据发明 tier）——无一属 A1 剩余 slice；A1 正式 scope（Registry + Risk 契约）无剩余 blocker。

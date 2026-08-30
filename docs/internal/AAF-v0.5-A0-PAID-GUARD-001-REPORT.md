@@ -462,6 +462,11 @@ State 报「Working Tree dirty」。本 closure 任务独立实测（不采信�
 - Next mainline = **A1 Registry + Risk**（Hermes candidate Tier registry /
   Selection Engine / Shadow Routing / WorkBuddy 经济路由 / Codex 成本优化 /
   精确计价 / Cost Gate UX）
+  - 注（2026-08-30 AAF-v0.5-A1-CLOSURE-AUDIT-001-FIX-001 裁决注记）：上述括号为
+    **A1+ 主线议程**（A1 及之后各阶段），非 A1 单阶段 scope——其中 A1 Registry +
+    Risk 契约已交付并关闭；Shadow Routing = **A2**（显式）；Selection Engine /
+    Hermes candidate tier 赋值 / 运行时 qualification 观测 / WorkBuddy 经济路由 /
+    Codex 成本优化 / 精确计价 / Cost Gate UX = A2+（推断或既定后续阶段）。
 - **A1 尚未开始**：`.aaf/tasks/` 无任何 A1 任务；本任务未启动 A1、未做 A1 设计。
 - Hermes free-model 运行时限定：**free-model 可用性/稳定性是后续路由工作的
   runtime qualification concern，不是「FREE = healthy」的假设**。A0 的 FREE

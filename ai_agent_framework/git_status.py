@@ -10,6 +10,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any
 
+from .subprocess_utils import no_console_kwargs
+
 GIT_NOT_APPLICABLE = "NOT_APPLICABLE"
 SYNC_UNKNOWN = "UNKNOWN"
 SYNC_SYNCED = "SYNCED"
@@ -29,6 +31,7 @@ def _git(args: list[str], workspace: str, timeout: float = 10.0) -> str:
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
+            **no_console_kwargs(),
         )
         if r.returncode != 0:
             return ""

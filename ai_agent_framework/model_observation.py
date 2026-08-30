@@ -44,6 +44,8 @@ import winreg
 from datetime import datetime
 from pathlib import Path
 
+from .subprocess_utils import no_console_kwargs
+
 # ---------------------------------------------------------------------------
 # Schema 常量
 # ---------------------------------------------------------------------------
@@ -249,6 +251,7 @@ def _run_readonly(args: list[str], timeout: float = 20.0) -> tuple[int, str, str
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
+            **no_console_kwargs(),
         )
         return r.returncode, r.stdout or "", r.stderr or ""
     except Exception:

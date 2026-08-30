@@ -34,6 +34,7 @@ from .report import (
     BLOCKING_PROVENANCE_VALUES,
     verdict_blocked,
 )
+from .subprocess_utils import no_console_kwargs
 from .verdict_parser import canonical_blocking, normalize_verdict, parse_canonical_verdict
 
 PROTOCOL_VERSION = "packet/1"
@@ -189,6 +190,7 @@ def git_head(workspace: Path | str) -> str | None:
         r = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=str(workspace), capture_output=True, text=True, timeout=15,
+            **no_console_kwargs(),
         )
         if r.returncode == 0 and r.stdout.strip():
             return r.stdout.strip()
@@ -211,6 +213,7 @@ def git_changed_files(workspace: Path | str) -> list[str]:
         r = subprocess.run(
             ["git", "status", "--porcelain", "-uall"],
             cwd=str(workspace), capture_output=True, text=True, timeout=15,
+            **no_console_kwargs(),
         )
         if r.returncode == 0:
             return [
@@ -643,6 +646,7 @@ def _porcelain_all(workspace: Path | str) -> list[str]:
         r = subprocess.run(
             ["git", "status", "--porcelain", "-uall"],
             cwd=str(workspace), capture_output=True, text=True, timeout=15,
+            **no_console_kwargs(),
         )
         if r.returncode == 0:
             return [line.strip() for line in r.stdout.splitlines() if line.strip()]
@@ -680,6 +684,7 @@ def remote_sync_state(workspace: Path | str) -> dict:
         r = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],
             cwd=ws, capture_output=True, text=True, timeout=15,
+            **no_console_kwargs(),
         )
         is_git = r.returncode == 0 and r.stdout.strip() == "true"
     except Exception:
@@ -693,6 +698,7 @@ def remote_sync_state(workspace: Path | str) -> dict:
             r = subprocess.run(
                 ["git", "rev-parse", "--abbrev-ref", "@{u}"],
                 cwd=ws, capture_output=True, text=True, timeout=15,
+                **no_console_kwargs(),
             )
             has_upstream = r.returncode == 0 and bool(r.stdout.strip())
         except Exception:
@@ -702,6 +708,7 @@ def remote_sync_state(workspace: Path | str) -> dict:
                 r = subprocess.run(
                     ["git", "rev-list", "--left-right", "--count", "HEAD...@{u}"],
                     cwd=ws, capture_output=True, text=True, timeout=15,
+                    **no_console_kwargs(),
                 )
                 parts = r.stdout.split()
                 if len(parts) == 2:

@@ -45,33 +45,42 @@ ROLE_REVIEWER = "reviewer"
 
 @dataclass(frozen=True)
 class RiskFloor:
-    """某风险等级的能力下限。
+    """某风险等级的能力下限 + reviewer 候选集合。
 
     - executor：必须的 tier 下限（不允许 None）。
-    - validator / reviewer：None = 该角色无下限要求（角色可选或通常不出现）；
+    - validator：None = 该角色无下限要求（角色可选或通常不出现）；
       非 None = 该角色**若出现**必须满足的最低 tier。
-    语义：tier 表示能力（T0 最强）；满足 = candidate 能力 >= floor
+    - reviewer_tiers：该等级**允许**出现的 reviewer tier 候选集合
+      （确定性有序 tuple；空 = 该等级无固定 reviewer 要求，配合
+      ``RISK_ROLE_OPTIONALITY`` 表达「通常无 / 可选」）。
+      语义：reviewer 候选**必须**是集合内的 tier（T0 最强）；集合外的
+      tier（更强或更弱）都不是该等级的合法 reviewer。
+    通用语义：tier 表示能力（T0 最强）；floor 满足 = candidate 能力 >= floor
     （``model_registry.tier_satisfies``）。
     """
 
     executor: str
     validator: str | None = None
-    reviewer: str | None = None
+    reviewer_tiers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.executor not in CAPABILITY_TIERS:
             raise ValueError(f"invalid executor floor tier: {self.executor!r}")
-        for role, tier in (("validator", self.validator), ("reviewer", self.reviewer)):
-            if tier is not None and tier not in CAPABILITY_TIERS:
-                raise ValueError(f"invalid {role} floor tier: {tier!r}")
+        if self.validator is not None and self.validator not in CAPABILITY_TIERS:
+            raise ValueError(f"invalid validator floor tier: {self.validator!r}")
+        for tier in self.reviewer_tiers:
+            if tier not in CAPABILITY_TIERS:
+                raise ValueError(
+                    f"invalid reviewer tier: {tier!r} (allowed: {CAPABILITY_TIERS})"
+                )
 
 
-# 初始能力下限映射（Accepted v0.5 design —— 逐项对应用户已接受的方向）
+# 初始能力下限映射 + reviewer 候选集合（Accepted v0.5 design —— 逐项对应用户已接受的方向）
 RISK_FLOORS: dict[str, RiskFloor] = {
-    RISK_LOW: RiskFloor(executor="T4", validator="T4", reviewer=None),
-    RISK_MEDIUM: RiskFloor(executor="T3", validator="T3", reviewer=None),
-    RISK_HIGH: RiskFloor(executor="T2", validator="T2", reviewer="T1"),
-    RISK_CRITICAL: RiskFloor(executor="T1", validator="T1", reviewer="T0"),
+    RISK_LOW: RiskFloor(executor="T4", validator="T4", reviewer_tiers=()),
+    RISK_MEDIUM: RiskFloor(executor="T3", validator="T3", reviewer_tiers=()),
+    RISK_HIGH: RiskFloor(executor="T2", validator="T2", reviewer_tiers=("T1", "T2")),
+    RISK_CRITICAL: RiskFloor(executor="T1", validator="T1", reviewer_tiers=("T0", "T1")),
 }
 
 # 角色可选性（「validator T4 / optional」「reviewer 通常 none / optional」的精确表示）
@@ -88,6 +97,19 @@ def floor_for(risk_class: str) -> RiskFloor:
     if risk_class not in RISK_SEVERITY:
         raise ValueError(f"unknown risk class: {risk_class!r} (allowed: {RISK_CLASSES})")
     return RISK_FLOORS[risk_class]
+
+
+def reviewer_allowed(risk_class: str, tier: str) -> bool:
+    """某风险等级的合法 reviewer tier 判定（确定性，fail closed）。
+
+    - 未知 risk_class → ValueError（契约不承诺未知等级的 reviewer）。
+    - 未知 tier → False（未验证能力不得视为 reviewer 候选；与
+      ``model_registry.tier_satisfies`` 对未知 tier 的行为一致）。
+    - 空候选集合 → False（该等级不要求 reviewer / reviewer 通常不出现）。
+    """
+    if risk_class not in RISK_SEVERITY:
+        raise ValueError(f"unknown risk class: {risk_class!r} (allowed: {RISK_CLASSES})")
+    return tier in RISK_FLOORS[risk_class].reviewer_tiers
 
 
 def risk_at_least(risk_class: str, floor: str) -> bool:

@@ -24,6 +24,7 @@ from ai_agent_framework.risk_contract import (
     RiskFloor,
     floor_for,
     max_risk,
+    reviewer_allowed,
     risk_at_least,
     risk_for_authority_area,
 )
@@ -51,18 +52,18 @@ def test_risk_severity_monotonic():
 
 def test_initial_tier_floor_mapping_exact():
     assert rc.RISK_FLOORS == {
-        RISK_LOW: RiskFloor(executor="T4", validator="T4", reviewer=None),
-        RISK_MEDIUM: RiskFloor(executor="T3", validator="T3", reviewer=None),
-        RISK_HIGH: RiskFloor(executor="T2", validator="T2", reviewer="T1"),
-        RISK_CRITICAL: RiskFloor(executor="T1", validator="T1", reviewer="T0"),
+        RISK_LOW: RiskFloor(executor="T4", validator="T4", reviewer_tiers=()),
+        RISK_MEDIUM: RiskFloor(executor="T3", validator="T3", reviewer_tiers=()),
+        RISK_HIGH: RiskFloor(executor="T2", validator="T2", reviewer_tiers=("T1", "T2")),
+        RISK_CRITICAL: RiskFloor(executor="T1", validator="T1", reviewer_tiers=("T0", "T1")),
     }
 
 
 def test_floor_for_returns_contract_floors():
-    assert floor_for(RISK_LOW) == RiskFloor("T4", "T4", None)
-    assert floor_for(RISK_MEDIUM) == RiskFloor("T3", "T3", None)
-    assert floor_for(RISK_HIGH) == RiskFloor("T2", "T2", "T1")
-    assert floor_for(RISK_CRITICAL) == RiskFloor("T1", "T1", "T0")
+    assert floor_for(RISK_LOW) == RiskFloor("T4", "T4", ())
+    assert floor_for(RISK_MEDIUM) == RiskFloor("T3", "T3", ())
+    assert floor_for(RISK_HIGH) == RiskFloor("T2", "T2", ("T1", "T2"))
+    assert floor_for(RISK_CRITICAL) == RiskFloor("T1", "T1", ("T0", "T1"))
 
 
 def test_role_optionality_exact():
@@ -76,13 +77,13 @@ def test_role_optionality_exact():
 
 def test_floors_are_capability_sufficiency_contract():
     """floor 语义：candidate tier >= floor（tier 表示能力，T0 最强）。"""
-    # HIGH floor（T2/T2/T1）：T2 executor 满足，T3 不满足
+    # HIGH floor（T2/T2）：T2 executor 满足，T3 不满足
     high = floor_for(RISK_HIGH)
     assert tier_satisfies("T2", high.executor) is True
     assert tier_satisfies("T3", high.executor) is False
     assert tier_satisfies("T2", high.validator) is True
-    assert tier_satisfies("T1", high.reviewer) is True
-    # CRITICAL floor（T1/T1/T0）：executor 必须 T1 或更强
+    assert tier_satisfies("T1", high.validator) is True
+    # CRITICAL floor（T1/T1）：executor 必须 T1 或更强
     critical = floor_for(RISK_CRITICAL)
     assert tier_satisfies("T1", critical.executor) is True
     assert tier_satisfies("T0", critical.executor) is True
@@ -96,6 +97,83 @@ def test_unknown_risk_class_fail_closed():
         risk_at_least("EXTREME", RISK_HIGH)
     with pytest.raises(ValueError):
         risk_at_least(RISK_HIGH, "EXTREME")
+    with pytest.raises(ValueError):
+        reviewer_allowed("EXTREME", "T1")
+
+
+# ---------------------------------------------------------------------------
+# B2. reviewer 候选集合（FIX-001：HIGH=T1/T2、CRITICAL=T0/T1，防窄化回归）
+# ---------------------------------------------------------------------------
+
+
+def test_high_reviewer_permits_t1_and_t2():
+    """HIGH reviewer 候选集合必须完整包含 T1 与 T2（已接受的 v0.5 契约）。"""
+    assert reviewer_allowed(RISK_HIGH, "T1") is True
+    assert reviewer_allowed(RISK_HIGH, "T2") is True
+
+
+def test_high_reviewer_does_not_collapse_to_t1_only():
+    """HIGH 不得静默窄化为 T1-only：T2 显式允许，集合外 tier 一律拒绝。"""
+    assert reviewer_allowed(RISK_HIGH, "T2") is True   # 防窄化为 {T1}
+    assert reviewer_allowed(RISK_HIGH, "T0") is False  # 更强但不在集合内
+    assert reviewer_allowed(RISK_HIGH, "T3") is False  # 更弱
+    assert reviewer_allowed(RISK_HIGH, "T4") is False
+
+
+def test_critical_reviewer_permits_t0_and_t1():
+    """CRITICAL reviewer 候选集合必须完整包含 T0 与 T1（已接受的 v0.5 契约）。"""
+    assert reviewer_allowed(RISK_CRITICAL, "T0") is True
+    assert reviewer_allowed(RISK_CRITICAL, "T1") is True
+
+
+def test_critical_reviewer_does_not_collapse_to_t0_only():
+    """CRITICAL 不得静默窄化为 T0-only：T1 显式允许，集合外 tier 一律拒绝。"""
+    assert reviewer_allowed(RISK_CRITICAL, "T1") is True  # 防窄化为 {T0}
+    assert reviewer_allowed(RISK_CRITICAL, "T2") is False
+    assert reviewer_allowed(RISK_CRITICAL, "T3") is False
+    assert reviewer_allowed(RISK_CRITICAL, "T4") is False
+
+
+def test_reviewer_candidate_sets_are_exact():
+    """候选集合逐 tier 精确（全 tier 枚举，防漂移）。"""
+    all_tiers = ("T0", "T1", "T2", "T3", "T4")
+    assert tuple(t for t in all_tiers if reviewer_allowed(RISK_HIGH, t)) == ("T1", "T2")
+    assert tuple(t for t in all_tiers if reviewer_allowed(RISK_CRITICAL, t)) == ("T0", "T1")
+
+
+def test_low_medium_reviewer_optionality_unchanged():
+    """LOW/MEDIUM reviewer 可选性语义不变：无固定候选集合 + 可选性标记保留。"""
+    assert rc.RISK_FLOORS[RISK_LOW].reviewer_tiers == ()
+    assert rc.RISK_FLOORS[RISK_MEDIUM].reviewer_tiers == ()
+    assert reviewer_allowed(RISK_LOW, "T4") is False
+    assert reviewer_allowed(RISK_MEDIUM, "T4") is False
+    assert RISK_ROLE_OPTIONALITY[RISK_LOW] == frozenset({"validator", "reviewer"})
+    assert RISK_ROLE_OPTIONALITY[RISK_MEDIUM] == frozenset({"reviewer"})
+
+
+def test_executor_validator_floors_unchanged():
+    """executor / validator floor 保持不变（FIX-001 只修 reviewer 候选集合）。"""
+    assert rc.RISK_FLOORS[RISK_LOW].executor == "T4"
+    assert rc.RISK_FLOORS[RISK_LOW].validator == "T4"
+    assert rc.RISK_FLOORS[RISK_MEDIUM].executor == "T3"
+    assert rc.RISK_FLOORS[RISK_MEDIUM].validator == "T3"
+    assert rc.RISK_FLOORS[RISK_HIGH].executor == "T2"
+    assert rc.RISK_FLOORS[RISK_HIGH].validator == "T2"
+    assert rc.RISK_FLOORS[RISK_CRITICAL].executor == "T1"
+    assert rc.RISK_FLOORS[RISK_CRITICAL].validator == "T1"
+
+
+def test_reviewer_allowed_unknown_tier_fail_closed():
+    """未知 tier 不是合法 reviewer 候选（与 tier_satisfies 行为一致）。"""
+    assert reviewer_allowed(RISK_HIGH, "T9") is False
+    assert reviewer_allowed(RISK_CRITICAL, "T9") is False
+    assert reviewer_allowed(RISK_HIGH, "TX") is False
+
+
+def test_invalid_reviewer_tiers_rejected_at_construction():
+    """RiskFloor 构造校验 fail closed：未知 reviewer tier 直接拒绝。"""
+    with pytest.raises(ValueError):
+        RiskFloor(executor="T2", validator="T2", reviewer_tiers=("T1", "T9"))
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +231,8 @@ def test_combined_authority_risk_deterministic():
 def test_deterministic_same_input_same_output():
     for _ in range(3):
         assert risk_for_authority_area("runner") == RISK_HIGH
-        assert floor_for(RISK_CRITICAL) == RiskFloor("T1", "T1", "T0")
+        assert floor_for(RISK_CRITICAL) == RiskFloor("T1", "T1", ("T0", "T1"))
+        assert reviewer_allowed(RISK_HIGH, "T1") is True
         assert risk_at_least(RISK_CRITICAL, RISK_LOW) is True
         assert max_risk([RISK_HIGH, RISK_LOW, RISK_MEDIUM]) == RISK_HIGH
     # 组合与顺序无关

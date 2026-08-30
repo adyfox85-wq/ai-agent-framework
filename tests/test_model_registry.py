@@ -29,6 +29,7 @@ from ai_agent_framework.model_registry import (
     QUAL_STATUS_NOT_QUALIFIED,
     QUAL_STATUS_QUALIFIED,
     QUAL_STATUS_UNKNOWN,
+    SCHEMA_VERSION,
     RegistryEntry,
     RuntimeQualification,
     baseline_registry,
@@ -328,6 +329,60 @@ def test_registry_from_dict_rejects_invalid_enum():
     data["entries"][key]["cost_class"] = "GRATIS"
     with pytest.raises(ValueError):
         registry_from_dict(data)
+
+
+# ---------------------------------------------------------------------------
+# I2. schema_version 校验（FIX-001：文档声明 fail closed，实现必须兑现）
+# ---------------------------------------------------------------------------
+
+
+def test_supported_schema_version_loads():
+    """受支持的 schema_version（== SCHEMA_VERSION）正常加载。"""
+    data = registry_to_dict(baseline_registry())
+    assert data["schema_version"] == SCHEMA_VERSION
+    restored = registry_from_dict(data)
+    assert restored == baseline_registry()
+
+
+def test_unsupported_schema_version_rejected():
+    """不受支持的 schema_version（如 999）必须 fail closed（ValueError）。"""
+    data = registry_to_dict(baseline_registry())
+    data["schema_version"] = 999
+    with pytest.raises(ValueError):
+        registry_from_dict(data)
+
+
+def test_missing_schema_version_rejected():
+    """缺失 schema_version → 显式且确定性的拒绝（不承诺未声明版本的文档）。"""
+    data = registry_to_dict(baseline_registry())
+    del data["schema_version"]
+    with pytest.raises(ValueError):
+        registry_from_dict(data)
+
+
+def test_malformed_schema_version_rejected():
+    """malformed 版本（非受支持 int 的其它类型）→ 显式且确定性的拒绝。"""
+    data = registry_to_dict(baseline_registry())
+    data["schema_version"] = "1"
+    with pytest.raises(ValueError):
+        registry_from_dict(data)
+
+
+def test_schema_version_mismatch_message_is_deterministic():
+    """错误信息确定性地包含受支持版本号（可诊断、可断言）。"""
+    data = registry_to_dict(baseline_registry())
+    data["schema_version"] = 999
+    with pytest.raises(ValueError, match="schema_version"):
+        registry_from_dict(data)
+
+
+def test_valid_registry_entries_still_load_unchanged():
+    """既有合法 registry 条目在加入 schema 校验后仍然原样加载。"""
+    baseline = baseline_registry()
+    restored = registry_from_dict(registry_to_dict(baseline))
+    assert set(restored) == set(baseline)
+    for key, entry in baseline.items():
+        assert restored[key] == entry
 
 
 # ---------------------------------------------------------------------------

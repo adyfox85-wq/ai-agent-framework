@@ -199,30 +199,96 @@ def git_head(workspace: Path | str) -> str | None:
     return None
 
 
-def git_changed_files(workspace: Path | str) -> list[str]:
-    """workspace git status --porcelain 行（排除预允许 untracked 常驻 artifact）；
-    非 git 仓库 / 失败 → []。
+def _git_diff_changed_lines(
+    workspace: Path | str, head_before: str, head_after: str
+) -> list[str]:
+    """head_before..head_after 之间提交中实际改变的 tracked 文件（porcelain 风格行）。
 
-    FIX-002 Req 8：stage 的 changed_files 字段不得被常驻 untracked 项污染——
-    .aaf/、AAF_TASK004_PROCESS_CHECK.txt、scripts/start_bridge_hidden.vbs 等
-    PRE_ALLOWED_UNTRACKED 条目不是本任务的 tracked change，必须过滤。
-    用 -uall 逐文件列出 untracked（否则目录折叠如 '?? scripts/' 会掩盖预允许项）。
-    提交后工作区干净 → []（真实 commit 文件由 agent 在结构化块中显式声明）。
+    AAF-v0.5-A1-CLOSURE-PROTOCOL-CORRECTION-001-FIX-001：stage 提交后工作区
+    干净时，changed_files 不得塌缩为 []——已提交文件必须仍可观察。用
+    ``git diff --name-status --no-renames head_before..head_after`` 派生：
+
+    - ``--no-renames``：rename 拆解为 ``D old`` + ``A new``，与 ``git status
+      --porcelain``（未开 rename detection）的既有行风格一致——changed_files
+      契约不引入新的 rename 行形态。
+    - name-status 行 ``M\\tpath`` 转换为 porcelain 风格 ``M path``（单状态符 +
+      空格 + path），与 git_changed_files 既有输出行风格统一。
+    - 失败（非 git / sha 不可达 / 其他错误）→ []（优雅降级，不阻断）。
     """
     try:
         r = subprocess.run(
-            ["git", "status", "--porcelain", "-uall"],
+            ["git", "diff", "--name-status", "--no-renames", f"{head_before}..{head_after}"],
             cwd=str(workspace), capture_output=True, text=True, timeout=15,
             **no_console_kwargs(),
         )
         if r.returncode == 0:
-            return [
-                line.strip() for line in r.stdout.splitlines()
-                if line.strip() and not _is_pre_allowed_untracked(line.strip())
-            ]
+            lines: list[str] = []
+            for line in r.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split("\t")
+                if len(parts) == 2 and parts[0].strip():
+                    lines.append(f"{parts[0].strip()} {parts[1]}")
+                else:
+                    lines.append(line)
+            return lines
     except Exception:
         pass
     return []
+
+
+def _dedupe_by_path(lines: list[str]) -> list[str]:
+    """按 path 确定性去重（保留首次出现；committed 在前、dirty 在后）。
+
+    porcelain 风格行 = 状态前缀 + 空格 + path（如 ``M path`` / ``?? path``）。
+    committed 与 dirty 两侧可能报告同一 path（提交后继续修改）——同一 path
+    只保留首次出现的行，避免同一文件在 changed_files 中重复。
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        parts = line.split(" ", 1)
+        path = parts[1].strip() if len(parts) == 2 and parts[1].strip() else line
+        if path not in seen:
+            seen.add(path)
+            out.append(line)
+    return out
+
+
+def git_changed_files(
+    workspace: Path | str,
+    head_before: str | None = None,
+    head_after: str | None = None,
+) -> list[str]:
+    """stage 实际改变的仓库文件（porcelain 风格行；排除预允许 untracked 常驻项）。
+
+    语义（AAF-v0.5-A1-CLOSURE-PROTOCOL-CORRECTION-001-FIX-001）：
+    归一化 changed_files = 本 stage 实际改变的 effective file paths——不是
+    "stage 结束后仍 dirty 的文件"。由 Framework Git 观察派生：
+
+    1. head_before / head_after 提供且 HEAD 改变 → 先并入 head_before..head_after
+       提交中实际改变的 tracked 文件（``_git_diff_changed_lines``）——stage
+       创建 commit 且工作区干净时，已提交文件仍然可见（不再塌缩为 []）；
+    2. 再并入 stage 后剩余的 tracked 工作区修改（``git status --porcelain -uall``）；
+    3. 按 path 确定性去重（首次出现保留：committed 在前、dirty 在后）。
+
+    FIX-002 Req 8（保持）：stage 的 changed_files 字段不得被常驻 untracked 项
+    污染——.aaf/、AAF_TASK004_PROCESS_CHECK.txt、scripts/start_bridge_hidden.vbs
+    等 PRE_ALLOWED_UNTRACKED 条目不是本任务的 tracked change，必须过滤。
+    用 -uall 逐文件列出 untracked（否则目录折叠如 '?? scripts/' 会掩盖预允许项）。
+
+    非 git 仓库 / 失败 → []。head_before/head_after 缺省（None）→ 只报告工作区
+    状态（旧调用语义不变）。
+    """
+    committed: list[str] = []
+    if head_before and head_after and head_before != head_after:
+        committed = _git_diff_changed_lines(workspace, head_before, head_after)
+    dirty: list[str] = [
+        line for line in _porcelain_all(workspace)
+        if not _is_pre_allowed_untracked(line)
+    ]
+    return _dedupe_by_path([*committed, *dirty])
 
 
 # ---------- 结构化 stage result ----------

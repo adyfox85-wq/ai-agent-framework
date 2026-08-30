@@ -289,3 +289,67 @@ def test_context_packet_git_failure_semantics_unchanged(monkeypatch):
     state = remote_sync_state("C:/ws")
     assert state["commit_sync"] == "UNKNOWN"
     assert state["task_remote_sync"] == "NOT_APPLICABLE"
+
+
+# ---------------------------------------------------------------------------
+# FIX-001：git_changed_files(head_before, head_after) 新增 commit-range diff 调用
+# ---------------------------------------------------------------------------
+
+GIT_DIFF_NAME_STATUS = [
+    "git", "diff", "--name-status", "--no-renames", f"{'a' * 40}..{'b' * 40}",
+]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="CREATE_NO_WINDOW 是 Windows-only flag")
+def test_git_changed_files_diff_call_uses_create_no_window_on_windows(monkeypatch):
+    """Windows：HEAD 改变时 git_changed_files 的 commit-range diff 调用收到
+    CREATE_NO_WINDOW，参数 / 解析语义正确（name-status 行 → porcelain 风格行）。"""
+    calls: list = []
+    _install_fake_run(
+        monkeypatch,
+        {
+            tuple(GIT_DIFF_NAME_STATUS): (
+                0,
+                "M\tdocs/one.md\nA\tdocs/new.md\nD\tdocs/old.md\n",
+                "",
+            ),
+        },
+        calls,
+    )
+    files = git_changed_files("C:/ws", head_before="a" * 40, head_after="b" * 40)
+    assert files == ["M docs/one.md", "A docs/new.md", "D docs/old.md"]
+    _assert_all_creationflags(calls, expect_flag=True)
+    assert calls[0][0] == GIT_DIFF_NAME_STATUS  # 参数形态未变（无 Windows-only 参数）
+    kw = calls[0][1]
+    assert kw["cwd"] == "C:/ws"
+    assert kw["capture_output"] is True and kw["text"] is True
+    assert kw["timeout"] == 15
+
+
+def test_git_changed_files_diff_call_non_windows_no_creationflags(monkeypatch):
+    """非 Windows：commit-range diff 调用不传 Windows-only creationflags。"""
+    monkeypatch.setattr(subprocess_utils, "_IS_WINDOWS", False)
+    calls: list = []
+    _install_fake_run(
+        monkeypatch,
+        {tuple(GIT_DIFF_NAME_STATUS): (0, "M\tREADME.md\n", "")},
+        calls,
+    )
+    files = git_changed_files("C:/ws", head_before="a" * 40, head_after="b" * 40)
+    assert files == ["M README.md"]
+    _assert_all_creationflags(calls, expect_flag=False)
+
+
+def test_git_changed_files_diff_call_failure_degrades_to_dirty_only(monkeypatch):
+    """diff 调用失败（如 sha 不可达）→ 优雅降级为只报工作区 dirty（不阻断）。"""
+    calls: list = []
+    _install_fake_run(
+        monkeypatch,
+        {
+            tuple(GIT_DIFF_NAME_STATUS): (128, "", "fatal: bad object"),
+            tuple(GIT_STATUS_PORCELAIN): (0, " M tracked.txt\n", ""),
+        },
+        calls,
+    )
+    files = git_changed_files("C:/ws", head_before="a" * 40, head_after="b" * 40)
+    assert files == ["M tracked.txt"]

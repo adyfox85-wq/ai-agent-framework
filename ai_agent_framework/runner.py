@@ -539,13 +539,16 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                             'authority': str(output_dir / model_observation_mod.ARTIFACT_FILENAME),
                             'entry': agent,
                         }
+                head_after = git_head(workspace)
                 stage = build_stage_result(
                     agent=agent,
                     result_text=result_text,
                     output_dir=output_dir,
                     head_before=head_before,
-                    head_after=git_head(workspace),
-                    changed_files=git_changed_files(workspace),
+                    head_after=head_after,
+                    changed_files=git_changed_files(
+                        workspace, head_before=head_before, head_after=head_after
+                    ),
                     structured=structured,
                     structured_status=structured_status,
                     stage_started_at=stage_started_iso,

@@ -248,7 +248,7 @@ Task Remote Sync 为准。
   `context_packet.py:98-108`）：required = `status`；optional = `commit` / `changed_files` /
   `warnings` / `findings`。**`commit_changed` 不在 Hermes raw 契约中。**
 - Framework 归一化 stage 结果 `<agent>_result.json` 由 `context_packet.build_stage_result`
-  （`context_packet.py:261-427`）构建、`runner.py` 在每 stage 后写盘（`runner.py:542-565`），
+  （`context_packet.py:261-427`）构建、`runner.py` 在每 stage 后写盘（`runner.py:543-568`），
   是 lifecycle / provenance 决策的机器权威。
 
 **Authority hierarchy（两个 schema 严格分离）：**
@@ -263,9 +263,9 @@ Task Remote Sync 为准。
 | 字段 | raw agent 契约 | Framework 归一化结果 |
 |---|---|---|
 | status | Hermes 报告（SUCCESS/FAILED） | Framework 验证有效性（非空且非 FRAMEWORK_ERROR）后归一化 |
-| commit | Hermes 自报（optional） | Framework 观察：`head_after` = stage 后 `git_head(workspace)`（`runner.py:547`） |
-| commit_changed | **不在 raw 契约** | Framework 派生：`bool(head_before and head_after and head_before != head_after)`（`context_packet.py:397`；`head_before` = stage 前观察，`runner.py:460`） |
-| changed_files | Hermes 自报（optional） | Framework 观察：`git_changed_files(workspace)`（`runner.py:548`，过滤 PRE_ALLOWED_UNTRACKED） |
+| commit | Hermes 自报（optional） | Framework 观察：`head_after` = stage 后 `git_head(workspace)`（`runner.py:542`） |
+| commit_changed | **不在 raw 契约** | Framework 派生：`bool(head_before and head_after and head_before != head_after)`（`context_packet.py:463`；`head_before` = stage 前观察，`runner.py:460`） |
+| changed_files | Hermes 自报（optional） | Framework 观察：stage 实际改变的 tracked 文件 = `head_before..head_after` 提交文件 ∪ 剩余 tracked 工作区修改（`git_changed_files(workspace, head_before, head_after)`，`runner.py:549`；porcelain 风格行、按 path 确定性去重、过滤 PRE_ALLOWED_UNTRACKED；commit 后工作区干净时已提交文件仍可见，不塌缩为 []） |
 
 Agent 自报的 commit / changed_files 仅停留在 raw payload；归一化结果中的 commit /
 commit_changed / changed_files 一律以 Framework 观察为准。

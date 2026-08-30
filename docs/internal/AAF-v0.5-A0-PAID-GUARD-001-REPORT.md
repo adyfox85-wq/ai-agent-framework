@@ -2,7 +2,7 @@
 
 > Task: v0.5 A0 Hermes Paid Guard — Fail-Closed Task-Scoped Cost Authorization
 > Executor: Hermes（AAF Executor stage）2026-08-29
-> Status: IMPLEMENTED (A0) — **Codex 审查 = REQUEST_CHANGE → FIX-002 已修复全部三个 blocking fail-open 发现（见文末 §12 FIX-002 修订说明）**；正式 COMPLETE 判定留待 WorkBuddy 独立复验 + Codex re-review + Planner 确认
+> Status: ✅ **A0 = CLOSED / COMPLETE（2026-08-30，AAF-v0.5-A0-PAID-GUARD-001-CLOSE-001 正式关闭：FIX-006 Codex APPROVE（blocking_rework=false，blocking_provenance=structured，commit b1e8bf2）；Next = A1 Registry + Risk，A1 未启动；详见 §13）**。历史状态行（保留）：IMPLEMENTED (A0) — **Codex 审查 = REQUEST_CHANGE → FIX-002 已修复全部三个 blocking fail-open 发现（见文末 §12 FIX-002 修订说明）**；正式 COMPLETE 判定留待 WorkBuddy 独立复验 + Codex re-review + Planner 确认
 > 实现证据（Run N）：本文件 + 定向/全量测试 + 单测；运行时证据（Run N+1）：fresh-runner 9/9 场景（FIX-002）
 
 > ⚠️ **FIX-002 修订**：本文 §2/§4/§5 中关于「0.0.0.0 视为本地」「AAF_COST_FREE_MODELS 为权威 FREE 元数据」「env 天然 per-run 一次性」的原始表述已被 FIX-002 推翻，以 §12 为准。
@@ -398,3 +398,90 @@ FIX-002 一次性关闭（未扩张到 A1）：
   blocking REQUEST_CHANGE（**Codex 返回 APPROVE 前 A0 不视为 CLOSED**）。
   Remote Sync：本任务提交**未推送**（Requirement 13：review 通过后再同步
   accepted commits；同步后 ahead/behind 归 0/0）。
+
+---
+
+## 13. A0 Closure（AAF-v0.5-A0-PAID-GUARD-001-CLOSE-001，2026-08-30）
+
+正式关闭 v0.5 A0 Hermes Paid Guard。FIX-006 已收到 Codex APPROVE；本 closure 任务只做
+仓库状态对账与正式文档收口——未修改 cost_guard 行为、未 redesign 路由、未启动 A1、
+未做 A2-A6 / UI 工作（Requirement 6）。
+
+### 13.1 最终验收链（FIX-006，accepted baseline）
+
+- Framework Result: **FINISHED**
+- Current Status: **SUCCESS**（FIX-006 REPORT）
+- Hermes: **completed**（定向 106 passed；分块全量 non-GUI 1395 passed / 1 skipped /
+  29 deselected，零回归，RW-029 flake 按惯例隔离复跑）
+- WorkBuddy: **PASS_WITH_WARNING**（non-blocking；独立核对 Git 事实 + 对抗输入探测
+  15 例全 BLOCKED + 多进程并发 6 进程恰一 winner）
+- Codex: **APPROVE**（blocking_rework=false，blocking_provenance=structured，
+  commit=b1e8bf2，generated 2026-08-30T16:46:55；证据：
+  `.aaf/AAF-v0.5-A0-PAID-GUARD-001-FIX-006/codex_result.json`）
+- Unresolved Issues: **None identified**
+- 结论：**FIX-006 = APPROVED / COMPLETE；A0 Paid Guard = CLOSED / COMPLETE**
+
+### 13.2 Git 工作树对账（Working-Tree Discrepancy Reconciliation）
+
+任务背景中的报告差异：WorkBuddy 报「Tracked Working Tree CLEAN」，Latest Closure
+State 报「Working Tree dirty」。本 closure 任务独立实测（不采信任何一方自述）：
+
+- `git status --porcelain`：**0 个 tracked modification、0 个 staged**；
+  仅 3 个 untracked 常驻项。
+- 3 个 untracked 项全部属于 **PRE_ALLOWED_UNTRACKED 常驻项**（
+  AAF-v0.4-TASK-007-FIX-002 定义并过滤，见 PROJECT_STATE.md §CAP 上下文）：
+  1. `.aaf/` —— Framework runtime artifact 目录（RW-017：真实运行证据，按现状
+     不清理、不提交；本次 CLOSE-001 任务目录亦在其中）
+  2. `AAF_TASK004_PROCESS_CHECK.txt` —— RW-020 过程检查证据（2026-08-27 生成，
+     backlog RW-020 Evidence 引用）
+  3. `scripts/start_bridge_hidden.vbs` —— Bridge 隐藏启动辅助脚本（本机环境文件，
+     非 repo 跟踪项）
+- 分类结论：**tracked working tree = CLEAN（两报告对 tracked 部分一致）**；
+  「dirty」观察来自 untracked 常驻产物——不是 tracked 修改、不是未提交的合法
+  项目变更、不是 `.aaf-run/` 一次性产物、也不是用户/无关文件需要处理。
+- 按 Requirement 3：**未删除、未覆盖、未 clean 任何上述 untracked 项**来伪装
+  干净状态。
+
+### 13.3 验收完整性核对（FIX-006 acceptance intact）
+
+- Codex APPROVE 保持：codex_result.json（verdict=APPROVE，blocking_rework=false，
+  blocking_provenance=structured，commit=b1e8bf2，commit_changed=false）未改动。
+- 无新代码回归 / 无未审查实现变更：HEAD = b1e8bf2（Codex 审查的提交）；工作树
+  零 tracked 修改 → 审查后无任何代码漂移；本 closure 变更仅文档。
+- 本 closure 任务复跑验证：定向 **106 passed**（test_cost_guard + fix002 + fix003 +
+  fix005 + fix006，与 FIX-006 基线完全一致）；全量 non-GUI 按项目惯例分块复跑
+  （RW-029 0x80000003 环境 flake 在单进程连跑中再次复现，隔离复跑全绿——与
+  FIX-002/003/005/006 同款处理）。
+- A0 实现 scope 保持关闭：FIX-003 原子 claim / FIX-005 state_dir 权威 / FIX-006
+  绝对路径校验语义均未重开；无 A1/A2-A6/UI 泄漏。
+
+### 13.4 正式状态记录
+
+- FIX-006 = **APPROVED / COMPLETE**（Codex APPROVE，commit b1e8bf2）
+- A0 Paid Guard = **CLOSED / COMPLETE**（2026-08-30，本 closure 任务正式记录）
+- Next mainline = **A1 Registry + Risk**（Hermes candidate Tier registry /
+  Selection Engine / Shadow Routing / WorkBuddy 经济路由 / Codex 成本优化 /
+  精确计价 / Cost Gate UX）
+- **A1 尚未开始**：`.aaf/tasks/` 无任何 A1 任务；本任务未启动 A1、未做 A1 设计。
+- Hermes free-model 运行时限定：**free-model 可用性/稳定性是后续路由工作的
+  runtime qualification concern，不是「FREE = healthy」的假设**。A0 的 FREE
+  分类只是本地/免费端点的事实判定（无远程 FREE registry，FIX-002）；模型实际
+  可用性、稳定性、健康度由运行期验证与后续路由工作（A1+）承担。
+
+### 13.5 Git 事实（closure 时点实测）
+
+- Local HEAD: `b1e8bf2d0347ed0ea7e9b2ff28d5fcb07c92fb1a`
+- Remote HEAD: `d59630ecf210d7b09db8d5f5a137831922dae520`
+- Ahead/Behind: **6/0**（FIX-003/005/006 实现+文档提交均已获 Codex review，未推送）
+- Tracked Working Tree: **CLEAN**（3 个 PRE_ALLOWED_UNTRACKED untracked 项，见 13.2）
+- Remote Sync: **UNSYNCED**（既有 6 个 ahead commits + 本 closure commit 均未推送；
+  Requirement 7：review 通过后由后续任务同步，本任务不 push）
+
+### 13.6 范围与历史保护
+
+- 变更仅限 closure/state 文档：本 REPORT（§13）、PROJECT_STATE.md（§0 v0.5 块 +
+  Last Updated）、AAF_MASTER_BACKLOG.md（CAP-004 + Last Updated）。
+- cost_guard 行为零修改；无路由 redesign；无 A1 实现；无 push / force push /
+  历史改写 / cosmetic sync；既有已审查 ahead commits 保持不动。
+- 本 closure commit SHA 由任务框架记录于 `.aaf/` 运行期证据（REPORT / run.json），
+  不在此处自引用硬编码。

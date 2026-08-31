@@ -80,8 +80,13 @@ ARTIFACT_FILENAME = "cost_guard.json"
 # --- 环境变量契约（AAF 自有；不修改 Hermes 全局 config） ---
 # effective model / provider 显式覆盖：guard 解析的 model == 实际 invocation model
 # （runner 在 hermes 调用时透传 -m / --provider，见 adapters.run_agent）。
+# AAF_HERMES_BASE_URL：与 AAF_HERMES_MODEL 配套的端点事实（A3 active routing
+# 把已选 LOCAL_FREE 候选的 evidence-backed base_url 显式传入；guard 用既有
+# classify_cost loopback 判定识别为 LOCAL_FREE——不是凭空捏造，分类逻辑零改动；
+# 未设置时保持 None，绝不虚构 base_url）。
 ENV_MODEL = "AAF_HERMES_MODEL"
 ENV_PROVIDER = "AAF_HERMES_PROVIDER"
+ENV_BASE_URL = "AAF_HERMES_BASE_URL"
 # 一次性显式授权：整串精确匹配 "<task_id>|<stage>|<model>[|<provider>]"
 ENV_AUTH = "AAF_COST_AUTH"
 # AAF_COST_FREE_MODELS：**不是**权威 FREE 来源（A0 无可信远程 FREE registry）。
@@ -288,8 +293,11 @@ def resolve_effective_hermes() -> dict:
     """解析 Hermes stage 的 effective model / provider（不发起任何网络/LLM）。
 
     优先级：
-    1. ``AAF_HERMES_MODEL``（+ ``AAF_HERMES_PROVIDER``）显式覆盖 —— 与 runner
-       实际透传给 hermes 的参数一致（invocation-truth）。
+    1. ``AAF_HERMES_MODEL``（+ ``AAF_HERMES_PROVIDER`` / ``AAF_HERMES_BASE_URL``）
+       显式覆盖 —— 与 runner 实际透传给 hermes 的参数一致（invocation-truth）。
+       base_url 是调用方（A3 active routing）显式传入的端点事实：存在时经既有
+       ``classify_cost`` 的 loopback 判定参与 LOCAL_FREE 识别；缺失时保持 None
+       （不虚构）。它只在 AAF_HERMES_MODEL 同时存在时被消费。
     2. ``hermes config get model`` 只读查询（v0.4 model_observation 同款发现）。
     3. 都无法解析 → model=None（cost_class=COST_UNKNOWN → fail closed）。
 
@@ -297,16 +305,24 @@ def resolve_effective_hermes() -> dict:
     """
     model = os.environ.get(ENV_MODEL, "").strip()
     provider = os.environ.get(ENV_PROVIDER, "").strip()
+    base_url = os.environ.get(ENV_BASE_URL, "").strip() or None
     if model:
+        notes = [
+            f"effective model pinned via {ENV_MODEL}"
+            + (f" / provider via {ENV_PROVIDER}" if provider else "")
+        ]
+        if base_url:
+            notes.append(
+                f"base_url pinned via {ENV_BASE_URL} (framework-provided endpoint "
+                "fact from registry evidence; classified by the same loopback "
+                "check as config-sourced base_url)"
+            )
         return {
             "model": model,
             "provider": provider or None,
-            "base_url": None,  # env 覆盖时不虚构 base_url（不参与 local 判定）
+            "base_url": base_url,
             "model_source": MODEL_SOURCE_ENV,
-            "notes": [
-                f"effective model pinned via {ENV_MODEL}"
-                + (f" / provider via {ENV_PROVIDER}" if provider else "")
-            ],
+            "notes": notes,
         }
     from_config = _resolve_from_hermes_config()
     if from_config:

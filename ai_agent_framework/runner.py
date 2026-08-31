@@ -28,6 +28,9 @@ from .context_packet import (
 from . import cost_guard as cost_guard_mod
 from . import proc_identity
 from . import project_boundary
+from . import active_routing as active_routing_mod
+from . import model_registry as model_registry_mod
+from .risk_contract import ROLE_EXECUTOR
 from . import shadow_observation as shadow_obs_mod
 from . import task_lifecycle
 from .report import agent_result_blocked, build_report, verdict_blocked
@@ -480,6 +483,49 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 if mo_enabled:
                     stage_started_iso = datetime.now().isoformat(timespec='seconds')
                     stage_started_mono = time.monotonic()
+                # v0.5 A3 active routing（authoritative；TASK: AAF-v0.5-A3-HERMES-FREE-ROUTING-001）。
+                # 复用现有 Risk + Registry + selector（不创建第二套路由判断）：仅当
+                # Hermes executor task 显式声明 Risk: LOW 且现有 selector 选出已
+                # QUALIFIED 的 LOCAL_FREE/FREE candidate 时，本 shadow decision 升级为
+                # 真实 model/provider 选择（routing_applied=true → 设置
+                # AAF_HERMES_MODEL / AAF_HERMES_PROVIDER / AAF_HERMES_BASE_URL 覆盖，
+                # adapters.run_agent 透传 -m / --provider；base_url = registry evidence
+                # 端点事实，供 A0 guard 以既有 loopback 判定识别 LOCAL_FREE）。
+                # 其余情况（Risk 缺失 / MEDIUM/HIGH/CRITICAL / 无候选 / 非 FREE /
+                # qualification 不满足）→ routing_applied=false，保持 configured
+                # model/provider。无 silent fallback：routing_applied 后 invocation
+                # 失败按现有异常语义如实 FRAMEWORK_ERROR（链中断 → WAITING），
+                # 绝不自动改用其他模型。审计 artifact = active_routing.json
+                # （authoritative=true，与 shadow_observation.json 的 hypothetical
+                # 决策明确区分）；artifact 写失败 → fail closed（无审计证据不得路由）。
+                # env 覆盖在本 stage 全流程（含 model observation / shadow observation——
+                # 它们必须如实看到实际 invocation model）之后还原，绝不影响后续 stage。
+                routing_env_saved = None
+                active_routing_ref = None
+                if agent == 'hermes':
+                    task_risk = parse_task_fields(task).get('Risk') or None
+                    try:
+                        _eff = cost_guard_mod.resolve_effective_hermes()
+                        _cfg_model = _eff.get('model')
+                        _cfg_provider = _eff.get('provider')
+                    except Exception:
+                        _cfg_model = None
+                        _cfg_provider = None
+                    active_record = active_routing_mod.decide_active_route(
+                        task_risk, ROLE_EXECUTOR, agent,
+                        model_registry_mod.baseline_registry(),
+                        risk_source=(shadow_obs_mod.TASK_RISK_SOURCE
+                                     if task_risk is not None else None),
+                        configured_model=_cfg_model,
+                        configured_provider=_cfg_provider,
+                    )
+                    active_routing_mod.save_active_routing(output_dir, active_record)
+                    active_routing_ref = {
+                        'authority': str(output_dir / active_routing_mod.ARTIFACT_FILENAME),
+                        'entry': agent,
+                    }
+                    if active_record['routing_applied']:
+                        routing_env_saved = active_routing_mod.apply_routing_env(active_record)
                 try:
                     if agent == 'hermes':
                         # v0.5 A0 Paid Guard（fail-closed，TASK: AAF-v0.5-A0-PAID-GUARD-001）：
@@ -490,6 +536,10 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                         # FIX-002/FIX-003：state_dir=output_dir —— 一次性授权在准入
                         # 边界原子 claim（exclusive-create 跨进程权威），同 execution
                         # 上下文内同一授权值不可 replay（fail closed）。
+                        # A3：routing_applied 时 env 覆盖已生效——guard 解析的
+                        # effective model == 实际 invocation model（既有不变量保持）；
+                        # LOCAL_FREE 候选经既有 classify_cost loopback 判定放行，
+                        # Paid Guard 未被绕过（非免费路径继续遵循 A0 规则）。
                         guard_record = cost_guard_mod.evaluate(
                             task_id, agent, state_dir=output_dir
                         )
@@ -569,6 +619,10 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                                 'authority': str(output_dir / shadow_obs_mod.ARTIFACT_FILENAME),
                                 'entry': agent,
                             }
+                # v0.5 A3：routing env 覆盖还原（在 model observation / shadow
+                # observation 之后——它们必须如实看到实际 invocation model）。
+                if routing_env_saved is not None:
+                    active_routing_mod.restore_routing_env(routing_env_saved)
                 head_after = git_head(workspace)
                 stage = build_stage_result(
                     agent=agent,
@@ -599,6 +653,12 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     # v0.5 A2-002：shadow observation authority 引用（不复制记录内容；
                     # 详细 shadow 决策/状态在 shadow_observation.json）。
                     stage['shadow_observation_ref'] = dict(shadow_ref)
+                if active_routing_ref:
+                    # v0.5 A3-001：authoritative active-routing authority 引用
+                    # （详细决策在 active_routing.json；与 shadow 引用并存——
+                    # hypothetical shadow decision 与 authoritative active decision
+                    # 在 stage result 中明确区分）。
+                    stage['active_routing_ref'] = dict(active_routing_ref)
                 write_stage_result(output_dir, stage)
                 valid = _result_is_valid(result_text)
                 _ls('RUNNING', stage=stage_name, agent=agent, phase_state=('SUCCESS' if valid else 'FAILED'))

@@ -146,6 +146,9 @@ class RegistryEntry:
 
     维度严格分离（互不推导）：
     - model/provider：身份
+    - base_url：候选 provider 的已知端点（None = 未验证/未知；本地端点证据
+      是 A0 cost_guard 判定 LOCAL_FREE 的事实来源——A3 active routing 把已
+      选 LOCAL_FREE 候选的 base_url 事实透传给 guard，绝不虚构）
     - applicable_agents：适用的 agent/stage（空 = 未知/通用）
     - capability_tier：能力层级（None = UNKNOWN；不代表价格）
     - cost_class：成本分类（复用 model_observation.COST_CLASSES）
@@ -156,6 +159,7 @@ class RegistryEntry:
 
     model: str | None
     provider: str | None
+    base_url: str | None = None
     applicable_agents: tuple[str, ...] = ()
     capability_tier: str | None = None
     cost_class: str = COST_CLASS_UNKNOWN
@@ -169,6 +173,8 @@ class RegistryEntry:
             raise ValueError("model must be a non-empty string or None")
         if self.provider is not None and not (isinstance(self.provider, str) and self.provider.strip()):
             raise ValueError("provider must be a non-empty string or None")
+        if self.base_url is not None and not (isinstance(self.base_url, str) and self.base_url.strip()):
+            raise ValueError("base_url must be a non-empty string or None")
         if self.capability_tier is not None and self.capability_tier not in CAPABILITY_TIERS:
             raise ValueError(
                 f"invalid capability_tier: {self.capability_tier!r} "
@@ -220,6 +226,7 @@ def entry_to_dict(entry: RegistryEntry) -> dict[str, Any]:
     return {
         "model": entry.model,
         "provider": entry.provider,
+        "base_url": entry.base_url,
         "applicable_agents": list(entry.applicable_agents),
         "capability_tier": entry.capability_tier,
         "cost_class": entry.cost_class,
@@ -245,6 +252,7 @@ def entry_from_dict(data: dict[str, Any]) -> RegistryEntry:
     return RegistryEntry(
         model=data.get("model"),
         provider=data.get("provider"),
+        base_url=data.get("base_url"),
         applicable_agents=tuple(data.get("applicable_agents", [])),
         capability_tier=data.get("capability_tier"),
         cost_class=data.get("cost_class", COST_CLASS_UNKNOWN),
@@ -435,6 +443,7 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
         RegistryEntry(
             model="qwen3:4b",
             provider="custom",
+            base_url="http://127.0.0.1:11434/v1",
             applicable_agents=("hermes",),
             capability_tier=CAP_TIER_T4,
             cost_class=COST_CLASS_LOCAL_FREE,
@@ -448,6 +457,9 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
             notes=(
                 "auxiliary compression/web_extract/title_generation/summarization "
                 "slots：本地 Ollama 端点 → LOCAL_FREE",
+                "base_url=http://127.0.0.1:11434/v1 来自 CAP-002 / RW-030-001 证据"
+                "（真实本地 Ollama 端点；A3 active routing 以此事实经 A0 cost_guard"
+                " 的既有 loopback 判定识别为 LOCAL_FREE——端点事实只来自证据，绝不虚构）",
                 "capability_tier=T4 + qualification=QUALIFIED 仅来自 "
                 "TASK: AAF-v0.5-A2PLUS-RW030-001 的隔离非权威真实 runtime probe "
                 "（.aaf/AAF-v0.5-A2PLUS-RW030-001/probe/，observed_at="

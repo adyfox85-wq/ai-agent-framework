@@ -349,6 +349,42 @@ def test_runner_high_risk_shadow_selects_deepseek(tmp_path, monkeypatch):
     assert received[0][0] == "hermes"
 
 
+def test_runner_low_risk_shadow_selects_qwen3_local_free(tmp_path, monkeypatch):
+    """RW-030-001 核心验收（runner 级）：LOW TASK → 写出的 shadow artifact 中
+    qwen3:4b@custom 是 eligible 且被选中的真实 hypothetical candidate
+    （LOCAL_FREE 经济偏好生效），selected_candidate=qwen3:4b@custom；
+    actual execution 调用形态不变（run_agent 仍三位置参数、恰一次 hermes
+    调用）；authoritative=false / execution_affected=false 保持。"""
+    received = []
+
+    def fake_run_agent(agent, prompt, workspace):
+        received.append((agent, prompt, workspace))
+        return _structured_ok(agent)
+
+    monkeypatch.setattr(runner_mod, "run_agent", fake_run_agent)
+    task_file = tmp_path / "TASK.md"
+    task_file.write_text(_with_risk(_OLD_TASK, rc.RISK_LOW), encoding="utf-8")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    out = tmp_path / "out"
+    runner_mod.run(task_file, ws, out)
+
+    record = so.load_shadow_observation(out)
+    assert record is not None
+    assert record["risk_class"] == rc.RISK_LOW
+    assert record["selected_candidate"] == "qwen3:4b@custom"
+    assert record["decision"]["eligible"] == [
+        "deepseek-v4-flash@deepseek", "qwen3:4b@custom",
+    ]
+    assert record["decision"]["required_floor"] == "T4"
+    assert record["decision"]["selection_reason"] == "lowest_known_economic_cost"
+    assert record["authoritative"] is False
+    assert record["execution_affected"] is False
+    # actual execution authority 不变：恰一次 hermes 调用、三位置参数形态
+    assert len(received) == 1
+    assert received[0][0] == "hermes"
+
+
 # ---------------------------------------------------------------------------
 # 6. 缺 risk 时仍为 RISK_UNAVAILABLE
 # ---------------------------------------------------------------------------

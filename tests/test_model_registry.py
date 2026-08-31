@@ -465,12 +465,16 @@ def test_baseline_workbuddy_and_codex_model_identity_unknown():
 
 
 def test_baseline_no_invented_tiers_or_health():
-    """基线不发明 tier / health：除 deepseek-v4-flash@deepseek（唯一有已接受
-    执行证据的条目，TASK: AAF-v0.5-A2-SHADOW-ROUTING-004）外，全部条目
-    capability_tier=None、qualification 默认 unknown——证据不足的候选绝不提升。"""
+    """基线不发明 tier / health：只有有独立已接受证据的条目（deepseek-v4-flash
+    的 003-FIX-001 执行证据 = T2；qwen3:4b 的 RW-030-001 probe 证据 = T4）被
+    赋值，其余条目 capability_tier=None、qualification 默认 unknown——证据不足的
+    候选绝不提升。"""
     for key, entry in baseline_registry().items():
-        if key == canonical_key("deepseek-v4-flash", "deepseek"):
-            continue  # 证据支持的唯一例外（见下方专项测试）
+        if key in (
+            canonical_key("deepseek-v4-flash", "deepseek"),
+            canonical_key("qwen3:4b", "custom"),
+        ):
+            continue  # 各自有独立已接受证据（见下方专项测试）
         assert entry.capability_tier is None, f"{key}: invented tier {entry.capability_tier}"
         assert entry.qualification.status == QUAL_STATUS_UNKNOWN, f"{key}: invented health"
         assert entry.evidence, f"{key}: non-UNKNOWN facts must carry evidence"
@@ -519,15 +523,15 @@ def test_baseline_deepseek_is_usable_candidate_with_unknown_cost():
 
 
 def test_baseline_other_candidates_remain_unknown():
-    """A2-004 边界：其它基线候选没有独立已接受证据 → 逐项保持 UNKNOWN
-    （本地/free 模型绝不无证据提升）。"""
+    """A2-004 / RW-030-001 边界：无独立已接受证据的候选逐项保持 UNKNOWN
+    （本地/free 模型绝不无证据提升）；qwen3:4b 的 T4+QUALIFIED 不扩散到
+    qwen2.5vl:3b（FREE ≠ qualified 纪律）。"""
     reg = baseline_registry()
     vision = reg[canonical_key("qwen2.5vl:3b", "custom")]
-    qwen3 = reg[canonical_key("qwen3:4b", "custom")]
-    for entry in (vision, qwen3):
-        assert entry.capability_tier is None
-        assert entry.qualification.status == QUAL_STATUS_UNKNOWN
-        assert entry.cost_class == LOCAL_FREE  # 只有 base_url 证据支持的成本
+    # qwen2.5vl:3b 无独立 probe 证据 → 保持 UNKNOWN（即使同为 LOCAL_FREE）
+    assert vision.capability_tier is None
+    assert vision.qualification.status == QUAL_STATUS_UNKNOWN
+    assert vision.cost_class == LOCAL_FREE  # 只有 base_url 证据支持的成本
     wb = reg[AGENT_KEY_PREFIX + "workbuddy"]
     cx = reg[AGENT_KEY_PREFIX + "codex"]
     assert wb.model is None and cx.model is None
@@ -535,6 +539,52 @@ def test_baseline_other_candidates_remain_unknown():
     assert wb.qualification.status == QUAL_STATUS_UNKNOWN
     assert cx.qualification.status == QUAL_STATUS_UNKNOWN
     assert wb.cost_class == COST_CLASS_UNKNOWN and cx.cost_class == COST_CLASS_UNKNOWN
+
+
+def test_baseline_qwen3_t4_evidence_backed():
+    """RW-030-001：qwen3:4b@custom 只填证据支持的最低已证能力 = T4（LOW
+    executor floor，隔离 probe 成功），不推断 T3/T2/T1/T0；qualification=
+    QUALIFIED 必须携带具体、可审计的真实 probe 证据引用 + 真实观测时间戳；
+    LOCAL_FREE / LOCAL 保持不变（成本与资格独立维度）。"""
+    reg = baseline_registry()
+    entry = reg[canonical_key("qwen3:4b", "custom")]
+    # 能力 = 恰好 T4（LOW probe 成功只证明「至少 T4」；T3/T2/T1/T0 绝不推断）
+    assert entry.capability_tier == CAP_TIER_T4
+    assert entry.capability_tier != mr.CAP_TIER_T3
+    assert entry.capability_tier != CAP_TIER_T2
+    assert entry.capability_tier != CAP_TIER_T1
+    assert entry.capability_tier != CAP_TIER_T0
+    # qualification = QUALIFIED + 证据引用（可审计、保守）
+    assert entry.qualification.status == QUAL_STATUS_QUALIFIED
+    assert entry.qualification.evidence, "QUALIFIED 必须携带证据引用"
+    evidence_blob = " ".join(entry.qualification.evidence)
+    assert ".aaf/AAF-v0.5-A2PLUS-RW030-001/probe" in evidence_blob
+    assert "Risk: LOW" in evidence_blob
+    assert "127.0.0.1:11434" in evidence_blob
+    assert "probe-ok" in evidence_blob  # 受控任务的结构化结果证据
+    assert "T4" in evidence_blob and "NOT inferred" in evidence_blob
+    # observed_at = probe 证据被接受的真实运行时时间戳（probe artifact 的
+    # observed_at），不是构造时的当前时间
+    assert entry.qualification.observed_at == "2026-08-31T23:19:13+08:00"
+    # 条目级 evidence 也包含该证据引用
+    assert any("RW030-001" in e for e in entry.evidence)
+    # 成本/本地维度不变（LOCAL_FREE 不因 QUALIFIED 变化；FREE ≠ qualified 纪律）
+    assert entry.cost_class == LOCAL_FREE
+    assert entry.locality == mr.LOCALITY_LOCAL
+    assert is_usable_candidate(entry) is True
+
+
+def test_baseline_qwen3_free_does_not_qualify_others():
+    """RW-030-001 纪律：qwen3:4b 的 LOCAL_FREE 成本不自动 QUALIFIED 它（是
+    probe 证据而非成本）；反之，qwen3 的 QUALIFIED 也不扩散给其它 LOCAL_FREE
+    候选（qwen2.5vl:3b 保持 UNKNOWN）。"""
+    reg = baseline_registry()
+    qwen3 = reg[canonical_key("qwen3:4b", "custom")]
+    vision = reg[canonical_key("qwen2.5vl:3b", "custom")]
+    assert qwen3.cost_class == LOCAL_FREE and qwen3.qualification.status == QUAL_STATUS_QUALIFIED
+    assert vision.cost_class == LOCAL_FREE and vision.qualification.status == QUAL_STATUS_UNKNOWN
+    assert is_usable_candidate(qwen3) is True
+    assert is_usable_candidate(vision) is False
 
 
 def test_baseline_no_invented_prices():

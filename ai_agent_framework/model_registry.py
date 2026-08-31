@@ -328,16 +328,53 @@ _EVID_A2_004_HERMES_T2 = (
 # run.json timestamp == codex_result.json generated_at（Codex APPROVE 完成时刻）。
 _EVID_A2_004_OBSERVED_AT = "2026-08-31T08:16:23"
 
+# TASK: AAF-v0.5-A2PLUS-RW030-001（RW-030 最小 prerequisite slice）：
+# qwen3:4b@custom 的隔离、非权威、真实 runtime qualification probe 证据。
+# probe 只与真实本地 Ollama 端点（http://127.0.0.1:11434）通信（零外部/付费
+# provider 调用），不改任何 Hermes config/model/provider（`hermes config get
+# auxiliary` 只读确认身份 + `hermes config get model` 记录主模型仍为
+# deepseek-v4-flash@deepseek）；受控 Risk: LOW executor-like task 经
+# /v1/chat/completions 完成并产生预期结构化结果（HTTP 200 / finish_reason=stop /
+# response model=qwen3:4b / 无超时无协议错误）。LOW probe 成功按风险契约只证明
+# 最低 T4（RISK_FLOORS[LOW].executor == "T4"）；不推断 T3/T2/T1/T0。证据
+# artifact 位于 .aaf（与 003-FIX-001 已接受证据同一存放约定，untracked）。
+_EVID_RW030_001_PROBE = (
+    ".aaf/AAF-v0.5-A2PLUS-RW030-001/probe/ (TASK: AAF-v0.5-A2PLUS-RW030-001, "
+    "observed_at=2026-08-31T23:19:13+08:00): isolated non-authoritative runtime "
+    "qualification probe against the REAL local Ollama endpoint "
+    "http://127.0.0.1:11434 (zero external/paid provider calls) — /api/tags lists "
+    "qwen3:4b (digest 359d7dd4..., 4.0B, Q4_K_M, capabilities "
+    "completion/tools/thinking); `hermes config get auxiliary` confirms identity "
+    "(compression/title_generation/web_extract/summarization = qwen3:4b, "
+    "provider=custom, base_url=http://127.0.0.1:11434/v1) while `hermes config get "
+    "model` records main model still deepseek-v4-flash@deepseek (probe changed "
+    "nothing); controlled Risk: LOW executor-like task completed via "
+    "/v1/chat/completions with the expected structured result "
+    "(status=SUCCESS, commit=null, changed_files=[probe-ok], warnings=[]) — "
+    "HTTP 200, finish_reason=stop, response model=qwen3:4b, no timeout / protocol "
+    "error / execution failure. LOW probe success proves minimum T4 (LOW executor "
+    "floor = T4); T3/T2/T1/T0 NOT inferred"
+)
+# 上述 probe 证据被接受的真实运行时时间戳（probe 完成时刻，来自 probe artifact）：
+# qwen3_qualification_probe.json observed_at（terminated step4 + evidence write）。
+_EVID_RW030_001_OBSERVED_AT = "2026-08-31T23:19:13+08:00"
+
 
 def baseline_entries() -> tuple[RegistryEntry, ...]:
     """A1 基线 registry 条目。
 
     规则：只填有证据的字段；capability tier / health / quota / stability /
     availability 未验证 → 一律 UNKNOWN（tier=None、qualification 默认 unknown）。
-    唯一例外（TASK: AAF-v0.5-A2-SHADOW-ROUTING-004）：deepseek-v4-flash@deepseek
-    有已接受的 AAF 执行/审查证据（003-FIX-001 HIGH 任务实际执行至 Codex APPROVE），
-    按证据只填最低已证能力 T2 + accepted-evidence qualification=QUALIFIED；
-    其余维度（cost_class 等）无证据即保持 UNKNOWN，不随 tier 推断。
+    证据支持的例外（各有独立已接受证据，互不推导）：
+    - deepseek-v4-flash@deepseek（TASK: AAF-v0.5-A2-SHADOW-ROUTING-004）：已接受的
+      AAF 执行/审查证据（003-FIX-001 HIGH 任务实际执行至 Codex APPROVE）→ 最低
+      已证能力 T2 + accepted-evidence qualification=QUALIFIED；其余维度（cost_class
+      等）无证据即保持 UNKNOWN。
+    - qwen3:4b@custom（TASK: AAF-v0.5-A2PLUS-RW030-001）：隔离非权威真实 runtime
+      qualification probe 证据（本地端点可达 / 身份匹配 / 受控 Risk: LOW
+      executor-like task 完成并产生预期结构化结果）→ 最低已证能力 T4（LOW executor
+      floor）+ accepted-evidence qualification=QUALIFIED；LOCAL_FREE 保持（本地端点
+      成本证据）；绝不因 LOCAL_FREE 自动 QUALIFIED。
     """
     return (
         # Hermes 主模型（remote API；cost 未暴露）。
@@ -387,18 +424,38 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
             ),
         ),
         # Hermes auxiliary 文本槽位（本地 Ollama 端点）
+        # TASK: AAF-v0.5-A2PLUS-RW030-001（RW-030 最小 prerequisite slice）——
+        # 用隔离、非权威、真实 runtime qualification probe 证据（真实本地 Ollama
+        # 端点：可达 / 身份匹配 / 受控 Risk: LOW executor-like task 完成并产生预期
+        # 结构化结果 / 无超时协议错误）填充最小保守 capability + qualification：
+        # capability_tier = T4（LOW probe 成功只证明最低 T4 = LOW executor floor，
+        # 不推断 T3/T2/T1/T0）；qualification = QUALIFIED（accepted evidence
+        # snapshot，非永久健康、不产生动态 health/quarantine 行为）；cost_class
+        # 保持 LOCAL_FREE（本地端点成本证据，独立维度）；qwen2.5vl:3b 不动。
         RegistryEntry(
             model="qwen3:4b",
             provider="custom",
             applicable_agents=("hermes",),
-            capability_tier=None,
+            capability_tier=CAP_TIER_T4,
             cost_class=COST_CLASS_LOCAL_FREE,
             locality=LOCALITY_LOCAL,
-            evidence=(_EVID_CAP002_PROBE,),
+            qualification=RuntimeQualification(
+                status=QUAL_STATUS_QUALIFIED,
+                evidence=(_EVID_RW030_001_PROBE,),
+                observed_at=_EVID_RW030_001_OBSERVED_AT,
+            ),
+            evidence=(_EVID_CAP002_PROBE, _EVID_RW030_001_PROBE),
             notes=(
                 "auxiliary compression/web_extract/title_generation/summarization "
                 "slots：本地 Ollama 端点 → LOCAL_FREE",
-                "tier / qualification 未验证 → UNKNOWN",
+                "capability_tier=T4 + qualification=QUALIFIED 仅来自 "
+                "TASK: AAF-v0.5-A2PLUS-RW030-001 的隔离非权威真实 runtime probe "
+                "（.aaf/AAF-v0.5-A2PLUS-RW030-001/probe/，observed_at="
+                "2026-08-31T23:19:13+08:00）：本地端点可达、qwen3:4b 身份与配置匹配、"
+                "受控 Risk: LOW executor-like task 完成并产生预期结构化结果、无超时/"
+                "协议错误/执行失败；LOW probe 成功只证明最低 T4（LOW executor "
+                "floor），不推断 T3/T2/T1/T0；accepted evidence snapshot — 不表示"
+                "永久健康、不产生动态 health/quarantine 行为",
             ),
         ),
         # WorkBuddy/CodeBuddy：当前模型不由用户 config 暴露（身份本身 UNKNOWN）

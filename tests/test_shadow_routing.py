@@ -569,37 +569,58 @@ def test_a1_registry_schema_strictness_preserved():
 # ---------------------------------------------------------------------------
 
 
-def test_baseline_registry_low_medium_high_select_deepseek():
-    """A2-004 之后：基线 registry 中 deepseek-v4-flash@deepseek 有已接受的
-    执行/审查证据（003-FIX-001 HIGH 任务实际执行至 Codex APPROVE）→ 最低已证
-    能力 T2 + QUALIFIED。LOW/MEDIUM/HIGH executor 下限（T4/T3/T2）均被 T2
-    满足 → 唯一合格候选并选中（其它候选仍 UNKNOWN/不适用）。"""
-    for risk in (rc.RISK_LOW, rc.RISK_MEDIUM, rc.RISK_HIGH):
+def test_baseline_registry_low_selects_qwen3_local_free():
+    """RW-030-001 核心验收：LOW Hermes shadow 决策把 qwen3:4b@custom
+    （T4 + QUALIFIED + LOCAL_FREE）视为 eligible 并被选中——LOCAL_FREE
+    经济偏好正常生效（rank 0 < deepseek UNKNOWN rank 2），形成第一个真实
+    可用的 LOCAL_FREE Hermes candidate；deepseek 仍 eligible 但经济排序落败。"""
+    decision = select_shadow_candidate(
+        rc.RISK_LOW, rc.ROLE_EXECUTOR, "hermes", mr.baseline_registry(),
+    )
+    assert decision.required_floor == "T4"
+    assert decision.selected == "qwen3:4b@custom"
+    assert decision.eligible == ("deepseek-v4-flash@deepseek", "qwen3:4b@custom")
+    assert decision.no_candidate_reason is None
+    assert decision.selection_reason == REASON_LOWEST_KNOWN_COST
+    assert decision.deciding_dimension == DECIDED_BY_COST
+    reasons = _excluded_reasons(decision)
+    # 其它候选保持 UNKNOWN / 不适用（零推断、零提升）
+    assert reasons["qwen2.5vl:3b@custom"] == EXCL_CAPABILITY_INSUFFICIENT
+    assert reasons["agent:workbuddy"] == EXCL_ROLE_NOT_APPLICABLE
+    assert reasons["agent:codex"] == EXCL_ROLE_NOT_APPLICABLE
+
+
+def test_baseline_registry_medium_high_still_select_deepseek():
+    """RW-030-001 边界：MEDIUM（floor T3）/ HIGH（floor T2）不受 LOW probe
+    影响——qwen3 T4 低于下限被排除（CAPABILITY_INSUFFICIENT），deepseek T2
+    仍为唯一合格候选并选中；LOW probe 成功绝不提升 T3/T2 资格。"""
+    for risk, floor in ((rc.RISK_MEDIUM, "T3"), (rc.RISK_HIGH, "T2")):
         decision = select_shadow_candidate(
             risk, rc.ROLE_EXECUTOR, "hermes", mr.baseline_registry(),
         )
+        assert decision.required_floor == floor
         assert decision.selected == "deepseek-v4-flash@deepseek"
         assert decision.eligible == ("deepseek-v4-flash@deepseek",)
         assert decision.no_candidate_reason is None
         reasons = _excluded_reasons(decision)
-        # 其它候选保持 UNKNOWN / 不适用（零推断、零提升）
-        assert reasons["qwen2.5vl:3b@custom"] == EXCL_CAPABILITY_INSUFFICIENT
+        # qwen3 T4 不足 MEDIUM/HIGH 下限 → 排除（不因 LOCAL_FREE 或 LOW probe 提升）
         assert reasons["qwen3:4b@custom"] == EXCL_CAPABILITY_INSUFFICIENT
+        assert reasons["qwen2.5vl:3b@custom"] == EXCL_CAPABILITY_INSUFFICIENT
         assert reasons["agent:workbuddy"] == EXCL_ROLE_NOT_APPLICABLE
         assert reasons["agent:codex"] == EXCL_ROLE_NOT_APPLICABLE
 
 
 def test_baseline_registry_critical_no_t1_t0_inference():
-    """CRITICAL executor 下限 = T1：证据只证明 deepseek 至少 T2 → T2 不足 →
-    显式 NO_SHADOW_CANDIDATE（绝不把 T2 推断成 T1/T0，绝不静默提升）。"""
+    """CRITICAL executor 下限 = T1：deepseek（T2）与 qwen3（T4）均不足 →
+    显式 NO_SHADOW_CANDIDATE（绝不把已证能力推断成 T1/T0，绝不静默提升）。"""
     decision = select_shadow_candidate(
         rc.RISK_CRITICAL, rc.ROLE_EXECUTOR, "hermes", mr.baseline_registry(),
     )
     assert decision.selected is None
     assert decision.eligible == ()
-    assert _excluded_reasons(decision)["deepseek-v4-flash@deepseek"] == (
-        EXCL_CAPABILITY_INSUFFICIENT
-    )
+    reasons = _excluded_reasons(decision)
+    assert reasons["deepseek-v4-flash@deepseek"] == EXCL_CAPABILITY_INSUFFICIENT
+    assert reasons["qwen3:4b@custom"] == EXCL_CAPABILITY_INSUFFICIENT
     assert decision.no_candidate_reason.startswith(NO_SHADOW_CANDIDATE)
 
 

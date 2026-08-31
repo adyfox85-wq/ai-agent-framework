@@ -162,6 +162,28 @@ def test_baseline_registry_critical_no_eligible_candidate_no_shadow_candidate(tm
     assert "baseline_registry" in record["registry_source"]
 
 
+def test_baseline_registry_low_shadow_selects_qwen3_local_free(tmp_path):
+    """RW-030-001 核心验收（shadow observation 级）：LOW Hermes shadow 决策
+    产生真实 LOCAL_FREE hypothetical candidate——selected_candidate=
+    qwen3:4b@custom（T4+QUALIFIED+LOCAL_FREE 经济偏好胜过 UNKNOWN 成本的
+    deepseek）；actual model/provider 不变、非权威、零执行影响。"""
+    obs = _observation(model="deepseek-v4-flash", provider="deepseek")
+    record = so.build_shadow_observation(
+        "hermes", tmp_path, observation=obs,
+        risk_class=rc.RISK_LOW, risk_source="test-authoritative",
+    )
+    assert record["selected_candidate"] == "qwen3:4b@custom"
+    assert record["decision"]["eligible"] == [
+        "deepseek-v4-flash@deepseek", "qwen3:4b@custom",
+    ]
+    assert record["decision"]["required_floor"] == "T4"
+    assert record["actual_model"] == "deepseek-v4-flash"
+    assert record["actual_provider"] == "deepseek"
+    assert record["actual_vs_shadow"] == so.MATCH_DIFFERENT
+    assert record["authoritative"] is False
+    assert record["execution_affected"] is False
+
+
 def test_baseline_registry_high_shadow_selects_deepseek(tmp_path):
     """A2-004 核心验收：HIGH Hermes shadow 决策把 deepseek-v4-flash@deepseek
     视为 eligible 并产生真实 hypothetical candidate（证据 T2 + QUALIFIED），

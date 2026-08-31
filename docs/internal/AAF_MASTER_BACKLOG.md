@@ -629,8 +629,8 @@ P3
 | Priority | P1 |
 | Evidence / Origin | **用户观察（user-observed / runtime constraint）**：真实 Hermes v0.20.5 安装/使用过程中观察到——部分标记为 FREE 的模型实际无法使用；部分可用的 FREE 模型可能不稳定。证据级别说明：这是当前环境下的用户使用观察，**不是**「所有 Hermes 免费模型都坏」的普遍断言，也**不是**任何具体模型的永久健康判定；不据此给任何模型写死 health/availability 结论 |
 | Problem | FREE 只是价格/成本属性；「标记 FREE」不能自动证明 available / stable / healthy / qualified / sufficient。若路由逻辑把 FREE 当作可用证据，会选中实际不可用或不稳定的候选 |
-| Current Implementation | A1 model registry 契约（`ai_agent_framework/model_registry.py`）将 cost_class 与 runtime_qualification 严格分离（独立维度）；`is_usable_candidate` 仅由 capability_tier + qualification 判定，**绝不从 FREE 推导**；基线条目 qualification 全部显式 UNKNOWN（无健康轮询 / 无动态隔离——A1 范围外）。本观察同时登记于 PROJECT_STATE.md §0 v0.5 块 |
-| Remaining Gap | 真实运行时 qualification 观测需 **A2+**（RW-030 实况观测；**非 A2 closure requirement**——A2 已于 2026-08-31 AAF-v0.5-A2-CLOSE-001 正式关闭）填充；当前无健康轮询、无自动隔离、无 fallback（均属 A2+ / A3 未来范围，非 A2） |
+| Current Implementation | A1 model registry 契约（`ai_agent_framework/model_registry.py`）将 cost_class 与 runtime_qualification 严格分离（独立维度）；`is_usable_candidate` 仅由 capability_tier + qualification 判定，**绝不从 FREE 推导**；基线条目 qualification 全部显式 UNKNOWN（无健康轮询 / 无动态隔离——A1 范围外）。本观察同时登记于 PROJECT_STATE.md §0 v0.5 块。**A2+ 首片（2026-08-31 AAF-v0.5-A2PLUS-RW030-001）**：对 qwen3:4b@custom 做了隔离、非权威、真实的 runtime qualification probe（`.aaf/AAF-v0.5-A2PLUS-RW030-001/probe/`，只与本地 Ollama 端点通信、零外部/付费 provider、零 Hermes 配置修改），证据支持 `capability_tier=T4` + `qualification=QUALIFIED`（LOW probe 成功只证明最低 T4 = LOW executor floor；accepted evidence snapshot，非永久健康）；qwen3:4b@custom 成为第一个真实可用的 LOCAL_FREE Hermes candidate（LOW shadow 决策 eligible + selected，LOCAL_FREE 经济偏好生效）；qwen2.5vl:3b 仍 UNKNOWN（FREE ≠ qualified 纪律） |
+| Remaining Gap | 其余本地/free 候选（qwen2.5vl:3b 等）的实况 qualification 观测待后续 A2+ slice 填充；当前无健康轮询、无自动隔离、无 fallback（均属 A2+ / A3 未来范围）；actual routing = A3（CAP-003）未启动 |
 | Decision | 登记为 OBSERVATION；路由层（A2 已关闭的 shadow 消费 / A3 未来实际路由）消费 registry 时必须把 FREE（成本维度）与 qualification（运行时维度）分开：FREE ≠ healthy，UNKNOWN ≠ free |
 | Target | 未来路由对 Hermes FREE 候选先做运行时 qualification 验证，再按能力/成本优先级选择 |
 | Do Not Forget | **FREE ≠ healthy；unknown ≠ free**；不得把本观察升级为对任何具体模型的永久健康 verdict，也不得反向断言「所有 FREE 都不可用」 |

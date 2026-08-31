@@ -20,6 +20,8 @@ from ai_agent_framework import model_observation as mo
 from ai_agent_framework import model_registry as mr
 from ai_agent_framework.model_registry import (
     AGENT_KEY_PREFIX,
+    CAP_TIER_T0,
+    CAP_TIER_T1,
     CAP_TIER_T2,
     CAP_TIER_T4,
     COST_CLASS_UNKNOWN,
@@ -463,11 +465,76 @@ def test_baseline_workbuddy_and_codex_model_identity_unknown():
 
 
 def test_baseline_no_invented_tiers_or_health():
-    """基线不发明 tier / health：全部条目 capability_tier=None、qualification 默认 unknown。"""
+    """基线不发明 tier / health：除 deepseek-v4-flash@deepseek（唯一有已接受
+    执行证据的条目，TASK: AAF-v0.5-A2-SHADOW-ROUTING-004）外，全部条目
+    capability_tier=None、qualification 默认 unknown——证据不足的候选绝不提升。"""
     for key, entry in baseline_registry().items():
+        if key == canonical_key("deepseek-v4-flash", "deepseek"):
+            continue  # 证据支持的唯一例外（见下方专项测试）
         assert entry.capability_tier is None, f"{key}: invented tier {entry.capability_tier}"
         assert entry.qualification.status == QUAL_STATUS_UNKNOWN, f"{key}: invented health"
         assert entry.evidence, f"{key}: non-UNKNOWN facts must carry evidence"
+
+
+def test_baseline_deepseek_t2_evidence_backed():
+    """A2-004：deepseek-v4-flash@deepseek 只填证据支持的最低已证能力 =
+    T2（HIGH executor floor），不推断 T1/T0；qualification=QUALIFIED 必须
+    携带具体、可审计的已接受执行/审查证据引用 + 真实证据时间戳。"""
+    reg = baseline_registry()
+    entry = reg[canonical_key("deepseek-v4-flash", "deepseek")]
+    # 能力 = 恰好 T2（证据只证明「至少 T2」；T1/T0 绝不推断）
+    assert entry.capability_tier == CAP_TIER_T2
+    assert entry.capability_tier != CAP_TIER_T1
+    assert entry.capability_tier != CAP_TIER_T0
+    # qualification = QUALIFIED + 证据引用（可审计、保守）
+    assert entry.qualification.status == QUAL_STATUS_QUALIFIED
+    assert entry.qualification.evidence, "QUALIFIED 必须携带证据引用"
+    evidence_blob = " ".join(entry.qualification.evidence)
+    assert ".aaf/AAF-v0.5-A2-SHADOW-ROUTING-003-FIX-001" in evidence_blob
+    assert "5911d39" in evidence_blob  # 已接受提交（Codex APPROVE）
+    assert "APPROVE" in evidence_blob
+    assert "Risk: HIGH" in evidence_blob
+    # observed_at = 证据被接受的真实运行时时间戳（run.json/codex_result.json），
+    # 不是构造时的当前时间
+    assert entry.qualification.observed_at == "2026-08-31T08:16:23"
+    # 条目级 evidence 也包含该证据引用
+    assert any("003-FIX-001" in e for e in entry.evidence)
+
+
+def test_baseline_deepseek_unknown_cost_preserved():
+    """A2-004：cost_class 无独立已接受证据 → 保持 UNKNOWN（tier 证据不推导
+    成本；cost 与 qualification 是独立维度）。"""
+    entry = baseline_registry()[canonical_key("deepseek-v4-flash", "deepseek")]
+    assert entry.cost_class == COST_CLASS_UNKNOWN
+    assert entry.cost_class != PAID
+    assert not free_of_cost(entry.cost_class)  # UNKNOWN 不是 FREE（RW-030 纪律）
+
+
+def test_baseline_deepseek_is_usable_candidate_with_unknown_cost():
+    """UNKNOWN 成本不阻塞资格：tier 已知 + qualified → is_usable_candidate
+    True（成本维度独立于可用性判定，A1 契约原样消费）。"""
+    entry = baseline_registry()[canonical_key("deepseek-v4-flash", "deepseek")]
+    assert entry.cost_class == COST_CLASS_UNKNOWN
+    assert is_usable_candidate(entry) is True
+
+
+def test_baseline_other_candidates_remain_unknown():
+    """A2-004 边界：其它基线候选没有独立已接受证据 → 逐项保持 UNKNOWN
+    （本地/free 模型绝不无证据提升）。"""
+    reg = baseline_registry()
+    vision = reg[canonical_key("qwen2.5vl:3b", "custom")]
+    qwen3 = reg[canonical_key("qwen3:4b", "custom")]
+    for entry in (vision, qwen3):
+        assert entry.capability_tier is None
+        assert entry.qualification.status == QUAL_STATUS_UNKNOWN
+        assert entry.cost_class == LOCAL_FREE  # 只有 base_url 证据支持的成本
+    wb = reg[AGENT_KEY_PREFIX + "workbuddy"]
+    cx = reg[AGENT_KEY_PREFIX + "codex"]
+    assert wb.model is None and cx.model is None
+    assert wb.capability_tier is None and cx.capability_tier is None
+    assert wb.qualification.status == QUAL_STATUS_UNKNOWN
+    assert cx.qualification.status == QUAL_STATUS_UNKNOWN
+    assert wb.cost_class == COST_CLASS_UNKNOWN and cx.cost_class == COST_CLASS_UNKNOWN
 
 
 def test_baseline_no_invented_prices():

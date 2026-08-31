@@ -306,6 +306,27 @@ _EVID_A0_REPORT = (
     "docs/internal/AAF-v0.5-A0-PAID-GUARD-001-REPORT.md §5/§10 — A0 resolution "
     "事实：Hermes 默认模型 deepseek-v4-flash 为 remote API；cost 元数据未暴露"
 )
+# 已接受的 AAF 执行/审查证据（TASK: AAF-v0.5-A2-SHADOW-ROUTING-004）：
+# AAF-v0.5-A2-SHADOW-ROUTING-003-FIX-001 显式声明 Risk: HIGH，其 Hermes executor
+# 真实以 deepseek-v4-flash@deepseek 运行、完整成功（SUCCESS）、WorkBuddy
+# PASS_WITH_WARNING、Codex APPROVE（commit 5911d39）。风险契约要求 HIGH executor
+# 至少 T2（risk_contract.RISK_FLOORS[HIGH].executor == "T2"），因此该证据只证明
+# 最低已证能力 = T2；不推断 T1/T0、不推断永久健康、不改变 cost_class=UNKNOWN
+# （成本元数据仍未暴露，独立维度）。observed_at = 证据被接受的运行时时间戳
+# （run.json terminal SUCCESS + codex_result.json generated_at APPROVE）。
+_EVID_A2_004_HERMES_T2 = (
+    ".aaf/AAF-v0.5-A2-SHADOW-ROUTING-003-FIX-001/ (accepted AAF execution/review "
+    "artifacts, commit 5911d39): TASK.snapshot.md declares Risk: HIGH; "
+    "model_observation.json actual_model=deepseek-v4-flash / provider=deepseek "
+    "(model_source=config); shadow_observation.json risk_class=HIGH with same "
+    "actual model/provider; workbuddy_result.json verdict=PASS_WITH_WARNING; "
+    "codex_result.json verdict=APPROVE; run.json status=SUCCESS — Hermes actually "
+    "executed this HIGH task as deepseek-v4-flash@deepseek to acceptance, proving "
+    "at least risk_contract T2 (HIGH executor floor); no T1/T0 inference"
+)
+# 上述证据被接受的时间戳（真实运行时证据，非本次构造的时间）：
+# run.json timestamp == codex_result.json generated_at（Codex APPROVE 完成时刻）。
+_EVID_A2_004_OBSERVED_AT = "2026-08-31T08:16:23"
 
 
 def baseline_entries() -> tuple[RegistryEntry, ...]:
@@ -313,22 +334,41 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
 
     规则：只填有证据的字段；capability tier / health / quota / stability /
     availability 未验证 → 一律 UNKNOWN（tier=None、qualification 默认 unknown）。
+    唯一例外（TASK: AAF-v0.5-A2-SHADOW-ROUTING-004）：deepseek-v4-flash@deepseek
+    有已接受的 AAF 执行/审查证据（003-FIX-001 HIGH 任务实际执行至 Codex APPROVE），
+    按证据只填最低已证能力 T2 + accepted-evidence qualification=QUALIFIED；
+    其余维度（cost_class 等）无证据即保持 UNKNOWN，不随 tier 推断。
     """
     return (
-        # Hermes 主模型（remote API；cost 未暴露）
+        # Hermes 主模型（remote API；cost 未暴露）。
+        # TASK: AAF-v0.5-A2-SHADOW-ROUTING-004 —— 用已接受的真实运行证据
+        # （003-FIX-001 HIGH 任务实际以 deepseek-v4-flash@deepseek 执行至
+        # Codex APPROVE）填充最小、保守、可审计的 capability + qualification：
+        # capability_tier = T2（仅证明「至少 T2」，不推断 T1/T0）；
+        # qualification = QUALIFIED（accepted evidence snapshot，非永久健康、
+        # 不产生动态 health/quarantine 行为）；cost_class 保持 UNKNOWN
+        # （成本元数据仍未暴露，独立维度，不改）。
         RegistryEntry(
             model="deepseek-v4-flash",
             provider="deepseek",
             applicable_agents=("hermes",),
-            capability_tier=None,
+            capability_tier=CAP_TIER_T2,
             cost_class=COST_CLASS_UNKNOWN,
             locality=LOCALITY_REMOTE,
-            evidence=(_EVID_CAP002_PROBE, _EVID_A0_REPORT),
+            qualification=RuntimeQualification(
+                status=QUAL_STATUS_QUALIFIED,
+                evidence=(_EVID_A2_004_HERMES_T2,),
+                observed_at=_EVID_A2_004_OBSERVED_AT,
+            ),
+            evidence=(_EVID_CAP002_PROBE, _EVID_A0_REPORT, _EVID_A2_004_HERMES_T2),
             notes=(
                 "remote API（base_url 空）→ locality=remote（A0 resolution 事实）",
                 "cost_class=UNKNOWN（EXTERNAL_DYNAMIC_METADATA_REQUIRED）；A0 guard "
                 "分类 PAID_OR_UNKNOWN = 未证明 FREE 的远程模型，不等于已核验 PAID",
-                "capability tier 未验证 → UNKNOWN；FREE=healthy 不成立（RW-030）",
+                "capability_tier=T2 + qualification=QUALIFIED 仅来自 accepted "
+                "execution/review evidence（003-FIX-001 HIGH 任务实际执行至 Codex "
+                "APPROVE；HIGH executor floor = T2）；accepted evidence snapshot — "
+                "不表示永久健康、不产生动态 health/quarantine 行为；T1/T0 未证明",
             ),
         ),
         # Hermes auxiliary.vision（本地 Ollama 端点）

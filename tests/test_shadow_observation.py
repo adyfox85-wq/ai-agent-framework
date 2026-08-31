@@ -145,12 +145,13 @@ def test_explicit_risk_requires_source(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_baseline_registry_no_eligible_candidate_no_shadow_candidate(tmp_path):
-    """A1 基线 registry 全 UNKNOWN → decision 存在但 selected=None +
-    显式 NO_SHADOW_CANDIDATE（不虚构资格/健康/capability）。"""
+def test_baseline_registry_critical_no_eligible_candidate_no_shadow_candidate(tmp_path):
+    """A2-004 之后：基线 registry 唯一证据候选 = deepseek T2+QUALIFIED。
+    CRITICAL executor 下限 T1 → T2 不足 → 仍显式 NO_SHADOW_CANDIDATE
+    （证据只证明至少 T2，绝不推断 T1/T0；不虚构资格/健康/capability）。"""
     record = so.build_shadow_observation(
         "hermes", tmp_path, observation=_observation(),
-        risk_class=rc.RISK_LOW, risk_source="test-authoritative",
+        risk_class=rc.RISK_CRITICAL, risk_source="test-authoritative",
     )
     assert record["decision"] is not None
     assert record["selected_candidate"] is None
@@ -159,6 +160,26 @@ def test_baseline_registry_no_eligible_candidate_no_shadow_candidate(tmp_path):
     assert record["actual_vs_shadow"] == so.MATCH_NO_SHADOW_DECISION
     assert record["registry_entry_count"] == len(mr.baseline_registry())
     assert "baseline_registry" in record["registry_source"]
+
+
+def test_baseline_registry_high_shadow_selects_deepseek(tmp_path):
+    """A2-004 核心验收：HIGH Hermes shadow 决策把 deepseek-v4-flash@deepseek
+    视为 eligible 并产生真实 hypothetical candidate（证据 T2 + QUALIFIED），
+    actual model/provider 不变、非权威、零执行影响。"""
+    obs = _observation(model="deepseek-v4-flash", provider="deepseek")
+    record = so.build_shadow_observation(
+        "hermes", tmp_path, observation=obs,
+        risk_class=rc.RISK_HIGH, risk_source="test-authoritative",
+    )
+    assert record["decision"] is not None
+    assert record["selected_candidate"] == "deepseek-v4-flash@deepseek"
+    assert record["no_decision_reason"] is None
+    assert record["decision"]["eligible"] == ["deepseek-v4-flash@deepseek"]
+    assert record["decision"]["required_floor"] == "T2"
+    # actual 与 shadow 一致（真实执行就是该模型）；权威标记固定 False
+    assert record["actual_vs_shadow"] == so.MATCH_SAME
+    assert record["authoritative"] is False
+    assert record["execution_affected"] is False
 
 
 def test_no_eligible_candidate_explicit_no_candidate(tmp_path):

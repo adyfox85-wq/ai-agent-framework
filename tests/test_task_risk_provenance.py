@@ -100,8 +100,9 @@ def test_valid_risk_feeds_shadow_decision(tmp_path, risk):
     )
     assert record["risk_class"] == risk
     assert record["risk_source"] == so.TASK_RISK_SOURCE
-    # selector 被调用：decision 是结构化 ShadowDecision（基线 registry 全 UNKNOWN
-    # → 显式 NO_SHADOW_CANDIDATE，但绝不等于「risk 未消费」）
+    # selector 被调用：decision 是结构化 ShadowDecision（基线 registry 自
+    # A2-004 起 deepseek T2+QUALIFIED → LOW/MEDIUM/HIGH 有真实候选；CRITICAL
+    # 下限 T1 无候选 → 显式 NO_SHADOW_CANDIDATE——但绝不等于「risk 未消费」）
     assert record["decision"] is not None
     assert record["decision"]["risk_class"] == risk
     assert record["authoritative"] is False
@@ -308,12 +309,44 @@ def test_runner_shadow_uses_task_risk_and_provenance(tmp_path, monkeypatch, risk
     assert record["risk_source"] == so.TASK_RISK_SOURCE
     assert "TASK.Risk field" in record["risk_source"]
     assert "TASK.snapshot.md" in record["risk_source"]
-    assert record["decision"] is not None  # 选择器被调用（基线 registry → 显式 NO_SHADOW_CANDIDATE）
+    assert record["decision"] is not None  # 选择器被调用（A2-004 起基线 registry：HIGH → deepseek 真实候选）
     assert record["authoritative"] is False
     assert record["execution_affected"] is False
     # stage result 引用 artifact（runtime metadata 链）
     hermes_json = json.loads((out / "hermes_result.json").read_text(encoding="utf-8"))
     assert hermes_json["shadow_observation_ref"]["entry"] == "hermes"
+
+
+def test_runner_high_risk_shadow_selects_deepseek(tmp_path, monkeypatch):
+    """A2-004 核心验收（runner 级）：HIGH TASK → 写出的 shadow artifact 中
+    deepseek-v4-flash@deepseek 是 eligible 且被选中的真实 hypothetical
+    candidate；actual execution 调用形态不变（run_agent 仍三位置参数、
+    恰一次 hermes 调用）。"""
+    received = []
+
+    def fake_run_agent(agent, prompt, workspace):
+        received.append((agent, prompt, workspace))
+        return _structured_ok(agent)
+
+    monkeypatch.setattr(runner_mod, "run_agent", fake_run_agent)
+    task_file = tmp_path / "TASK.md"
+    task_file.write_text(_with_risk(_OLD_TASK, rc.RISK_HIGH), encoding="utf-8")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    out = tmp_path / "out"
+    runner_mod.run(task_file, ws, out)
+
+    record = so.load_shadow_observation(out)
+    assert record is not None
+    assert record["risk_class"] == rc.RISK_HIGH
+    assert record["selected_candidate"] == "deepseek-v4-flash@deepseek"
+    assert record["decision"]["eligible"] == ["deepseek-v4-flash@deepseek"]
+    assert record["decision"]["required_floor"] == "T2"
+    assert record["authoritative"] is False
+    assert record["execution_affected"] is False
+    # actual execution authority 不变：恰一次 hermes 调用、三位置参数形态
+    assert len(received) == 1
+    assert received[0][0] == "hermes"
 
 
 # ---------------------------------------------------------------------------

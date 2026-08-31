@@ -565,27 +565,57 @@ def test_a1_registry_schema_strictness_preserved():
 
 
 # ---------------------------------------------------------------------------
-# H. 基线诚实（Requirement 12/13：真实模型未验证 = UNKNOWN，不发明事实）
+# H. 基线诚实（Requirement 12/13 + TASK 004：证据支持的字段才填，其余 UNKNOWN）
 # ---------------------------------------------------------------------------
 
 
-def test_baseline_registry_all_unknown_no_shadow_candidate():
-    """A1 基线 registry：全部候选 tier/qualification UNKNOWN →
-    诚实返回 NO_SHADOW_CANDIDATE，绝不把 FREE/本地条目提升为候选。"""
+def test_baseline_registry_low_medium_high_select_deepseek():
+    """A2-004 之后：基线 registry 中 deepseek-v4-flash@deepseek 有已接受的
+    执行/审查证据（003-FIX-001 HIGH 任务实际执行至 Codex APPROVE）→ 最低已证
+    能力 T2 + QUALIFIED。LOW/MEDIUM/HIGH executor 下限（T4/T3/T2）均被 T2
+    满足 → 唯一合格候选并选中（其它候选仍 UNKNOWN/不适用）。"""
+    for risk in (rc.RISK_LOW, rc.RISK_MEDIUM, rc.RISK_HIGH):
+        decision = select_shadow_candidate(
+            risk, rc.ROLE_EXECUTOR, "hermes", mr.baseline_registry(),
+        )
+        assert decision.selected == "deepseek-v4-flash@deepseek"
+        assert decision.eligible == ("deepseek-v4-flash@deepseek",)
+        assert decision.no_candidate_reason is None
+        reasons = _excluded_reasons(decision)
+        # 其它候选保持 UNKNOWN / 不适用（零推断、零提升）
+        assert reasons["qwen2.5vl:3b@custom"] == EXCL_CAPABILITY_INSUFFICIENT
+        assert reasons["qwen3:4b@custom"] == EXCL_CAPABILITY_INSUFFICIENT
+        assert reasons["agent:workbuddy"] == EXCL_ROLE_NOT_APPLICABLE
+        assert reasons["agent:codex"] == EXCL_ROLE_NOT_APPLICABLE
+
+
+def test_baseline_registry_critical_no_t1_t0_inference():
+    """CRITICAL executor 下限 = T1：证据只证明 deepseek 至少 T2 → T2 不足 →
+    显式 NO_SHADOW_CANDIDATE（绝不把 T2 推断成 T1/T0，绝不静默提升）。"""
     decision = select_shadow_candidate(
-        rc.RISK_LOW, rc.ROLE_EXECUTOR, "hermes", mr.baseline_registry(),
+        rc.RISK_CRITICAL, rc.ROLE_EXECUTOR, "hermes", mr.baseline_registry(),
     )
     assert decision.selected is None
     assert decision.eligible == ()
-    reasons = _excluded_reasons(decision)
-    # hermes 主模型 / 本地 Ollama 模型：tier 未验证 → CAPABILITY_INSUFFICIENT
-    assert reasons["deepseek-v4-flash@deepseek"] == EXCL_CAPABILITY_INSUFFICIENT
-    assert reasons["qwen2.5vl:3b@custom"] == EXCL_CAPABILITY_INSUFFICIENT
-    assert reasons["qwen3:4b@custom"] == EXCL_CAPABILITY_INSUFFICIENT
-    # workbuddy/codex 模型身份未知 → 不适用于 hermes stage
-    assert reasons["agent:workbuddy"] == EXCL_ROLE_NOT_APPLICABLE
-    assert reasons["agent:codex"] == EXCL_ROLE_NOT_APPLICABLE
+    assert _excluded_reasons(decision)["deepseek-v4-flash@deepseek"] == (
+        EXCL_CAPABILITY_INSUFFICIENT
+    )
     assert decision.no_candidate_reason.startswith(NO_SHADOW_CANDIDATE)
+
+
+def test_baseline_unknown_cost_does_not_block_eligibility():
+    """UNKNOWN 成本是独立维度：deepseek cost_class=UNKNOWN 仍可凭 T2+QUALIFIED
+    进入候选（UNKNOWN 只影响经济排序，不阻塞能力/资格判定）。"""
+    reg = mr.baseline_registry()
+    entry = reg["deepseek-v4-flash@deepseek"]
+    assert entry.capability_tier == mr.CAP_TIER_T2
+    assert entry.qualification.status == mr.QUAL_STATUS_QUALIFIED
+    assert entry.cost_class == UNKNOWN_COST
+    decision = select_shadow_candidate(
+        rc.RISK_HIGH, rc.ROLE_EXECUTOR, "hermes", reg,
+    )
+    assert decision.selected == "deepseek-v4-flash@deepseek"
+    assert decision.deciding_dimension == DECIDED_SOLE_ELIGIBLE
 
 
 # ---------------------------------------------------------------------------

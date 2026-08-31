@@ -594,3 +594,140 @@ def test_runner_routing_works_with_model_observation_disabled(tmp_path, monkeypa
     # telemetry 关闭 → 无 shadow artifact（既有语义保持）
     assert so.load_shadow_observation(out) is None
     assert cg.ENV_MODEL not in os.environ
+
+
+# ---------------------------------------------------------------------------
+# 10. FIX-001: active-routing cost gate 严格 FREE/LOCAL_FREE（FREE_PROMO 排除）
+#     （TASK: AAF-v0.5-A3-HERMES-FREE-ROUTING-001-FIX-001）
+# ---------------------------------------------------------------------------
+
+FREE_PROMO = mo.COST_CLASS_FREE_PROMO
+
+
+def test_low_qualified_local_free_routes_explicit():
+    """Requirement 4：LOW + QUALIFIED + LOCAL_FREE → 可 active route（显式回归）。"""
+    reg = _registry(
+        _entry(model="m1", provider="p1", capability_tier=mr.CAP_TIER_T4,
+               cost_class=LOCAL_FREE, locality=mr.LOCALITY_LOCAL),
+    )
+    rec = ar.decide_active_route(RISK_LOW, ROLE_EXECUTOR, "hermes", reg,
+                                 risk_source="test",
+                                 configured_model="deepseek-v4-flash",
+                                 configured_provider="deepseek")
+    assert rec["routing_applied"] is True
+    assert rec["selected"] == "m1@p1"
+    assert rec["routed_model"] == "m1"
+    assert rec["routed_provider"] == "p1"
+    assert rec["fallback_attempted"] is False
+    assert rec["reason"].startswith(ar.REASON_APPLIED)
+
+
+def test_low_qualified_free_routes_explicit():
+    """Requirement 4：LOW + QUALIFIED + FREE（非本地免费层）→ 可 active route。"""
+    reg = _registry(
+        _entry(model="m1", provider="p1", capability_tier=mr.CAP_TIER_T4,
+               cost_class=FREE, locality=mr.LOCALITY_REMOTE),
+    )
+    rec = ar.decide_active_route(RISK_LOW, ROLE_EXECUTOR, "hermes", reg,
+                                 risk_source="test",
+                                 configured_model="deepseek-v4-flash",
+                                 configured_provider="deepseek")
+    assert rec["routing_applied"] is True
+    assert rec["selected"] == "m1@p1"
+    assert rec["routed_model"] == "m1"
+    assert rec["routed_provider"] == "p1"
+    assert rec["fallback_attempted"] is False
+
+
+def test_low_qualified_free_promo_not_routed():
+    """Requirement 4：LOW + QUALIFIED + FREE_PROMO → 不 active route。
+
+    selector（A2 引擎，消费 A1 FREE_OF_COST_CLASSES）仍把 FREE_PROMO 视为
+    eligible 并选中（0 现金的 A1 通用语义不变）；A3 authority 的 cost gate
+    严格 FREE/LOCAL_FREE → 拒绝。configured model/provider 保留，零 fallback。
+    """
+    reg = _registry(
+        _entry(model="promo1", provider="p1", capability_tier=mr.CAP_TIER_T4,
+               cost_class=FREE_PROMO, locality=mr.LOCALITY_REMOTE),
+    )
+    rec = ar.decide_active_route(
+        RISK_LOW, ROLE_EXECUTOR, "hermes", reg,
+        risk_source="test",
+        configured_model="deepseek-v4-flash", configured_provider="deepseek",
+    )
+    assert rec["routing_applied"] is False
+    assert rec["selected"] == "promo1@p1"  # selector 语义未变（A1 未动）
+    assert rec["routed_model"] is None
+    assert rec["routed_provider"] is None
+    assert rec["routed_base_url"] is None
+    assert rec["configured_model"] == "deepseek-v4-flash"
+    assert rec["configured_provider"] == "deepseek"
+    assert rec["reason"].startswith(ar.REASON_SELECTED_NOT_FREE)
+    assert "FREE_PROMO" in rec["reason"]
+    assert rec["fallback_attempted"] is False
+    ar.validate_active_routing(rec)
+
+
+def test_free_promo_selected_but_gate_blocks_in_mixed_pool():
+    """FREE_PROMO 与 LOCAL_FREE 同池且确定性 tie-break 选中 FREE_PROMO →
+    仍不路由（gate 作用于 selected，FREE_PROMO 无法进入 active routing）。"""
+    reg = _registry(
+        _entry(model="z9-local", provider="p1", capability_tier=mr.CAP_TIER_T4,
+               cost_class=LOCAL_FREE, locality=mr.LOCALITY_LOCAL),
+        _entry(model="promo1", provider="p1", capability_tier=mr.CAP_TIER_T4,
+               cost_class=FREE_PROMO, locality=mr.LOCALITY_LOCAL),
+    )
+    rec = ar.decide_active_route(RISK_LOW, ROLE_EXECUTOR, "hermes", reg,
+                                 risk_source="test",
+                                 configured_model="deepseek-v4-flash",
+                                 configured_provider="deepseek")
+    assert rec["selected"] == "promo1@p1"  # 并列 rank 0 → key tie-break 选中 promo
+    assert rec["routing_applied"] is False
+    assert rec["routed_model"] is None
+    assert rec["configured_model"] == "deepseek-v4-flash"
+    assert rec["configured_provider"] == "deepseek"
+    assert rec["fallback_attempted"] is False
+
+
+def test_fix001_gate_is_strict_subset_of_global_free_classes():
+    """Requirement 3：A1 全局 FREE_OF_COST_CLASSES 语义不变（仍含 FREE_PROMO）；
+    A3 authority 的 cost gate 是严格子集 {FREE, LOCAL_FREE}。"""
+    assert mr.FREE_OF_COST_CLASSES == frozenset({FREE, LOCAL_FREE, FREE_PROMO})
+    assert ar.ACTIVE_ROUTING_COST_CLASSES == frozenset({FREE, LOCAL_FREE})
+    assert ar.ACTIVE_ROUTING_COST_CLASSES < mr.FREE_OF_COST_CLASSES
+    assert FREE_PROMO not in ar.ACTIVE_ROUTING_COST_CLASSES
+
+
+def test_runner_free_promo_registry_keeps_configured(tmp_path, monkeypatch):
+    """FIX-001 全链：FREE_PROMO 唯一合格候选（registry 注入）→ routing_applied=false、
+    env 零触碰、configured model 保留、全链 SUCCESS。"""
+    promo_registry = _registry(
+        _entry(model="promo1", provider="p1", capability_tier=mr.CAP_TIER_T4,
+               cost_class=FREE_PROMO, locality=mr.LOCALITY_REMOTE),
+    )
+    monkeypatch.setattr(mr, "baseline_registry", lambda: promo_registry)
+    seen_env = {}
+
+    def fake_run_agent(agent, prompt, workspace):
+        if agent == "hermes":
+            seen_env["model"] = os.environ.get(cg.ENV_MODEL)
+            seen_env["provider"] = os.environ.get(cg.ENV_PROVIDER)
+            seen_env["base_url"] = os.environ.get(cg.ENV_BASE_URL)
+        return _structured_ok(agent)
+
+    out = _run_runner(tmp_path, monkeypatch, _task(RISK_LOW), fake_run_agent)
+    active = ar.load_active_routing(out)
+    assert active is not None
+    assert active["routing_applied"] is False
+    assert active["selected"] == "promo1@p1"
+    assert active["routed_model"] is None
+    assert active["reason"].startswith(ar.REASON_SELECTED_NOT_FREE)
+    assert "FREE_PROMO" in active["reason"]
+    assert active["fallback_attempted"] is False
+    # invocation 时零 env 覆盖（routing 未应用 → env 从未被触碰）
+    assert seen_env["model"] is None
+    assert seen_env["provider"] is None
+    assert seen_env["base_url"] is None
+    assert cg.ENV_MODEL not in os.environ
+    run = json.loads((out / "run.json").read_text(encoding="utf-8"))
+    assert run["status"] == "SUCCESS"

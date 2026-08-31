@@ -28,9 +28,18 @@ Activation gates（Requirement 2/4，全部必须满足才 routing_applied=true�
 - role == "executor"
 - 显式 Risk == LOW（None / MEDIUM / HIGH / CRITICAL → 不生效）
 - selector 返回 eligible candidate（selected 非 None）
-- selected candidate cost_class ∈ FREE_OF_COST_CLASSES（LOCAL_FREE/FREE/FREE_PROMO）
+- selected candidate cost_class ∈ ACTIVE_ROUTING_COST_CLASSES（**严格**
+  FREE/LOCAL_FREE；FREE_PROMO 被 A3 authority 明确排除——见 FIX-001）
 - selected candidate qualification.status == QUALIFIED（防御性复核；
   selector 经 is_usable_candidate 已保证）
+
+FIX-001（TASK: AAF-v0.5-A3-HERMES-FREE-ROUTING-001-FIX-001）：cost gate
+收紧为 ACTIVE_ROUTING_COST_CLASSES = {FREE, LOCAL_FREE}，FREE_PROMO 明确
+排除。A1 全局 ``FREE_OF_COST_CLASSES`` 定义与通用成本语义**保持不变**——
+FREE_PROMO 仍是 0 现金成本类别（selector / registry 语义零改动）；本收紧
+只作用于 A3 active-routing authority（FREE_PROMO 候选即使被 selector 选中
+也绝不 active route：routing_applied=false、configured model/provider 保留、
+零 fallback）。
 
 No silent fallback（Requirement 5）：本模块**不存在** fallback 分支；
 fallback_attempted 恒为 False（fixed semantic，validate fail-closed）。
@@ -52,6 +61,7 @@ from typing import Any
 
 from . import cost_guard as cost_guard_mod
 from . import model_registry as model_registry_mod
+from .model_observation import COST_CLASS_FREE, COST_CLASS_LOCAL_FREE
 from .risk_contract import RISK_CLASSES, RISK_LOW, ROLE_EXECUTOR
 from .shadow_routing import select_shadow_candidate
 
@@ -91,6 +101,13 @@ _DEFAULT_REGISTRY_SOURCE = (
     "model_registry.baseline_registry() (A1 contract; evidence-backed facts; "
     "unverified dimensions are UNKNOWN — no fabricated qualification/health/capability)"
 )
+
+# A3 active-routing 的 cost gate（FIX-001：严格 FREE / LOCAL_FREE）。
+# **不复用** model_registry.FREE_OF_COST_CLASSES（A1 全局成本语义，含
+# FREE_PROMO —— 0 现金但由外部促销授予）；A3 authority 只放行 FREE /
+# LOCAL_FREE。FREE_PROMO 候选即使被 selector 选中也绝不 active route
+# （routing_applied=false，configured model/provider 保留，零 fallback）。
+ACTIVE_ROUTING_COST_CLASSES = frozenset((COST_CLASS_FREE, COST_CLASS_LOCAL_FREE))
 
 # ---------------------------------------------------------------------------
 # 决策 reason token（确定性；可审计）
@@ -250,12 +267,15 @@ def decide_active_route(
         )
     else:
         entry = registry[selected]
-        if entry.cost_class not in model_registry_mod.FREE_OF_COST_CLASSES:
+        if entry.cost_class not in ACTIVE_ROUTING_COST_CLASSES:
             reason = (
                 f"{REASON_SELECTED_NOT_FREE}: selected candidate {selected!r} "
                 f"cost_class={entry.cost_class!r} not in "
-                f"FREE_OF_COST_CLASSES={sorted(model_registry_mod.FREE_OF_COST_CLASSES)} "
-                "— free routing never applies to a non-free candidate"
+                f"ACTIVE_ROUTING_COST_CLASSES={sorted(ACTIVE_ROUTING_COST_CLASSES)} "
+                "(A3 active routing is strictly FREE/LOCAL_FREE; FREE_PROMO is "
+                "excluded by the A3 authority — A1 global FREE_OF_COST_CLASSES "
+                "semantics unchanged) — free routing never applies to a "
+                "non-eligible candidate"
             )
         elif entry.qualification.status != model_registry_mod.QUAL_STATUS_QUALIFIED:
             # 防御性 gate：selector（is_usable_candidate）已保证 qualified；

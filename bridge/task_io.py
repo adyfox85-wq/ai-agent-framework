@@ -182,8 +182,14 @@ def validate_task_text(
         errors.append("Acceptance 字段重复声明（fail-closed，不得 first/last wins）")
 
     # AAF-v0.5-A2-SHADOW-ROUTING-003：Risk 唯一性（顶层 preamble 内）fail-closed
+    # FIX-001（唯一 blocker）：显式声明但值为空/纯空白（`Risk:` / `Risk:   `）
+    # 必须 fail-closed——「已声明」≠「缺失」；只有字段完全缺失才允许向后兼容
+    # （shadow = RISK_UNAVAILABLE），声明一次且无值绝不降级成 RISK_UNAVAILABLE。
     risk_preamble = _risk_preamble(body)
-    if len(re.findall(r"(?im)^[ \t]*(?:#+[ \t]*)?Risk[ \t]*(?:[:：]|$)", risk_preamble)) > 1:
+    risk_occurrences = len(
+        re.findall(r"(?im)^[ \t]*(?:#+[ \t]*)?Risk[ \t]*(?:[:：]|$)", risk_preamble)
+    )
+    if risk_occurrences > 1:
         errors.append("Risk 字段重复声明（fail-closed，不得 first/last wins）")
 
     for name, label in [
@@ -203,8 +209,14 @@ def validate_task_text(
     # AAF-v0.5-A2-SHADOW-ROUTING-003：可选结构化 task risk（早期 UX Guard，
     # 与 framework task_validation 的正式校验保持一致）：缺失 = 向后兼容；
     # 存在但非法 = 严格拒绝（不静默降级、不做大小写/同义词猜测）。
+    # FIX-001：声明一次但值为空/纯空白 = 严格拒绝（不降级成缺失/RISK_UNAVAILABLE）。
     risk_value = (fields.get("risk") or "").strip()
-    if risk_value and risk_value not in RISK_CLASSES:
+    if risk_occurrences >= 1 and not risk_value:
+        errors.append(
+            "Risk 字段已声明但值为空（fail-closed：显式声明必须携带合法 Risk 值；"
+            "只有字段缺失才允许向后兼容，不得静默当作 RISK_UNAVAILABLE）"
+        )
+    elif risk_value and risk_value not in RISK_CLASSES:
         errors.append(
             f"非法 Risk 字段: {risk_value!r}（只接受 {', '.join(RISK_CLASSES)}；"
             "Planner 显式 Risk 必须是结构化词汇，不做大小写/同义词猜测）"

@@ -267,11 +267,20 @@ def validate_task_text(task_text: str) -> ValidationResult:
     # 降级）；字段缺失 → 向后兼容（任务仍可执行，shadow risk = RISK_UNAVAILABLE）。
     # 只在顶层 preamble（首个 Objective 之前）识别；重复声明 → fail-closed
     # （不得 first/last wins，与 Acceptance/Route 唯一性契约一致）。
+    # FIX-001（唯一 blocker）：显式声明但值为空/纯空白（`Risk:` / `Risk:   `）
+    # 必须 fail-closed——「已声明」≠「缺失」；只有字段完全缺失才允许向后兼容
+    # （shadow = RISK_UNAVAILABLE），声明一次且无值绝不降级成 RISK_UNAVAILABLE。
     risk_preamble = _risk_preamble(task_text)
-    if count_field_occurrences(risk_preamble, "Risk") > 1:
+    risk_occurrences = count_field_occurrences(risk_preamble, "Risk")
+    if risk_occurrences > 1:
         errors.append("Risk 字段重复声明（fail-closed，不得 first/last wins）")
     risk_value = fields.get("Risk", "").strip()
-    if risk_value and risk_value not in RISK_CLASSES:
+    if risk_occurrences >= 1 and not risk_value:
+        errors.append(
+            "Risk 字段已声明但值为空（fail-closed：显式声明必须携带合法 Risk 值；"
+            "只有字段缺失才允许向后兼容，不得静默当作 RISK_UNAVAILABLE）"
+        )
+    elif risk_value and risk_value not in RISK_CLASSES:
         errors.append(
             f"非法 Risk 字段: {risk_value!r}（只接受 {', '.join(RISK_CLASSES)}；"
             "Planner 显式 Risk 必须是结构化词汇，不做大小写/同义词猜测）"

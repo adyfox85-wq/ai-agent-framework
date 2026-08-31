@@ -458,3 +458,68 @@ def test_shadow_risk_path_zero_extra_provider_calls(tmp_path, monkeypatch):
     assert kwargs["observation"] is observed["hermes"]  # 复用同一 observation，零新 probe
     assert kwargs["risk_class"] == rc.RISK_HIGH
     assert kwargs["risk_source"] == so.TASK_RISK_SOURCE
+
+
+# ---------------------------------------------------------------------------
+# 9. 显式声明但值为空 / 纯空白 → fail-closed（FIX-001 唯一 blocker）
+#    「已声明」≠「缺失」：只有字段完全缺失才允许向后兼容（RISK_UNAVAILABLE）。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("empty_value", ["", "   ", "\t"])
+def test_declared_empty_risk_fail_closed(empty_value):
+    """`Risk:` / `Risk:   `（纯空白）→ 声明一次但值为空 → framework + bridge
+    双层严格拒绝；绝不降级为「字段缺失」（不得变成 RISK_UNAVAILABLE）。"""
+    text = _with_risk(_OLD_TASK, empty_value)
+    assert tv.parse_task_fields(text)["Risk"] == "", "空声明解析后必须为空值"
+    result = tv.validate_task_text(text)
+    assert result.valid is False
+    assert any("Risk" in e and "为空" in e for e in result.errors), result.errors
+    # bridge 早期 UX Guard 语义一致（同一 fail-closed 契约）
+    ok, errors = bridge_validate_task_text(text, "D:\\AdyAI\\ai-agent-framework")
+    assert ok is False
+    assert any("Risk" in e and "为空" in e for e in errors)
+
+
+def test_declared_empty_risk_heading_form_fail_closed():
+    """标题式声明但无值（`# Risk` + 后无值行）→ 同样视为「已声明但为空」→ 拒绝
+    （与同行式 `Risk:` 同一 fail-closed 契约；缺失才允许向后兼容）。"""
+    text = _OLD_TASK.replace("# Objective\n", "# Risk\n\n# Objective\n", 1)
+    assert tv.parse_task_fields(text)["Risk"] == ""
+    result = tv.validate_task_text(text)
+    assert result.valid is False
+    assert any("Risk" in e and "为空" in e for e in result.errors), result.errors
+    ok, errors = bridge_validate_task_text(text, "D:\\AdyAI\\ai-agent-framework")
+    assert ok is False
+    assert any("Risk" in e and "为空" in e for e in errors)
+
+
+def test_declared_empty_risk_rejected_before_execution(tmp_path, monkeypatch):
+    """空值 Risk → runner 在 Validation 阶段 fail-closed：Hermes 零执行、
+    无 shadow artifact、无降级成 RISK_UNAVAILABLE 的机会（Req 4）。"""
+    spawned = []
+
+    def fake_run_agent(agent, prompt, workspace):
+        spawned.append(agent)
+        return _structured_ok(agent)
+
+    monkeypatch.setattr(runner_mod, "run_agent", fake_run_agent)
+    task_file = tmp_path / "TASK.md"
+    task_file.write_text(_with_risk(_OLD_TASK, ""), encoding="utf-8")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    out = tmp_path / "out"
+    with pytest.raises(tv.TaskValidationError):
+        runner_mod.run(task_file, ws, out)
+    assert spawned == []
+    assert not (out / so.ARTIFACT_FILENAME).exists()
+
+
+def test_missing_risk_still_backward_compatible_after_fix():
+    """FIX-001 回归守卫：字段完全缺失 ≠ 空声明——缺失仍通过（向后兼容），
+    与空声明拒绝形成显式对照（同一失败契约的两个方向）。"""
+    result = tv.validate_task_text(_OLD_TASK)
+    assert result.valid is True, result.errors
+    assert tv.parse_task_fields(_OLD_TASK)["Risk"] == ""
+    ok, errors = bridge_validate_task_text(_OLD_TASK, "D:\\AdyAI\\ai-agent-framework")
+    assert ok is True, errors

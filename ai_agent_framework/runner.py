@@ -30,9 +30,10 @@ from . import proc_identity
 from . import project_boundary
 from . import active_routing as active_routing_mod
 from . import model_registry as model_registry_mod
-from .risk_contract import ROLE_EXECUTOR
+from .risk_contract import ROLE_EXECUTOR, ROLE_VALIDATOR
 from . import shadow_observation as shadow_obs_mod
 from . import task_lifecycle
+from . import workbuddy_routing as workbuddy_routing_mod
 from .report import agent_result_blocked, build_report, verdict_blocked
 from .reconcile import reconcile_terminal_artifacts
 from .router import ALLOWED_ROUTE_AGENTS, Route, RouteStatus, decide_route, parse_explicit_route
@@ -502,6 +503,8 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 # 它们必须如实看到实际 invocation model）之后还原，绝不影响后续 stage。
                 routing_env_saved = None
                 active_routing_ref = None
+                wb_routing_env_saved = None
+                wb_active_routing_ref = None
                 if agent == 'hermes':
                     task_risk = parse_task_fields(task).get('Risk') or None
                     try:
@@ -526,6 +529,40 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     }
                     if active_record['routing_applied']:
                         routing_env_saved = active_routing_mod.apply_routing_env(active_record)
+                elif agent == 'workbuddy':
+                    # v0.5 A4 active economic routing（TASK: AAF-v0.5-A4-WORKBUDDY-
+                    # ECONOMIC-ROUTING-001；A4 = STARTED first slice）。复用现有
+                    # selector（capability+qualification）+ A4 economic fact layer，
+                    # 不创建第二套 eligibility 系统：仅当显式 Risk: LOW 且至少两个
+                    # eligible WorkBuddy candidates 且经济事实 FRESH/完整/一致/可审计
+                    # 时，经济 winner 升级为真实 per-run --model（routing_applied=true
+                    # → 设置 AAF_WORKBUDDY_MODEL 覆盖，adapters._workbuddy_invocation
+                    # 精确追加 --model <winner>；无 --effort / 无 provider override /
+                    # 无 fallback / 无 retry escalation）。其余情况（Risk 缺失 /
+                    # MEDIUM/HIGH/CRITICAL / 不足两个 eligible / 经济事实 stale-unknown-
+                    # 不完整 / 无确定性可信经济 winner）→ routing_applied=false，
+                    # 保持 CodeBuddy Auto。审计 artifact = workbuddy_active_routing.json
+                    # （authoritative=true，与 shadow_observation.json hypothetical /
+                    # active_routing.json A3 Hermes 明确区分）；artifact 写失败 →
+                    # fail closed（无审计证据不得路由）。无 silent fallback：routing
+                    # 后 invocation 失败按现有异常语义如实 FRAMEWORK_ERROR（链中断 →
+                    # WAITING），绝不自动退回 Auto 或换模型。
+                    task_risk = parse_task_fields(task).get('Risk') or None
+                    wb_record = workbuddy_routing_mod.decide_workbuddy_route(
+                        task_risk, ROLE_VALIDATOR, agent,
+                        model_registry_mod.baseline_registry(),
+                        facts=None,
+                        now=datetime.now().astimezone(),
+                        risk_source=(shadow_obs_mod.TASK_RISK_SOURCE
+                                     if task_risk is not None else None),
+                    )
+                    workbuddy_routing_mod.save_workbuddy_routing(output_dir, wb_record)
+                    wb_active_routing_ref = {
+                        'authority': str(output_dir / workbuddy_routing_mod.ARTIFACT_FILENAME),
+                        'entry': agent,
+                    }
+                    if wb_record['routing_applied']:
+                        wb_routing_env_saved = workbuddy_routing_mod.apply_workbuddy_model_env(wb_record)
                 try:
                     if agent == 'hermes':
                         # v0.5 A0 Paid Guard（fail-closed，TASK: AAF-v0.5-A0-PAID-GUARD-001）：
@@ -623,6 +660,10 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 # observation 之后——它们必须如实看到实际 invocation model）。
                 if routing_env_saved is not None:
                     active_routing_mod.restore_routing_env(routing_env_saved)
+                # v0.5 A4：WorkBuddy AAF_WORKBUDDY_MODEL 覆盖还原（同样在
+                # observation 之后；绝不泄漏到后续 stage / 调用方）。
+                if wb_routing_env_saved is not None:
+                    workbuddy_routing_mod.restore_workbuddy_model_env(wb_routing_env_saved)
                 head_after = git_head(workspace)
                 stage = build_stage_result(
                     agent=agent,
@@ -659,6 +700,11 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     # hypothetical shadow decision 与 authoritative active decision
                     # 在 stage result 中明确区分）。
                     stage['active_routing_ref'] = dict(active_routing_ref)
+                if wb_active_routing_ref:
+                    # v0.5 A4-001：WorkBuddy authoritative active-routing authority
+                    # 引用（详细决策在 workbuddy_active_routing.json；与 A3 Hermes
+                    # active_routing.json 及 A2 shadow_observation.json 明确区分）。
+                    stage['workbuddy_active_routing_ref'] = dict(wb_active_routing_ref)
                 write_stage_result(output_dir, stage)
                 valid = _result_is_valid(result_text)
                 _ls('RUNNING', stage=stage_name, agent=agent, phase_state=('SUCCESS' if valid else 'FAILED'))

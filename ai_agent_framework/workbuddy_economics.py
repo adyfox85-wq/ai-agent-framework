@@ -7,12 +7,18 @@ free-like / validFrom / validUntil / source / observed_at / freshness）的
 **可审计证据事实表示**。本模块是纯数据 + 纯逻辑契约：
 
 - 不发起进程 / 网络调用；不产生运行时 artifact（artifact 由 .aaf probe 生成）。
-- 不进入任何路由权威：adapters / shadow_routing / active_routing / runner
-  均不 import 本模块；生产 WorkBuddy invocation 保持 CodeBuddy Auto
-  （[-p --output-format text -y]，无 --model / --effort）。
-- 经济事实永远低于 capability/qualification gate（Requirement 6）：即使某候选
-  有 FRESH 免费促销，其 capability_tier=None / qualification=unknown 仍不
-  eligible（is_usable_candidate 与 selector 完全不消费本模块）。
+- 事实层本身不是路由权威；A4（TASK: AAF-v0.5-A4-WORKBUDDY-ECONOMIC-ROUTING-001）
+  起，唯一路由消费方 = ``workbuddy_routing``（WorkBuddy validator stage 的 active
+  economic routing authority）：经济事实永远低于 capability/qualification gate
+  （Requirement 6）——即使某候选有 FRESH 免费促销，其 capability_tier=None /
+  qualification=unknown 仍不 eligible（is_usable_candidate 与 selector 不消费
+  本模块；workbuddy_routing 只对 selector 已 eligible 的候选做经济排序）。
+  生产 WorkBuddy invocation 仅在 A4 routing 生效时精确追加
+  ``--model <经济 winner>``（[-p --output-format text -y --model <m>]），
+  其余情况保持 CodeBuddy Auto（[-p --output-format text -y]）；无 --effort /
+  无 provider override / 无 fallback。
+- adapters / shadow_routing / active_routing / model_registry / cost_guard
+  仍不 import 本模块（A2/A3 权威 source-level 零消费契约保持）。
 - 新鲜度显式且 fail-closed（Requirement 4/5）：
   - FRESH  = 有 validFrom+validUntil 且窗口覆盖参考时间；
   - STALE  = 已过期或尚未生效（validUntil < now 或 now < validFrom）；
@@ -595,10 +601,14 @@ def baseline_economic_facts() -> dict[str, EconomicFact]:
                 "discrepancy documented, not resolved by assumption"
             )
         notes.append(
-            "fact layer only (TASK: AAF-v0.5-A4-PREREQ-WORKBUDDY-ECONOMICS-001): NOT "
-            "routing authority; production WorkBuddy invocation unchanged (CodeBuddy "
-            "Auto, [-p --output-format text -y], no --model/--effort); refresh = "
-            "re-run the read-only economic probe — not a permanent hardcoded fact"
+            "fact layer only (TASK: AAF-v0.5-A4-PREREQ-WORKBUDDY-ECONOMICS-001; "
+            "consumed by workbuddy_routing since TASK: AAF-v0.5-A4-WORKBUDDY-"
+            "ECONOMIC-ROUTING-001): facts are NOT themselves routing authority; "
+            "economics is subordinate to capability/qualification gates; "
+            "production WorkBuddy invocation gains --model ONLY when the A4 "
+            "active economic routing applies it (else CodeBuddy Auto "
+            "[-p --output-format text -y], no --effort); refresh = re-run the "
+            "read-only economic probe — not a permanent hardcoded fact"
         )
         if status == PROMO_STATUS_FREE:
             notes.append(

@@ -17,6 +17,7 @@ from .workbuddy_retry import (
     permanent_stage_error,
     run_workbuddy_with_retry,
 )
+from .workbuddy_routing import ENV_WORKBUDDY_MODEL
 
 
 ROLE_INSTRUCTIONS = {
@@ -460,16 +461,23 @@ def pop_workbuddy_telemetry() -> dict | None:
     return value
 
 
-def _workbuddy_invocation(prompt: str, env: dict) -> tuple[list[str], str, dict]:
+def _workbuddy_invocation(prompt: str, env: dict, model: str | None = None) -> tuple[list[str], str, dict]:
     """WorkBuddy/CodeBuddy 精确 invocation（single source of truth，TASK-011）。
 
     官方 headless：``-p`` 为 print 模式；完整 prompt 走 stdin（input=），
     避免 50KB+ 长 prompt 超出 Windows 命令行长度限制（WinError 206）。
-    retry 的每次 attempt 复用同一 (args, stdin_data, env)——绝不传 --model、
-    不换 provider、不升级付费层级、不修改用户配置。
+    retry 的每次 attempt 复用同一 (args, stdin_data, env)——绝不换 provider、
+    不升级付费层级、不修改用户配置。
+
+    A4（TASK: AAF-v0.5-A4-WORKBUDDY-ECONOMIC-ROUTING-001）：``model`` 非 None
+    时精确追加 ``--model <model>``（恰好一个 --model；无 --effort / 无
+    provider override / 无 fallback）。``model`` 由调用方（runner）从
+    AAF_WORKBUDDY_MODEL env 覆盖读取——本函数保持纯参数语义，不自行读 env。
     """
     exe = _require('codebuddy')
     args = [exe, '-p', '--output-format', 'text', '-y']
+    if model is not None:
+        args += ['--model', model]
     stdin_data = prompt
     env['CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS'] = '1'
     return args, stdin_data, env
@@ -502,8 +510,14 @@ def run_agent(agent: str, prompt: str, workspace: Path, timeout: int = 3600) -> 
         # same workspace / same execution role；绝不换模型/provider/付费层级。
         # timeout 参数对 workbuddy 不再生效：由 AAF_WORKBUDDY_* 策略控制
         # （per-attempt timeout / max_attempts / backoff / overall stage budget）。
+        # A4 active economic routing（TASK: AAF-v0.5-A4-WORKBUDDY-ECONOMIC-ROUTING-001）：
+        # runner 在 routing_applied 时设置 AAF_WORKBUDDY_MODEL 覆盖；此处读取并
+        # 把 ``--model <value>`` 精确追加到 invocation。无覆盖 → model=None →
+        # 与 A4 之前完全一致（CodeBuddy Auto）。transport retry 复用同一 args
+        # （含 --model）——绝不退回 Auto / 不换模型（无 silent fallback）。
+        model_override = os.environ.get(ENV_WORKBUDDY_MODEL, "").strip() or None
         try:
-            args, stdin_data, env = _workbuddy_invocation(prompt, env)
+            args, stdin_data, env = _workbuddy_invocation(prompt, env, model=model_override)
         except RuntimeError as exc:
             if 'MISSING_COMMAND' in str(exc):
                 # 永久性（missing executable）：快速失败，不无意义 retry

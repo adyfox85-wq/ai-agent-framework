@@ -12,7 +12,8 @@
    ineligible；hy4-preview 自 SECOND-CANDIDATE-001 起由独立 probe 资格化——
    经济事实只决定 probe priority，不赋予资格；selector 零变化）
 7. production WorkBuddy invocation 不变（CodeBuddy Auto，无 --model/--effort）
-8. 经济模块不被任何路由代码 import（事实层无消费方）
+8. 经济模块只被 workbuddy_routing（A4 active economic routing authority）import；
+   A2/A3 权威代码零直接消费（source-level contract，A4 起唯一消费方）
 
 边界（Boundaries）：无 active WorkBuddy routing、无 effort routing、无
 fallback、无 CodeBuddy Auto 替换、无 Hermes/Codex 变更、无 A5/A6。
@@ -396,12 +397,22 @@ def test_selector_unchanged_economics_not_consumed():
     assert "hy4-preview" not in reasons
 
 
-def test_economics_module_not_imported_by_routing_code():
-    """事实层无消费方（source-level contract）：adapters / shadow_routing /
-    model_registry 的源码不 import workbuddy_economics（经济事实不进入任何
-    路由权威）。用 importlib 验证依赖图 + 源码级断言双保险。"""
+def test_economics_module_consumed_only_by_workbuddy_routing():
+    """事实层唯一消费方契约（source-level，A4 起）：workbuddy_economics 只被
+    ``workbuddy_routing``（A4 WorkBuddy active economic routing authority）import；
+    A2/A3 权威代码（adapters / shadow_routing / model_registry / active_routing /
+    cost_guard）与 runner 源码保持零直接引用（runner 只经 workbuddy_routing 消费）。
+    用 importlib 验证依赖图 + 源码级断言双保险。"""
     import importlib
+    import pathlib
 
+    # workbuddy_routing 是唯一直接 import 事实层的模块（`from . import
+    # workbuddy_economics as we` → 命名空间绑定 'we'）
+    wb_rt = importlib.import_module("ai_agent_framework.workbuddy_routing")
+    econ_mod = importlib.import_module("ai_agent_framework.workbuddy_economics")
+    assert wb_rt.__dict__.get("we") is econ_mod
+
+    # A2/A3 权威代码 + runner：依赖图不得直接携带 workbuddy_economics
     for mod_name in (
         "ai_agent_framework.adapters",
         "ai_agent_framework.shadow_routing",
@@ -412,9 +423,8 @@ def test_economics_module_not_imported_by_routing_code():
     ):
         mod = importlib.import_module(mod_name)
         assert "workbuddy_economics" not in getattr(mod, "__dict__", {}), mod_name
-    # 源码级断言：routing 源文件不得出现 workbuddy_economics 引用
-    import pathlib
 
+    # 源码级断言：上述模块文本不得出现 workbuddy_economics 引用
     root = pathlib.Path(__file__).resolve().parents[1]
     for rel in (
         "ai_agent_framework/adapters.py",
@@ -426,6 +436,9 @@ def test_economics_module_not_imported_by_routing_code():
     ):
         text = (root / rel).read_text(encoding="utf-8")
         assert "workbuddy_economics" not in text, f"{rel} must not import economics"
+    # runner 只经 workbuddy_routing 消费（A4 wiring）
+    runner_text = (root / "ai_agent_framework/runner.py").read_text(encoding="utf-8")
+    assert "workbuddy_routing" in runner_text
 
 
 # ---------------------------------------------------------------------------

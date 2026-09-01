@@ -4,12 +4,13 @@
 经济元数据永远不能成为 authoritative cheap/free），按 TASK Fresh Runner 要求
 必须 fresh-runner N+1。每个 runner 场景用**全新 python 进程**运行真实 runner
 （tests/fresh_runner_wrapper.py）；fake hermes/codebuddy/codex .bat 是真实
-child process；fake codebuddy 把完整 argv 落盘 marker（精确证明 production
-WorkBuddy invocation 仍是 CodeBuddy Auto：[-p --output-format text -y]，零
---model/--effort）。
+child process；fake codebuddy 把完整 argv 落盘 marker（精确证明实际
+invocation 形状——A4 起 LOW 任务经 active economic routing 追加
+--model hy4-preview；事实层本身不会自动加 --model）。
 
   N1（Risk: LOW）  -> 全生命周期 SUCCESS；fake codebuddy marker ARGS 精确 =
-                      "-p --output-format text -y"（无 --model/--effort）；
+                      "-p --output-format text -y --model hy4-preview"（A4 active
+                      economic routing 生效：恰好一个 --model、无 --effort）；
                       lifecycle/REPORT 正常（框架生命周期正常）。
   N2（fresh-process artifact + authority check）-> 全新 python 进程证明：
                       economic observation artifact（economic_facts.json）仍可
@@ -76,8 +77,12 @@ EVIDENCE_ROOT = Path(
 
 N1_TASK_ID = "AAF-v0.5-A4-PREREQ-WORKBUDDY-ECONOMICS-001-FIX-001-N1-LOW"
 
-# production WorkBuddy invocation 的精确 Auto 形状（无 --model / --effort）
+# production WorkBuddy invocation 的精确 Auto 形状（无 --model / --effort）。
+# A4 起（AAF-v0.5-A4-WORKBUDDY-ECONOMIC-ROUTING-001）：显式 LOW 任务经 active
+# economic routing 追加 --model <经济 winner>（本驱动 N1 更新为 routed 形状；
+# 事实层本身不会自动加 --model——是 A4 routing 在加）。
 EXPECTED_AUTO_ARGS = "-p --output-format text -y"
+EXPECTED_ROUTED_ARGS = "-p --output-format text -y --model hy4-preview"
 
 _HERMES_BAT = r"""@echo off
 rem AAF-v0.5-A4-PREREQ-WORKBUDDY-ECONOMICS-001-FIX-001 fresh-runner N+1 fake Hermes CLI.
@@ -267,11 +272,13 @@ def main() -> int:
             "fresh-runner N+1 for the tightened economic fail-closed semantics: "
             "(N1) a fresh runner process executes a synthetic explicit Risk: LOW "
             "task through the full hermes -> workbuddy -> codex lifecycle with "
-            "fake CLIs — the fake codebuddy records its exact argv, production "
-            "WorkBuddy invocation must stay CodeBuddy Auto ([-p --output-format "
-            "text -y], NO --model/--effort); (N2) a fresh-process check proving "
-            "the economic observation artifact is still readable as designed and "
-            "routing authority is unchanged; (N3) a fresh process regenerates "
+            "fake CLIs — the fake codebuddy records its exact argv. Since A4 "
+            "active economic routing (AAF-v0.5-A4-WORKBUDDY-ECONOMIC-ROUTING-001), "
+            "a LOW task's WorkBuddy stage is REAL routed to the economic winner "
+            "hy4-preview: N1 argv is exactly '-p --output-format text -y --model "
+            "hy4-preview' (exactly one --model, no --effort); (N2) a fresh-process "
+            "check proving the economic observation artifact is still readable as "
+            "designed and routing authority is unchanged; (N3) a fresh process regenerates "
             "economic_facts.json via the fact-layer generator (artifacts still "
             "generatable) and re-reads it; (N4) a fresh-process check proving "
             "malformed/incomplete/contradictory economic facts fail closed "
@@ -282,14 +289,16 @@ def main() -> int:
     }
     try:
         # ---------- N1: Risk: LOW 全生命周期 ----------
+        # A4 起（AAF-v0.5-A4-WORKBUDDY-ECONOMIC-ROUTING-001）显式 LOW 任务经
+        # active economic routing 真实追加 --model hy4-preview（经济 winner）。
         n1_dir = EVIDENCE_ROOT / "N1-low"
         n1 = _run_scenario(
             n1_dir,
             _task(
                 N1_TASK_ID,
                 "LOW",
-                "验证经济 fail-closed 语义收紧后 framework 生命周期正常且 "
-                "WorkBuddy stage 保持 Auto 调用。",
+                "验证经济 fail-closed 语义收紧后 framework 生命周期正常"
+                "（A4 active economic routing 生效：WorkBuddy stage 真实 --model hy4-preview）。",
             ),
         )
         out1 = n1["out"]
@@ -305,7 +314,7 @@ def main() -> int:
             "report_exists": (out1 / "REPORT.md").exists(),
             "manifest_exists": (out1 / "context_manifest.json").exists(),
             "codebuddy_argv": args1,
-            "invocation_stays_auto": args1 == EXPECTED_AUTO_ARGS,
+            "invocation_is_routed": args1 == EXPECTED_ROUTED_ARGS,
         }
         scenario_record["scenarios"]["N1-low"] = record1
         ok1 = (
@@ -315,11 +324,11 @@ def main() -> int:
             and cx1.get("verdict") == "APPROVE"
             and (out1 / "REPORT.md").exists()
             and (out1 / "context_manifest.json").exists()
-            and args1 == EXPECTED_AUTO_ARGS
-            and "--model" not in (args1 or "")
+            and args1 == EXPECTED_ROUTED_ARGS
+            and (args1 or "").count("--model") == 1
             and "--effort" not in (args1 or "")
         )
-        print(f"[N1] LOW lifecycle + Auto invocation -> {'PASS' if ok1 else 'FAIL'} (argv={args1!r})")
+        print(f"[N1] LOW lifecycle + active economic route -> {'PASS' if ok1 else 'FAIL'} (argv={args1!r})")
         if not ok1:
             failures += 1
 

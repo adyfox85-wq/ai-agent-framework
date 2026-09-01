@@ -575,7 +575,7 @@ P3
 | Remaining Gap | NONE（transport retry 层完成）。注意：自动切换模型 / 更贵模型 / Cost Gate / Model Routing 均 NOT IMPLEMENTED（属未来 Model Routing 阶段，本任务明确禁止） |
 | Decision | 采用「WorkBuddy-only 有界同 invocation transient retry + 进程清理 + telemetry」；Hermes/Codex 不自动获得 retry（`AAF_WORKBUDDY_RETRY=0` 可整体关闭） |
 | Target | 一次 gateway/CLI transient failure 不再直接终止整条 task；总墙钟有最终上限；重复失败可诊断 |
-| Related | RW-007（Agent executable discovery reliability——MISSING_COMMAND 仍永久失败不重试）；CAP-003（Future Model Routing，NOT IMPLEMENTED） |
+| Related | RW-007（Agent executable discovery reliability——MISSING_COMMAND 仍永久失败不重试）；CAP-003（Future Model Routing——A3 LOW-risk Hermes FREE active routing = IMPLEMENTED + CLOSED；broader model routing 仍 NOT IMPLEMENTED，属 A4-A6） |
 | Do Not Forget | retry 属于 transport execution 层；业务 FAIL 绝不触发「再回答一次」；任何时刻最多一个 CodeBuddy 进程 |
 
 ---
@@ -953,7 +953,7 @@ Obsidian working knowledge → stable conclusion → Framework task → 提升�
 | Target | 刷新式 registry（refreshable）：模型可增删改名、免费状态可变化、积分倍率可变化 |
 | Do Not Forget | 不得发明不存在的 flag；一次发现结果不得当永久事实 |
 
-## CAP-003 — Future Model Routing（未来能力登记，未实现）
+## CAP-003 — Future Model Routing（能力登记：A3 LOW-risk Hermes FREE active routing = IMPLEMENTED + CLOSED；broader model routing = NOT IMPLEMENTED，属 A4-A6）
 
 | 字段 | 内容 |
 |---|---|

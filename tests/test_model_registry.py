@@ -597,8 +597,18 @@ def test_baseline_no_invented_prices():
 def test_baseline_keys_unique_and_stable():
     reg = baseline_registry()
     assert len(reg) == len({e.key() for e in mr.baseline_entries()})
-    assert set(reg) == {"deepseek-v4-flash@deepseek", "qwen2.5vl:3b@custom",
-                        "qwen3:4b@custom", "agent:workbuddy", "agent:codex"}
+    # A4 prereq（AAF-v0.5-A4-PREREQ-WORKBUDDY-DISCOVERY-001）：WorkBuddy 具体候选
+    # 身份 = 当前 codebuddy CLI --model 帮助行文档化的 15 个 model IDs
+    # （identity-only 条目，provider 未暴露 → key 无 @provider；agent:workbuddy
+    # 仍是「当前 Auto 调用」锚点）。
+    assert set(reg) == {
+        "deepseek-v4-flash@deepseek", "qwen2.5vl:3b@custom",
+        "qwen3:4b@custom", "agent:workbuddy", "agent:codex",
+        "hy4-preview", "hy3", "hy3-x", "glm-5.3", "glm-5.3-flash",
+        "glm-5.2", "glm-5.1", "glm-5v-turbo", "minimax-m3", "minimax-m2.7",
+        "kimi-k3-1", "kimi-k2.7", "kimi-k2.6", "deepseek-v4-pro",
+        "deepseek-v4-flash",
+    }
 
 
 # ---------------------------------------------------------------------------

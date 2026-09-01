@@ -367,6 +367,57 @@ _EVID_RW030_001_PROBE = (
 # qwen3_qualification_probe.json observed_at（terminated step4 + evidence write）。
 _EVID_RW030_001_OBSERVED_AT = "2026-08-31T23:19:13+08:00"
 
+# TASK: AAF-v0.5-A4-PREREQ-WORKBUDDY-DISCOVERY-001（A4 prerequisite slice）：
+# WorkBuddy/CodeBuddy 当前运行时支持的 model ID 列表（只读 CLI 事实）。
+# 证据 = 真实只读 probe（.aaf/AAF-v0.5-A4-PREREQ-WORKBUDDY-DISCOVERY-001/discovery/，
+# observed_at=2026-09-02T01:23:05+08:00）：
+#   - `codebuddy --version` → 2.141.0（codebuddy_version.txt）
+#   - `codebuddy --help` → --model 帮助行 "Currently supported: (...)"
+#     （codebuddy_help.txt 全文；discovery_facts.json models_documented_by_cli）
+#   - `codebuddy config get model` → 空（当前模型仍由 CLI default/last-used 决定，
+#     CodeBuddy Auto；config 不暴露）
+#   - ~/.codebuddy/settings.json → 无 model/effort/remote/promo/multiplier key
+# 该列表是 CLI 自身帮助文本（版本级静态元数据；刷新 = 重新 `codebuddy --help`），
+# 不是 AAF 硬编码永久事实。hy4-preview-x 曾出现在 2026-08-29 帮助快照中，但
+# 当前 runtime（2.141.0，2026-09-02 probe）帮助文本已不列出 → 不收录（当前
+# runtime 不支持即不发明；Requirement 2）。
+# RemoteConfig 源事实（Requirement 7）：当前 runtime 不可观测（--help 无
+# remote economic-config 命令/flag；settings.json 无相关 key）→ 只登记
+# "不可观测"源事实，不解析 multiplier/promotion，不进入任何路由权威。
+_EVID_A4_WORKBUDDY_MODEL_LIST = (
+    ".aaf/AAF-v0.5-A4-PREREQ-WORKBUDDY-DISCOVERY-001/discovery/ (TASK: "
+    "AAF-v0.5-A4-PREREQ-WORKBUDDY-DISCOVERY-001, observed_at=2026-09-02T01:23:05+08:00): "
+    "read-only probe of the CURRENT CodeBuddy runtime — `codebuddy --version` = 2.141.0 "
+    "(codebuddy_version.txt); `codebuddy --help` --model line documents the currently "
+    "supported model IDs (codebuddy_help.txt, discovery_facts.json "
+    "models_documented_by_cli); `codebuddy config get model` empty (CodeBuddy Auto, "
+    "config NOT authoritative); ~/.codebuddy/settings.json has no model/effort/remote/"
+    "promo/multiplier keys. Identity-only facts: provider NOT exposed by CLI; NO "
+    "capability / qualification / cost / locality / promo inference (all UNKNOWN); "
+    "hy4-preview-x absent from current help text → NOT recorded (current runtime does "
+    "not support it). RemoteConfig economic metadata NOT observable via current CLI → "
+    "recorded as source fact only, never parsed into routing authority"
+)
+# 当前运行时（codebuddy 2.141.0）CLI --model 帮助行文档化的 model IDs（identity facts；
+# 刷新 = 重新 --help，本常量只是当前证据快照，不是永久事实）。
+_WORKBUDDY_CLI_DOCUMENTED_MODEL_IDS = (
+    "hy4-preview",
+    "hy3",
+    "hy3-x",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "glm-5.2",
+    "glm-5.1",
+    "glm-5v-turbo",
+    "minimax-m3",
+    "minimax-m2.7",
+    "kimi-k3-1",
+    "kimi-k2.7",
+    "kimi-k2.6",
+    "deepseek-v4-pro",
+    "deepseek-v4-flash",
+)
+
 
 def baseline_entries() -> tuple[RegistryEntry, ...]:
     """A1 基线 registry 条目。
@@ -383,6 +434,12 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
       executor-like task 完成并产生预期结构化结果）→ 最低已证能力 T4（LOW executor
       floor）+ accepted-evidence qualification=QUALIFIED；LOCAL_FREE 保持（本地端点
       成本证据）；绝不因 LOCAL_FREE 自动 QUALIFIED。
+    - WorkBuddy 候选身份（TASK: AAF-v0.5-A4-PREREQ-WORKBUDDY-DISCOVERY-001）：
+      15 个 identity-only 条目 = 当前 CodeBuddy CLI（--model 帮助行，v2.141.0，
+      observed_at=2026-09-02T01:23:05+08:00）文档化的 model IDs——**不是资格化
+      例外**：capability_tier / qualification / cost_class / locality 全部保持
+      UNKNOWN，provider 未暴露 → None；发现身份 ≠ eligible（is_usable_candidate
+      fail closed）。agent:workbuddy（model=None）仍是「当前 Auto 调用」锚点。
     """
     return (
         # Hermes 主模型（remote API；cost 未暴露）。
@@ -470,7 +527,11 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
                 "永久健康、不产生动态 health/quarantine 行为",
             ),
         ),
-        # WorkBuddy/CodeBuddy：当前模型不由用户 config 暴露（身份本身 UNKNOWN）
+        # WorkBuddy/CodeBuddy：当前模型不由用户 config 暴露（身份本身 UNKNOWN）。
+        # 该 agent:workbuddy 条目是「当前 Auto 调用」的身份锚点（model=None）；
+        # 具体候选身份（当前 CLI 支持的 model IDs）作为独立 identity-only 条目
+        # 列于其后（TASK: AAF-v0.5-A4-PREREQ-WORKBUDDY-DISCOVERY-001），发现身份
+        # 不等于任何能力/资格/成本证据（is_usable_candidate fail closed）。
         RegistryEntry(
             model=None,
             provider=None,
@@ -481,9 +542,42 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
             evidence=(_EVID_CAP002_PROBE,),
             notes=(
                 "`codebuddy config get model` 为空 → 当前模型由 CLI default / "
-                "last-used 决定（runtime observation required）；不得推断填充",
-                "cost / tier / qualification 均 UNKNOWN",
+                "last-used 决定（CodeBuddy Auto；runtime observation required）；"
+                "不得推断填充；adapters 调用不变（无 --model / --effort）",
+                "cost / tier / qualification 均 UNKNOWN；具体候选身份见下方 "
+                "identity-only 条目（AAF-v0.5-A4-PREREQ-WORKBUDDY-DISCOVERY-001）",
+                "RemoteConfig economic metadata 当前 runtime 不可观测（--help 无 "
+                "remote economic-config 命令/flag；settings.json 无相关 key）→ "
+                "只登记源事实，不解析 multiplier/promotion 进路由权威",
             ),
+        ),
+        # WorkBuddy/CodeBuddy 候选身份（identity-only；TASK:
+        # AAF-v0.5-A4-PREREQ-WORKBUDDY-DISCOVERY-001）：
+        # 每个条目 = 一个当前 CLI 支持的 model ID 的具体候选身份，供现有选择
+        # 基础设施枚举。全部维度保持保守 UNKNOWN（Requirement 5）：provider 未
+        # 暴露 → None；capability_tier=None；qualification=unknown；cost_class=
+        # UNKNOWN；locality=UNKNOWN。候选绝不因 ID 被发现而 eligible
+        # （is_usable_candidate 需要 tier + QUALIFIED 双证据）。
+        *(
+            RegistryEntry(
+                model=mid,
+                provider=None,
+                applicable_agents=("workbuddy",),
+                capability_tier=None,
+                cost_class=COST_CLASS_UNKNOWN,
+                locality=LOCALITY_UNKNOWN,
+                evidence=(_EVID_A4_WORKBUDDY_MODEL_LIST,),
+                notes=(
+                    "identity-only fact: model ID documented by CURRENT CodeBuddy "
+                    "CLI `--model` help line (v2.141.0, observed_at=2026-09-02T"
+                    "01:23:05+08:00); refresh = re-run `codebuddy --help` — not a "
+                    "permanent hardcoded fact",
+                    "provider NOT exposed by CLI → None; capability_tier=None / "
+                    "qualification=unknown / cost_class=UNKNOWN / locality=UNKNOWN "
+                    "— NO capability / qualification / cost / promo / free inference",
+                ),
+            )
+            for mid in _WORKBUDDY_CLI_DOCUMENTED_MODEL_IDS
         ),
         # Codex：默认模型 server-side 决定，本地不可枚举
         RegistryEntry(

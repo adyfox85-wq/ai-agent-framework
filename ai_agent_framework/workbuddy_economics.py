@@ -1,6 +1,7 @@
 """AAF v0.5 A4 prereq — WorkBuddy economic metadata 事实层（fact layer only）。
 
-TASK: AAF-v0.5-A4-PREREQ-WORKBUDDY-ECONOMICS-001
+TASK: AAF-v0.5-A4-PREREQ-WORKBUDDY-ECONOMICS-001（语义收紧 = FIX-001：
+AAF-v0.5-A4-PREREQ-WORKBUDDY-ECONOMICS-001-FIX-001）
 目的：为 A4 建立 WorkBuddy/CodeBuddy 经济性元数据（multiplier / promotion /
 free-like / validFrom / validUntil / source / observed_at / freshness）的
 **可审计证据事实表示**。本模块是纯数据 + 纯逻辑契约：
@@ -18,7 +19,19 @@ free-like / validFrom / validUntil / source / observed_at / freshness）的
   - UNKNOWN = 时间戳/有效性证据不足（缺失、不可解析、只有单边边界）。
   任何 STALE / UNKNOWN 经济事实绝不作为 "便宜/免费" 权威
   （is_authoritative_cheap 需要 FRESH + 显式 zero-factor 限时免费促销 +
-  multiplier==0.0 三者同时成立）。
+  multiplier==0.0 + promotion_factor==0.0 四者同时成立）。
+- 经济字段完整 + 一致 gate（FIX-001，Codex REQUEST_CHANGE 两个 blocking
+  findings 收口）：缺失或自相矛盾的经济元数据**永远不能**被当作
+  authoritative cheap/free——multiplier=None / promotion_factor=None /
+  free+nonzero factor / free+nonzero multiplier / discount 内部矛盾 /
+  raw 证据无法解释 parsed 值 → 一律 fail closed：
+  - is_authoritative_cheap 要求 FRESH + free + multiplier==0.0 +
+    promotion_factor==0.0 四者同时成立（Requirement 3）；
+  - cheapness_rank 的已知新鲜折扣 rank（RANK_FRESH_DISCOUNT）要求经济字段
+    完整且一致（economic_fields_consistent）；字段缺失/矛盾的 FRESH discount
+    落入 RANK_UNKNOWN_OR_STALE，绝不进入已知经济排序（Requirement 1/2）；
+  - EconomicFact.__post_init__ 校验 multiplier_raw 必须能解析回 multiplier
+    （无法解释的 raw 不得背书数值，fail closed）。
 
 证据来源（真实只读 runtime probe，observed_at=2026-09-02T02:10:30+08:00，
 codebuddy 2.141.0）：
@@ -67,10 +80,11 @@ PROMO_STATUS_FREE = "free"       # 显式 zero-factor 限时免费（0x / factor
 PROMO_STATUS_DISCOUNT = "discount"  # 显式折扣（0 < factor < 1）
 PROMO_STATUSES = (PROMO_STATUS_FREE, PROMO_STATUS_DISCOUNT)
 
-# cheapness 权威排序（数值越小越便宜；STALE/UNKNOWN 永不小于已知 FRESH）
-RANK_AUTHORITATIVE_CHEAP = 0   # FRESH + 显式免费 + multiplier 0.0
-RANK_FRESH_DISCOUNT = 1        # FRESH + 显式折扣（已知新鲜但非免费）
-RANK_UNKNOWN_OR_STALE = 2      # STALE / UNKNOWN / 无促销 —— 永不 outrank 已知新鲜
+# cheapness 权威排序（数值越小越便宜；STALE/UNKNOWN 永不小于已知 FRESH；
+# 字段缺失/矛盾的经济事实永不进入已知排序——FIX-001）
+RANK_AUTHORITATIVE_CHEAP = 0   # FRESH + 显式免费 + multiplier 0.0 + promotion_factor 0.0
+RANK_FRESH_DISCOUNT = 1        # FRESH + 显式折扣 + 经济字段完整且一致
+RANK_UNKNOWN_OR_STALE = 2      # STALE / UNKNOWN / 无促销 / 全价 / 字段缺失或矛盾
 
 # 15 个当前 CLI 文档化 WorkBuddy 候选（与 model_registry._WORKBUDDY_CLI_*
 # 同一证据链；刷新 = 重新 `codebuddy --help`，不是永久事实）。
@@ -257,36 +271,73 @@ def classify_freshness(fact: "EconomicFact", now: datetime) -> str:
     return ECON_UNKNOWN
 
 
+def economic_fields_consistent(fact: "EconomicFact") -> bool:
+    """经济字段是否**完整且相互一致**（FIX-001 Requirement 1/2，fail closed）。
+
+    只有以下情况返回 True：
+    - promotion_status == free：multiplier 已知 == 0.0 **且** promotion_factor
+      已知 == 0.0（zero-factor 限时免费；任一字段缺失或非零 → False）；
+    - promotion_status == discount：multiplier 已知 > 0.0 且 promotion_factor
+      已知且 0.0 < factor < 1.0（factor==0.0 意味着免费、factor==1.0 意味着无
+      折扣，均与 discount 状态矛盾；multiplier==0.0 意味着免费，也与 discount
+      矛盾）；
+    - 其余（无促销状态 / multiplier=None / promotion_factor=None）→ False。
+
+    返回 False 的事实**永远不进入已知经济排序**（cheapness_rank 只对完整且
+    一致的经济字段给出已知 rank；缺失/矛盾一律 RANK_UNKNOWN_OR_STALE）。
+    """
+    if fact.multiplier is None or fact.promotion_factor is None:
+        return False
+    if fact.promotion_status == PROMO_STATUS_FREE:
+        return fact.multiplier == 0.0 and fact.promotion_factor == 0.0
+    if fact.promotion_status == PROMO_STATUS_DISCOUNT:
+        return (
+            fact.multiplier > 0.0
+            and 0.0 < fact.promotion_factor < 1.0
+        )
+    return False
+
+
 def is_authoritative_cheap(fact: "EconomicFact", now: datetime) -> bool:
     """经济事实是否构成"免费/便宜"权威（Requirement 5，fail closed）。
 
-    三条件**同时**成立才返回 True：
+    四条件**同时**成立才返回 True：
       1. freshness == FRESH（有有效日期窗口覆盖 now）；
       2. promotion_status == free（显式 zero-factor 限时免费促销证据）；
-      3. multiplier 已知且 == 0.0（credits 与促销一致；不一致 → fail closed）。
-    STALE / UNKNOWN / 折扣 / 无促销 / 数据不一致 → False——未知或过期的经济
-    元数据绝不按假设当作便宜/免费。
+      3. multiplier 已知且 == 0.0（credits 与促销一致；缺失/非零 → fail closed）；
+      4. promotion_factor 已知且 == 0.0（factor 与 free 一致；缺失/非零 →
+         fail closed——FIX-001 blocking finding #2）。
+    STALE / UNKNOWN / 折扣 / 无促销 / 字段缺失或数据不一致 → False——未知或
+    过期的经济元数据绝不按假设当作便宜/免费。
     """
     if classify_freshness(fact, now) != ECON_FRESH:
         return False
     if fact.promotion_status != PROMO_STATUS_FREE:
         return False
-    return fact.multiplier is not None and fact.multiplier == 0.0
+    return (
+        fact.multiplier is not None
+        and fact.multiplier == 0.0
+        and fact.promotion_factor is not None
+        and fact.promotion_factor == 0.0
+    )
 
 
 def cheapness_rank(fact: "EconomicFact", now: datetime) -> int:
     """cheapness 权威排序（数值越小越便宜；Requirement 5 可判定编码）。
 
-    - 0 = 权威免费（FRESH + 显式免费 + multiplier 0.0）
-    - 1 = 已知新鲜的显式折扣（FRESH + discount）
-    - 2 = 其余（STALE / UNKNOWN / 无促销 / 全价）——STALE/UNKNOWN 永不
-      以 rank < 已知 FRESH 的数值出现，即永不 outrank 已知新鲜事实。
+    - 0 = 权威免费（FRESH + 显式免费 + multiplier 0.0 + promotion_factor 0.0）
+    - 1 = 已知新鲜的显式折扣（FRESH + discount + **经济字段完整且一致**——
+      FIX-001：multiplier=None / promotion_factor=None / 内部矛盾 → 不进入
+      已知经济排序，fall through 到 rank 2）
+    - 2 = 其余（STALE / UNKNOWN / 无促销 / 全价 / 字段缺失或矛盾）——STALE/
+      UNKNOWN/不完整 永不 outrank 已知 FRESH 事实。
     """
     if is_authoritative_cheap(fact, now):
         return RANK_AUTHORITATIVE_CHEAP
     if (
         classify_freshness(fact, now) == ECON_FRESH
         and fact.promotion_status == PROMO_STATUS_DISCOUNT
+        and economic_fields_consistent(fact)
     ):
         return RANK_FRESH_DISCOUNT
     return RANK_UNKNOWN_OR_STALE
@@ -333,6 +384,16 @@ class EconomicFact:
             raise ValueError(f"multiplier must be float or None, got {type(self.multiplier).__name__}")
         if self.multiplier is not None and self.multiplier < 0:
             raise ValueError(f"multiplier must be >= 0, got {self.multiplier!r}")
+        if self.multiplier is not None and self.multiplier_raw is not None:
+            # FIX-001：raw 证据必须能解释 parsed 数值——无法解析/不一致的 raw
+            # 不得背书一个"发明"的 multiplier（Requirement 1 fail closed）。
+            parsed = parse_multiplier(self.multiplier_raw)
+            if parsed is None or parsed != self.multiplier:
+                raise ValueError(
+                    f"multiplier_raw {self.multiplier_raw!r} does not parse to "
+                    f"multiplier {self.multiplier!r} — raw evidence must explain "
+                    f"the value (fail closed, no invented multipliers)"
+                )
         if self.promotion_status is not None and self.promotion_status not in PROMO_STATUSES:
             raise ValueError(
                 f"invalid promotion_status: {self.promotion_status!r} "
@@ -415,8 +476,9 @@ def facts_to_dict(
         "schema_version": ECONOMIC_SCHEMA_VERSION,
         "authority": (
             "workbuddy_economics.py fact layer (TASK: AAF-v0.5-A4-PREREQ-WORKBUDDY-"
-            "ECONOMICS-001); evidence-backed facts only — NOT routing authority; "
-            "freshness is computed per reference time; STALE/UNKNOWN never cheap"
+            "ECONOMICS-001; tightened by FIX-001); evidence-backed facts only — NOT "
+            "routing authority; freshness is computed per reference time; STALE/"
+            "UNKNOWN/incomplete/contradictory never cheap"
         ),
         "facts": {mid: fact_to_dict(f, now) for mid, f in sorted(facts.items())},
     }

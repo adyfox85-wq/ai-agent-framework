@@ -418,6 +418,59 @@ _WORKBUDDY_CLI_DOCUMENTED_MODEL_IDS = (
     "deepseek-v4-flash",
 )
 
+# TASK: AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-001（A4 prerequisite slice）：
+# WorkBuddy 候选 deepseek-v4-flash 的真实、隔离、可审计 per-run runtime
+# qualification probe 证据（**仅此一个候选**；其余 14 个 WorkBuddy candidates
+# 保持 tier=None + qualification=unknown，Requirement 8）。
+# 证据 = .aaf/AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-001/probe/
+# （deepseek_v4_flash_qualification_probe.json + _transcript.txt，
+# observed_at=2026-09-02T01:45:31+08:00，codebuddy 2.141.0）：
+#   - `codebuddy --version` → 2.141.0（当前 runtime 身份，exit 0）
+#   - `codebuddy --help` → --model 帮助行仍文档化 deepseek-v4-flash（CLI 级接受
+#     该 model ID；parsed_model_ids 含之）
+#   - `codebuddy config get model`（invocation 前后各一次只读）→ 均空
+#     （CodeBuddy Auto 保持；probe 零配置修改）
+#   - 真实 invocation `codebuddy -p --output-format text -y --model
+#     deepseek-v4-flash --no-session-persistence`（stdin 受控 Risk: LOW
+#     validator-like task；--no-session-persistence = probe-only 隔离，production
+#     adapter invocation 零修改）→ exit 0 / stderr 空 / 无 error signals / 预期
+#     AAF_STRUCTURED_RESULT_BEGIN verdict 块 JSON 精确匹配 / 无超时无协议错误
+#     无模型不可用无 runtime failure（elapsed 5.3s）
+# 受控 LOW probe 成功按风险契约只证明最低 T4（RISK_FLOORS[LOW].executor == "T4"
+# 且 validator == "T4"）；T3/T2/T1/T0 不推断（Requirement 4）。cost_class 保持
+# UNKNOWN（Requirement 9：不解析 multiplier/promotion/RemoteConfig economic
+# metadata）；locality 保持 UNKNOWN（runtime 不暴露执行位置）；provider=None
+# 保持（CLI 不暴露）。Hermes 侧同名模型（deepseek-v4-flash@deepseek，A2-004 T2
+# accepted evidence）**不是**本条目 qualification authority——WorkBuddy 资格
+# 只来自本 probe 的独立 runtime evidence（Requirement 6）。
+_EVID_A4_WORKBUDDY_QUALIFICATION_001_PROBE = (
+    ".aaf/AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-001/probe/ (TASK: "
+    "AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-001, observed_at=2026-09-02T01:45:31+08:00): "
+    "isolated non-authoritative per-run qualification probe of the REAL CodeBuddy "
+    "runtime (codebuddy 2.141.0) for WorkBuddy candidate deepseek-v4-flash "
+    "(artifacts: deepseek_v4_flash_qualification_probe.json + "
+    "deepseek_v4_flash_probe_transcript.txt) — "
+    "`codebuddy --version`=2.141.0; `codebuddy --help` --model line still documents "
+    "deepseek-v4-flash (CLI-level acceptance of the model ID); `codebuddy config "
+    "get model` empty BEFORE and AFTER the probe invocation (CodeBuddy Auto "
+    "preserved, probe changed no config); REAL invocation `codebuddy -p "
+    "--output-format text -y --model deepseek-v4-flash --no-session-persistence` "
+    "(probe-only isolation flag; production adapter invocation untouched) with a "
+    "controlled Risk: LOW validator-like task via stdin completed with the expected "
+    "AAF_STRUCTURED_RESULT_BEGIN verdict block (JSON exact match), exit 0, empty "
+    "stderr, no timeout / protocol error / model unavailability / runtime failure. "
+    "LOW probe success proves minimum capability tier T4 (RISK_FLOORS[LOW] "
+    "executor/validator == T4) ONLY; T3/T2/T1/T0 NOT inferred. cost_class stays "
+    "UNKNOWN (no multiplier/promotion/RemoteConfig economic parsing); locality "
+    "stays UNKNOWN; provider stays None (CLI does not expose it). Hermes-side "
+    "evidence for the same-named model (deepseek-v4-flash@deepseek, A2-004 T2) is "
+    "NOT the qualification authority here — WorkBuddy qualification rests ONLY on "
+    "this independent runtime probe"
+)
+# 上述 probe 证据被接受的真实运行时时间戳（probe 完成时刻，来自 probe artifact
+# qualification.observed_at）：2026-09-02T01:45:31+08:00。
+_EVID_A4_WORKBUDDY_QUALIFICATION_001_OBSERVED_AT = "2026-09-02T01:45:31+08:00"
+
 
 def baseline_entries() -> tuple[RegistryEntry, ...]:
     """A1 基线 registry 条目。
@@ -436,10 +489,20 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
       成本证据）；绝不因 LOCAL_FREE 自动 QUALIFIED。
     - WorkBuddy 候选身份（TASK: AAF-v0.5-A4-PREREQ-WORKBUDDY-DISCOVERY-001）：
       15 个 identity-only 条目 = 当前 CodeBuddy CLI（--model 帮助行，v2.141.0，
-      observed_at=2026-09-02T01:23:05+08:00）文档化的 model IDs——**不是资格化
-      例外**：capability_tier / qualification / cost_class / locality 全部保持
-      UNKNOWN，provider 未暴露 → None；发现身份 ≠ eligible（is_usable_candidate
-      fail closed）。agent:workbuddy（model=None）仍是「当前 Auto 调用」锚点。
+      observed_at=2026-09-02T01:23:05+08:00）文档化的 model IDs——发现身份 ≠
+      eligible（is_usable_candidate fail closed）。agent:workbuddy（model=None）
+      仍是「当前 Auto 调用」锚点。
+    - WorkBuddy 候选 deepseek-v4-flash（TASK: AAF-v0.5-A4-PREREQ-WORKBUDDY-
+      QUALIFICATION-001）：**唯一资格化 WorkBuddy 候选** = 真实 CodeBuddy runtime
+      隔离 per-run probe 证据（显式 --model deepseek-v4-flash，production
+      invocation 零修改）→ 最低已证能力 T4（受控 Risk: LOW validator-like task
+      成功 = LOW executor/validator floor T4，不推断 T3/T2/T1/T0）+
+      accepted-evidence qualification=QUALIFIED（accepted evidence snapshot —
+      不表示永久健康、不产生动态 health/quarantine 行为）；cost_class=UNKNOWN /
+      locality=UNKNOWN / provider=None 保持（Requirement 8/9）；Hermes 侧同名
+      模型（deepseek-v4-flash@deepseek）的历史能力证据不是本条目 authority
+      （Requirement 6：WorkBuddy 必须有独立 runtime evidence）。其余 14 个
+      WorkBuddy 候选仍全 UNKNOWN。
     """
     return (
         # Hermes 主模型（remote API；cost 未暴露）。
@@ -554,9 +617,11 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
         # WorkBuddy/CodeBuddy 候选身份（identity-only；TASK:
         # AAF-v0.5-A4-PREREQ-WORKBUDDY-DISCOVERY-001）：
         # 每个条目 = 一个当前 CLI 支持的 model ID 的具体候选身份，供现有选择
-        # 基础设施枚举。全部维度保持保守 UNKNOWN（Requirement 5）：provider 未
-        # 暴露 → None；capability_tier=None；qualification=unknown；cost_class=
-        # UNKNOWN；locality=UNKNOWN。候选绝不因 ID 被发现而 eligible
+        # 基础设施枚举。除 deepseek-v4-flash（已由 AAF-v0.5-A4-PREREQ-WORKBUDDY-
+        # QUALIFICATION-001 资格化，见下方独立条目）外，其余候选全部维度保持
+        # 保守 UNKNOWN（Requirement 5）：provider 未暴露 → None；
+        # capability_tier=None；qualification=unknown；cost_class=UNKNOWN；
+        # locality=UNKNOWN。候选绝不因 ID 被发现而 eligible
         # （is_usable_candidate 需要 tier + QUALIFIED 双证据）。
         *(
             RegistryEntry(
@@ -578,6 +643,63 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
                 ),
             )
             for mid in _WORKBUDDY_CLI_DOCUMENTED_MODEL_IDS
+            if mid != "deepseek-v4-flash"
+        ),
+        # WorkBuddy/CodeBuddy 候选 deepseek-v4-flash（唯一资格化候选；TASK:
+        # AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-001）：
+        # 真实、隔离、可审计的 per-run CodeBuddy runtime probe 证据（显式
+        # --model deepseek-v4-flash；production adapter invocation 零修改）→
+        # 最低已证能力 T4（受控 Risk: LOW validator-like task 成功 = LOW
+        # executor floor T4 / validator floor T4；不推断 T3/T2/T1/T0）+
+        # accepted-evidence qualification=QUALIFIED（accepted evidence snapshot —
+        # 不表示永久健康、不产生动态 health/quarantine 行为）。cost_class=
+        # UNKNOWN 保持（本任务不解析 economic metadata；UNKNOWN 成本不反向提升
+        # 能力/资格）；locality=UNKNOWN 保持（runtime 不暴露执行位置）；
+        # provider=None 保持（CLI 不暴露）。Hermes 侧同名模型
+        # （deepseek-v4-flash@deepseek）的历史能力证据不是本条目 qualification
+        # authority——WorkBuddy 资格只来自本 probe 独立 runtime evidence
+        # （Requirement 6）。
+        RegistryEntry(
+            model="deepseek-v4-flash",
+            provider=None,
+            applicable_agents=("workbuddy",),
+            capability_tier=CAP_TIER_T4,
+            cost_class=COST_CLASS_UNKNOWN,
+            locality=LOCALITY_UNKNOWN,
+            qualification=RuntimeQualification(
+                status=QUAL_STATUS_QUALIFIED,
+                evidence=(_EVID_A4_WORKBUDDY_QUALIFICATION_001_PROBE,),
+                observed_at=_EVID_A4_WORKBUDDY_QUALIFICATION_001_OBSERVED_AT,
+            ),
+            evidence=(
+                _EVID_A4_WORKBUDDY_MODEL_LIST,
+                _EVID_A4_WORKBUDDY_QUALIFICATION_001_PROBE,
+            ),
+            notes=(
+                "identity fact: model ID documented by CURRENT CodeBuddy CLI "
+                "`--model` help line (v2.141.0, observed_at=2026-09-02T01:23:05+08:00); "
+                "refresh = re-run `codebuddy --help` — not a permanent hardcoded fact",
+                "capability_tier=T4 + qualification=QUALIFIED 仅来自 TASK: "
+                "AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-001 的隔离非权威真实 "
+                "per-run runtime probe（.aaf/AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-"
+                "001/probe/，observed_at=2026-09-02T01:45:31+08:00）：真实 invocation "
+                "`codebuddy -p --output-format text -y --model deepseek-v4-flash "
+                "--no-session-persistence` 完成受控 Risk: LOW validator-like task 并 "
+                "产生预期结构化 verdict（exit 0 / stderr 空 / 无超时协议错误）；LOW "
+                "probe 成功只证明最低 T4（LOW executor/validator floor），不推断 "
+                "T3/T2/T1/T0；accepted evidence snapshot — 不表示永久健康、不产生 "
+                "动态 health/quarantine 行为",
+                "cost_class=UNKNOWN 保持（本任务不解析 multiplier/promotion/RemoteConfig "
+                "economic metadata；UNKNOWN 成本不反向提升能力或资格）；locality=UNKNOWN "
+                "保持（runtime 不暴露执行位置）；provider=None 保持（CLI 不暴露）",
+                "Hermes 侧同名模型（deepseek-v4-flash@deepseek，A2-004 T2 证据）不是本 "
+                "条目 qualification authority——WorkBuddy 资格只来自本 probe 独立 "
+                "runtime evidence（Requirement 6）",
+                "production WorkBuddy invocation 零修改：adapters 仍精确 "
+                "[-p --output-format text -y]（CodeBuddy Auto），无 --model/--effort；"
+                "本 qualification 仅影响候选 eligibility（is_usable_candidate），"
+                "不影响任何实际 routing authority",
+            ),
         ),
         # Codex：默认模型 server-side 决定，本地不可枚举
         RegistryEntry(

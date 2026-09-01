@@ -4,7 +4,10 @@
 证明（Requirement 8）：
 1. 具体 WorkBuddy 候选身份可发现/可表示（registry 含当前 CLI 支持的 15 个 model IDs）
 2. selector 能看到 WorkBuddy 候选（candidates_considered 含全部候选）
-3. capability/qualification 仍 unknown → 全部不 eligible（NO_SHADOW_CANDIDATE）
+3. 未资格化候选 capability/qualification 仍 unknown → 不 eligible
+   （deepseek-v4-flash 自 AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-001 起为
+   唯一资格化候选：tier=T4 + qualified，LOW 下 eligible；MEDIUM/HIGH 仍
+   CAPABILITY_INSUFFICIENT——专项断言见 test_a4_workbuddy_qualification.py）
 4. FREE/cheap/promo 假设不被推断（cost_class=UNKNOWN、不在 FREE 集合）
 5. 当前 WorkBuddy invocation 保持 CodeBuddy Auto：无 --model / --effort 覆盖
 
@@ -23,6 +26,7 @@ from ai_agent_framework.model_registry import (
     COST_CLASS_UNKNOWN,
     FREE_OF_COST_CLASSES,
     LOCALITY_UNKNOWN,
+    QUAL_STATUS_QUALIFIED,
     QUAL_STATUS_UNKNOWN,
     canonical_key,
     is_usable_candidate,
@@ -66,6 +70,16 @@ def _excluded_reasons(decision):
     return {rec.candidate: rec.reason for rec in decision.excluded}
 
 
+# 自 AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-001 起，deepseek-v4-flash 是唯一
+# 被资格化的 WorkBuddy 候选（tier=T4 + qualification=qualified，独立 probe 证据），
+# 其余 14 个保持 identity-only（本文件只验证后者的 identity 事实；资格化候选的
+# 专项断言见 tests/test_a4_workbuddy_qualification.py）。
+QUALIFIED_WORKBUDDY_IDS = ("deepseek-v4-flash",)
+UNQUALIFIED_WORKBUDDY_IDS = tuple(
+    mid for mid in WORKBUDDY_CANDIDATE_IDS if mid not in QUALIFIED_WORKBUDDY_IDS
+)
+
+
 # ---------------------------------------------------------------------------
 # 1. 具体候选身份可发现 / 可表示
 # ---------------------------------------------------------------------------
@@ -81,9 +95,10 @@ def test_workbuddy_candidates_present_in_baseline():
 
 
 def test_workbuddy_candidates_identity_only_fields():
-    """每个候选 = identity-only：model ID 已知，其余维度保守 UNKNOWN。"""
+    """未资格化候选 = identity-only：model ID 已知，其余维度保守 UNKNOWN。
+    （deepseek-v4-flash 自 QUALIFICATION-001 起已资格化，见专项测试文件。）"""
     reg = mr.baseline_registry()
-    for mid in WORKBUDDY_CANDIDATE_IDS:
+    for mid in UNQUALIFIED_WORKBUDDY_IDS:
         e = reg[mid]
         assert e.model == mid
         assert e.provider is None  # CLI 不暴露底层 provider
@@ -134,22 +149,31 @@ def test_workbuddy_candidates_no_free_cheap_promo_inference():
 
 
 @pytest.mark.parametrize("risk_class", [rc.RISK_LOW, rc.RISK_MEDIUM, rc.RISK_HIGH])
-def test_selector_sees_workbuddy_candidates_but_none_eligible(risk_class):
+def test_selector_sees_workbuddy_candidates_but_only_qualified_eligible(risk_class):
     reg = mr.baseline_registry()
     decision = select_shadow_candidate(risk_class, rc.ROLE_EXECUTOR, "workbuddy", reg)
     # 候选被看到（considered 含全部 15 + Auto 锚点）
     considered = set(decision.candidates_considered)
     assert set(WORKBUDDY_CANDIDATE_IDS) <= considered
     assert "agent:workbuddy" in considered
-    # capability/qualification unknown → 全部排除、零 eligible
-    assert decision.eligible == ()
-    assert decision.selected is None
-    assert decision.no_candidate_reason is not None
-    assert decision.no_candidate_reason.startswith(NO_SHADOW_CANDIDATE)
     reasons = _excluded_reasons(decision)
-    for mid in WORKBUDDY_CANDIDATE_IDS:
-        assert reasons[mid] == EXCL_CAPABILITY_INSUFFICIENT  # tier=None fail closed
-    assert reasons["agent:workbuddy"] == EXCL_CAPABILITY_INSUFFICIENT
+    if risk_class == rc.RISK_LOW:
+        # 唯一资格化候选（deepseek-v4-flash，T4 + QUALIFIED）通过 LOW gate
+        assert decision.eligible == ("deepseek-v4-flash",)
+        assert decision.selected == "deepseek-v4-flash"
+        assert decision.no_candidate_reason is None
+        for mid in UNQUALIFIED_WORKBUDDY_IDS:
+            assert reasons[mid] == EXCL_CAPABILITY_INSUFFICIENT  # tier=None fail closed
+        assert reasons["agent:workbuddy"] == EXCL_CAPABILITY_INSUFFICIENT
+    else:
+        # MEDIUM/HIGH：T4 不足（floor T3/T2）→ 全部排除、零 eligible
+        assert decision.eligible == ()
+        assert decision.selected is None
+        assert decision.no_candidate_reason is not None
+        assert decision.no_candidate_reason.startswith(NO_SHADOW_CANDIDATE)
+        for mid in WORKBUDDY_CANDIDATE_IDS:
+            assert reasons[mid] == EXCL_CAPABILITY_INSUFFICIENT
+        assert reasons["agent:workbuddy"] == EXCL_CAPABILITY_INSUFFICIENT
 
 
 def test_selector_workbuddy_candidates_not_visible_to_hermes_stage():
@@ -181,10 +205,13 @@ def test_registry_roundtrip_preserves_workbuddy_candidates():
     reg = mr.baseline_registry()
     rebuilt = mr.registry_from_dict(mr.registry_to_dict(reg))
     assert set(rebuilt) == set(reg)
-    for mid in WORKBUDDY_CANDIDATE_IDS:
+    for mid in UNQUALIFIED_WORKBUDDY_IDS:
         assert rebuilt[mid].model == mid
         assert rebuilt[mid].cost_class == COST_CLASS_UNKNOWN
         assert is_usable_candidate(rebuilt[mid]) is False
+    # 唯一资格化候选的 qualification 也随 round-trip 保留
+    assert is_usable_candidate(rebuilt["deepseek-v4-flash"]) is True
+    assert rebuilt["deepseek-v4-flash"].qualification.status == QUAL_STATUS_QUALIFIED
     assert "agent:workbuddy" in rebuilt
 
 

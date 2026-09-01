@@ -1,5 +1,6 @@
 """AAF v0.5 A4 prereq — WorkBuddy candidate qualification 聚焦测试
-（TASK: AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-001）。
+（TASK: AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-001；第二个候选 hy4-preview
+由 AAF-v0.5-A4-PREREQ-WORKBUDDY-SECOND-CANDIDATE-001 资格化，本文件断言已同步）。
 
 证明（Requirement 10）：
 1. deepseek-v4-flash WorkBuddy candidate 成功 qualification 后可通过
@@ -7,7 +8,7 @@
    selector LOW executor/validator 下 eligible）
 2. 不高估 tier：只赋最低被证据证明的 T4（LOW probe floor = T4），
    绝不推断 T3/T2/T1/T0；MEDIUM/HIGH/CRITICAL 下仍 CAPABILITY_INSUFFICIENT
-3. 其余 14 个 WorkBuddy candidates 仍 ineligible（tier=None +
+3. 其余 13 个 WorkBuddy candidates 仍 ineligible（tier=None +
    qualification=unknown）
 4. cost_class=UNKNOWN 保持；UNKNOWN 成本不反向提升能力或 qualification
    （economic_rank=2；不在 FREE 集合）
@@ -49,16 +50,20 @@ from ai_agent_framework.shadow_routing import (
     select_shadow_candidate,
 )
 
-# 唯一被资格化的 WorkBuddy 候选（registry key = model ID，provider 未暴露）。
+# 两个被资格化的 WorkBuddy 候选（registry key = model ID，provider 未暴露）。
+# deepseek-v4-flash = QUALIFICATION-001；hy4-preview = SECOND-CANDIDATE-001。
+QUALIFIED_WORKBUDDY_IDS = ("deepseek-v4-flash", "hy4-preview")
 QUALIFIED_WORKBUDDY_ID = "deepseek-v4-flash"
-# 其余 14 个仍保持 identity-only 的 WorkBuddy 候选。
+SECOND_QUALIFIED_WORKBUDDY_ID = "hy4-preview"
+# 其余 13 个仍保持 identity-only 的 WorkBuddy 候选。
 UNQUALIFIED_WORKBUDDY_IDS = (
-    "hy4-preview", "hy3", "hy3-x", "glm-5.3", "glm-5.3-flash",
+    "hy3", "hy3-x", "glm-5.3", "glm-5.3-flash",
     "glm-5.2", "glm-5.1", "glm-5v-turbo", "minimax-m3", "minimax-m2.7",
     "kimi-k3-1", "kimi-k2.7", "kimi-k2.6", "deepseek-v4-pro",
 )
 # probe 证据 artifact 的真实 observed_at（= probe 完成时刻，registry 使用同一值）。
 PROBE_OBSERVED_AT = "2026-09-02T01:45:31+08:00"
+SECOND_PROBE_OBSERVED_AT = "2026-09-02T03:01:44+08:00"
 
 
 def _workbuddy_candidates(reg):
@@ -152,9 +157,12 @@ def test_wb_cost_unknown_does_not_boost_capability_or_qualification():
 
 
 def test_other_14_workbuddy_candidates_still_unknown():
+    """其余 13 个 WorkBuddy candidates 仍 ineligible（identity-only）；
+    hy4-preview 自 SECOND-CANDIDATE-001 起已资格化（专项断言见
+    tests/test_a4_workbuddy_second_candidate.py）。"""
     reg = baseline_registry()
     cands = _workbuddy_candidates(reg)
-    assert set(cands) == set(UNQUALIFIED_WORKBUDDY_IDS) | {QUALIFIED_WORKBUDDY_ID}
+    assert set(cands) == set(UNQUALIFIED_WORKBUDDY_IDS) | set(QUALIFIED_WORKBUDDY_IDS)
     for mid in UNQUALIFIED_WORKBUDDY_IDS:
         e = reg[mid]
         assert e.model == mid
@@ -187,7 +195,9 @@ def test_workbuddy_auto_anchor_unchanged():
 def test_selector_low_workbuddy_executor_eligible():
     reg = baseline_registry()
     decision = select_shadow_candidate(rc.RISK_LOW, rc.ROLE_EXECUTOR, "workbuddy", reg)
-    assert decision.eligible == (QUALIFIED_WORKBUDDY_ID,)
+    # 两个资格化候选均 eligible（cost/locality 同 rank，selected 仍为 key 字典序
+    # 第一的 deepseek-v4-flash——既有选择语义不变）。
+    assert decision.eligible == ("deepseek-v4-flash", "hy4-preview")
     assert decision.selected == QUALIFIED_WORKBUDDY_ID
     assert decision.no_candidate_reason is None
     reasons = _excluded_reasons(decision)
@@ -197,10 +207,10 @@ def test_selector_low_workbuddy_executor_eligible():
 
 
 def test_selector_low_workbuddy_validator_eligible():
-    """LOW validator floor = T4：validator 角色同样通过。"""
+    """LOW validator floor = T4：validator 角色同样通过（两个候选均 eligible）。"""
     reg = baseline_registry()
     decision = select_shadow_candidate(rc.RISK_LOW, rc.ROLE_VALIDATOR, "workbuddy", reg)
-    assert QUALIFIED_WORKBUDDY_ID in decision.eligible
+    assert set(decision.eligible) == set(QUALIFIED_WORKBUDDY_IDS)
     assert decision.selected == QUALIFIED_WORKBUDDY_ID
 
 
@@ -218,7 +228,8 @@ def test_selector_medium_high_critical_workbuddy_still_insufficient(risk_class):
     assert decision.no_candidate_reason is not None
     assert decision.no_candidate_reason.startswith(NO_SHADOW_CANDIDATE)
     reasons = _excluded_reasons(decision)
-    assert reasons[QUALIFIED_WORKBUDDY_ID] == EXCL_CAPABILITY_INSUFFICIENT
+    for mid in QUALIFIED_WORKBUDDY_IDS:
+        assert reasons[mid] == EXCL_CAPABILITY_INSUFFICIENT
     for mid in UNQUALIFIED_WORKBUDDY_IDS:
         assert reasons[mid] == EXCL_CAPABILITY_INSUFFICIENT
 

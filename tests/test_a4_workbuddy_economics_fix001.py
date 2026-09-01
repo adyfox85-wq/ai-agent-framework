@@ -22,8 +22,9 @@
 8. discount 内部矛盾（factor=0.0 / factor=1.0 / multiplier=0.0）→ fail closed
 9. economic_fields_consistent 完整/一致性判定（纯 gate）
 10. raw 证据无法解释 parsed multiplier → 构造即 ValueError（无法解释 → fail closed）
-11. capability/qualification precedence 不回归（FRESH FREE hy3/hy4-preview 仍
-    ineligible；deepseek-v4-flash T4+QUALIFIED 不变；selector 零变化）
+11. capability/qualification precedence 不回归（FRESH FREE hy3 仍
+    ineligible；hy4-preview 自 SECOND-CANDIDATE-001 起由独立 probe 资格化；
+    deepseek-v4-flash T4+QUALIFIED 不变；selector 零变化）
 12. production WorkBuddy invocation 不变（Auto，无 --model/--effort）
 13. 经济模块仍不被路由代码 import
 
@@ -341,19 +342,21 @@ def test_multiplier_raw_must_explain_value():
 
 
 def test_fresh_free_candidates_still_ineligible():
-    """hy3 / hy4-preview 仍 FRESH + authoritative cheap（字段完整），但 tier=None
-    + qualification=unknown → is_usable_candidate 仍 False。"""
+    """hy3 仍 FRESH + authoritative cheap（字段完整），但 tier=None
+    + qualification=unknown → is_usable_candidate 仍 False。
+    （hy4-preview 自 SECOND-CANDIDATE-001 起已由独立 probe 资格化；经济事实
+    只决定 probe priority，不赋予资格。）"""
     facts = baseline_economic_facts()
     assert classify_freshness(facts["hy3"], NOW) == ECON_FRESH
     assert classify_freshness(facts["hy4-preview"], NOW) == ECON_FRESH
     assert is_authoritative_cheap(facts["hy3"], NOW) is True
     assert is_authoritative_cheap(facts["hy4-preview"], NOW) is True
     reg = baseline_registry()
-    for mid in ("hy3", "hy4-preview"):
-        assert is_usable_candidate(reg[mid]) is False
-        assert reg[mid].capability_tier is None
-        assert reg[mid].qualification.status == "unknown"
-        assert reg[mid].cost_class == "UNKNOWN"
+    e = reg["hy3"]
+    assert is_usable_candidate(e) is False
+    assert e.capability_tier is None
+    assert e.qualification.status == "unknown"
+    assert e.cost_class == "UNKNOWN"
 
 
 def test_qualified_candidate_capability_qualification_unchanged():
@@ -377,11 +380,11 @@ def test_qualified_candidate_capability_qualification_unchanged():
 def test_selector_unchanged_economics_not_consumed():
     reg = baseline_registry()
     decision = select_shadow_candidate(rc.RISK_LOW, rc.ROLE_EXECUTOR, "workbuddy", reg)
-    assert decision.eligible == ("deepseek-v4-flash",)
+    assert decision.eligible == ("deepseek-v4-flash", "hy4-preview")
     assert decision.selected == "deepseek-v4-flash"
     reasons = {rec.candidate: rec.reason for rec in decision.excluded}
     assert reasons["hy3"] == EXCL_CAPABILITY_INSUFFICIENT
-    assert reasons["hy4-preview"] == EXCL_CAPABILITY_INSUFFICIENT
+    assert "hy4-preview" not in reasons  # eligible 来自独立 probe 证据，非经济事实
 
 
 # ---------------------------------------------------------------------------

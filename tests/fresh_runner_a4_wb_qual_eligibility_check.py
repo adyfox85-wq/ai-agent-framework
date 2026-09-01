@@ -1,12 +1,15 @@
 """AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-001 — fresh-process eligibility check.
 
 Run by fresh_runner_a4_wb_qualification_validation.py as a FRESH python process
-(N+1 discipline): proves the new registry qualification data ONLY affects
-candidate eligibility and NEVER alters actual routing authority / invocation.
+(N+1 discipline): proves the registry qualification data ONLY affects candidate
+eligibility and NEVER alters actual routing authority / invocation.
+(自 AAF-v0.5-A4-PREREQ-WORKBUDDY-SECOND-CANDIDATE-001 起 hy4-preview 也成为
+资格化候选；本检查的 UNQUALIFIED 集合已同步移除 hy4-preview——它由
+fresh_runner_a4_wb_second_candidate_eligibility_check.py 专项覆盖。)
 
 Checks (exit 0 = all pass):
 1. baseline_registry: deepseek-v4-flash WorkBuddy candidate is QUALIFIED
-   (T4 + qualified) → is_usable_candidate True; the other 14 WorkBuddy
+   (T4 + qualified) → is_usable_candidate True; the other 13 WorkBuddy
    candidates stay ineligible.
 2. select_shadow_candidate(LOW, executor, workbuddy) → deepseek-v4-flash
    eligible/selected (data visible to the eligibility gate).
@@ -41,7 +44,7 @@ from ai_agent_framework.shadow_routing import (  # noqa: E402
 
 QUALIFIED_ID = "deepseek-v4-flash"
 UNQUALIFIED_IDS = (
-    "hy4-preview", "hy3", "hy3-x", "glm-5.3", "glm-5.3-flash",
+    "hy3", "hy3-x", "glm-5.3", "glm-5.3-flash",
     "glm-5.2", "glm-5.1", "glm-5v-turbo", "minimax-m3", "minimax-m2.7",
     "kimi-k3-1", "kimi-k2.7", "kimi-k2.6", "deepseek-v4-pro",
 )

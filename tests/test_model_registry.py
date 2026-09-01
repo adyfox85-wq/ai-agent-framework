@@ -467,7 +467,8 @@ def test_baseline_workbuddy_and_codex_model_identity_unknown():
 def test_baseline_no_invented_tiers_or_health():
     """基线不发明 tier / health：只有有独立已接受证据的条目（deepseek-v4-flash
     的 003-FIX-001 执行证据 = T2；qwen3:4b 的 RW-030-001 probe 证据 = T4；
-    WorkBuddy 候选 deepseek-v4-flash 的 QUALIFICATION-001 probe 证据 = T4）被
+    WorkBuddy 候选 deepseek-v4-flash 的 QUALIFICATION-001 probe 证据 = T4；
+    WorkBuddy 候选 hy4-preview 的 SECOND-CANDIDATE-001 probe 证据 = T4）被
     赋值，其余条目 capability_tier=None、qualification 默认 unknown——证据不足的
     候选绝不提升。"""
     for key, entry in baseline_registry().items():
@@ -475,6 +476,7 @@ def test_baseline_no_invented_tiers_or_health():
             canonical_key("deepseek-v4-flash", "deepseek"),
             canonical_key("qwen3:4b", "custom"),
             "deepseek-v4-flash",  # WorkBuddy 候选（QUALIFICATION-001 probe 证据）
+            "hy4-preview",  # WorkBuddy 候选（SECOND-CANDIDATE-001 probe 证据）
         ):
             continue  # 各自有独立已接受证据（见下方专项测试）
         assert entry.capability_tier is None, f"{key}: invented tier {entry.capability_tier}"

@@ -194,6 +194,9 @@ def main() -> int:
         failures.append("deepseek-v4-flash became authoritative cheap")
 
     # ---- 9. invocation / selector / no-import unchanged ----
+    # （自 AAF-v0.5-A4-PREREQ-WORKBUDDY-SECOND-CANDIDATE-001 起 hy4-preview 也
+    # 成为资格化候选——selector 的 eligible 集合随之扩大，但那是 qualification
+    # 数据，不是 economics 消费；本检查只验证 economics 不驱动选择。）
     args, stdin_data, env_out = adapters._workbuddy_invocation("PROMPT", {})
     if len(args) < 1 or args[1:] != ["-p", "--output-format", "text", "-y"]:
         failures.append(f"production invocation args changed: {args!r}")
@@ -201,12 +204,13 @@ def main() -> int:
         failures.append(f"economics auto-added a model/effort flag: {args!r}")
     reg = baseline_registry()
     dec = select_shadow_candidate(rc.RISK_LOW, rc.ROLE_EXECUTOR, "workbuddy", reg)
-    if dec.eligible != ("deepseek-v4-flash",) or dec.selected != "deepseek-v4-flash":
+    if dec.selected != "deepseek-v4-flash":
         failures.append(f"LOW workbuddy selector changed: {dec.eligible}")
+    if not set(("deepseek-v4-flash", "hy4-preview")).issubset(set(dec.eligible)):
+        failures.append(f"LOW workbuddy selector eligible set changed: {dec.eligible}")
     reasons = {rec.candidate: rec.reason for rec in dec.excluded}
-    for mid in ("hy3", "hy4-preview"):
-        if reasons.get(mid) != EXCL_CAPABILITY_INSUFFICIENT:
-            failures.append(f"{mid}: expected CAPABILITY_INSUFFICIENT despite FRESH FREE fact")
+    if reasons.get("hy3") != EXCL_CAPABILITY_INSUFFICIENT:
+        failures.append("hy3: expected CAPABILITY_INSUFFICIENT despite FRESH FREE fact")
     if is_usable_candidate(reg["agent:workbuddy"]):
         failures.append("agent:workbuddy Auto anchor became usable")
     for mod_name in (

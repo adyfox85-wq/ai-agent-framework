@@ -70,11 +70,13 @@ def _excluded_reasons(decision):
     return {rec.candidate: rec.reason for rec in decision.excluded}
 
 
-# 自 AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-001 起，deepseek-v4-flash 是唯一
-# 被资格化的 WorkBuddy 候选（tier=T4 + qualification=qualified，独立 probe 证据），
-# 其余 14 个保持 identity-only（本文件只验证后者的 identity 事实；资格化候选的
-# 专项断言见 tests/test_a4_workbuddy_qualification.py）。
-QUALIFIED_WORKBUDDY_IDS = ("deepseek-v4-flash",)
+# 自 AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-001 起 deepseek-v4-flash、自
+# AAF-v0.5-A4-PREREQ-WORKBUDDY-SECOND-CANDIDATE-001 起 hy4-preview 是已资格化
+# 的 WorkBuddy 候选（tier=T4 + qualification=qualified，独立 probe 证据），
+# 其余 13 个保持 identity-only（本文件只验证后者的 identity 事实；资格化候选的
+# 专项断言见 tests/test_a4_workbuddy_qualification.py 与
+# tests/test_a4_workbuddy_second_candidate.py）。
+QUALIFIED_WORKBUDDY_IDS = ("deepseek-v4-flash", "hy4-preview")
 UNQUALIFIED_WORKBUDDY_IDS = tuple(
     mid for mid in WORKBUDDY_CANDIDATE_IDS if mid not in QUALIFIED_WORKBUDDY_IDS
 )
@@ -158,8 +160,10 @@ def test_selector_sees_workbuddy_candidates_but_only_qualified_eligible(risk_cla
     assert "agent:workbuddy" in considered
     reasons = _excluded_reasons(decision)
     if risk_class == rc.RISK_LOW:
-        # 唯一资格化候选（deepseek-v4-flash，T4 + QUALIFIED）通过 LOW gate
-        assert decision.eligible == ("deepseek-v4-flash",)
+        # 已资格化候选（deepseek-v4-flash = QUALIFICATION-001、hy4-preview =
+        # SECOND-CANDIDATE-001，均 T4 + QUALIFIED）通过 LOW gate；selected 仍为
+        # key 字典序第一的 deepseek-v4-flash（cost/locality 同 rank，选择语义不变）
+        assert decision.eligible == ("deepseek-v4-flash", "hy4-preview")
         assert decision.selected == "deepseek-v4-flash"
         assert decision.no_candidate_reason is None
         for mid in UNQUALIFIED_WORKBUDDY_IDS:

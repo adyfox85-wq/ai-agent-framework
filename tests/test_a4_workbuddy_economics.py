@@ -8,8 +8,9 @@
 3. 已过期 / 尚未生效 → STALE
 4. 时间戳/来源证据不足 → UNKNOWN
 5. STALE/UNKNOWN 的 multiplier 绝不作为权威便宜/免费（fail closed）
-6. capability/qualification gate 先于经济事实（FRESH FREE 的 hy3/hy4-preview
-   仍 ineligible；selector 零变化）
+6. capability/qualification gate 先于经济事实（FRESH FREE 的 hy3 仍
+   ineligible；hy4-preview 自 SECOND-CANDIDATE-001 起由独立 probe 资格化——
+   经济事实只决定 probe priority，不赋予资格；selector 零变化）
 7. production WorkBuddy invocation 不变（CodeBuddy Auto，无 --model/--effort）
 8. 经济模块不被任何路由代码 import（事实层无消费方）
 
@@ -344,18 +345,25 @@ def test_unknown_stale_never_outranks_fresh():
 
 
 def test_fresh_free_candidates_still_ineligible():
-    """hy3 / hy4-preview 有 FRESH 免费促销，但 tier=None + qualification=unknown
-    → is_usable_candidate 仍 False；经济事实绝不绕过 capability gate。"""
+    """hy3 有 FRESH 免费促销，但 tier=None + qualification=unknown
+    → is_usable_candidate 仍 False；经济事实绝不绕过 capability gate。
+    （hy4-preview 自 SECOND-CANDIDATE-001 起已由独立 probe 资格化——经济事实
+    只决定 probe priority，不赋予资格；其专项断言见
+    tests/test_a4_workbuddy_second_candidate.py。）"""
     facts = baseline_economic_facts()
     assert classify_freshness(facts["hy3"], NOW) == ECON_FRESH
     assert classify_freshness(facts["hy4-preview"], NOW) == ECON_FRESH
     assert is_authoritative_cheap(facts["hy3"], NOW) is True
     reg = baseline_registry()
-    for mid in ("hy3", "hy4-preview"):
-        assert is_usable_candidate(reg[mid]) is False
-        assert reg[mid].capability_tier is None
-        assert reg[mid].qualification.status == "unknown"
-        assert reg[mid].cost_class == "UNKNOWN"  # registry 成本维度未改动
+    e = reg["hy3"]
+    assert is_usable_candidate(e) is False
+    assert e.capability_tier is None
+    assert e.qualification.status == "unknown"
+    assert e.cost_class == "UNKNOWN"  # registry 成本维度未改动
+    # hy4-preview 资格化后经济字段不变（multiplier 0.0 / free / factor 0.0）
+    assert facts["hy4-preview"].multiplier == 0.0
+    assert facts["hy4-preview"].promotion_status == PROMO_STATUS_FREE
+    assert is_authoritative_cheap(facts["hy4-preview"], NOW) is True
 
 
 def test_qualified_candidate_capability_qualification_unchanged():
@@ -375,15 +383,17 @@ def test_qualified_candidate_capability_qualification_unchanged():
 
 
 def test_selector_unchanged_economics_not_consumed():
-    """selector 不消费经济事实：LOW workbuddy 仍只选 deepseek-v4-flash；
-    FRESH FREE 的 hy3/hy4-preview 仍 CAPABILITY_INSUFFICIENT。"""
+    """selector 不消费经济事实：LOW workbuddy 下两个资格化候选
+    （deepseek-v4-flash + hy4-preview）eligible；FRESH FREE 的 hy3 仍
+    CAPABILITY_INSUFFICIENT（经济事实不赋予资格）。"""
     reg = baseline_registry()
     decision = select_shadow_candidate(rc.RISK_LOW, rc.ROLE_EXECUTOR, "workbuddy", reg)
-    assert decision.eligible == ("deepseek-v4-flash",)
+    assert decision.eligible == ("deepseek-v4-flash", "hy4-preview")
     assert decision.selected == "deepseek-v4-flash"
     reasons = {rec.candidate: rec.reason for rec in decision.excluded}
     assert reasons["hy3"] == EXCL_CAPABILITY_INSUFFICIENT
-    assert reasons["hy4-preview"] == EXCL_CAPABILITY_INSUFFICIENT
+    # hy4-preview 现在 eligible 是因为独立 probe 证据，不是经济事实
+    assert "hy4-preview" not in reasons
 
 
 def test_economics_module_not_imported_by_routing_code():

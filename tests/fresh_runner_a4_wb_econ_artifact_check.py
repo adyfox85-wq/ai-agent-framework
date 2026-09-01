@@ -110,14 +110,18 @@ def main() -> int:
         failures.append("deepseek-v4-flash must NOT be authoritative cheap (discount, UNKNOWN)")
 
     # ---- 5. routing authority unchanged ----
+    # （自 AAF-v0.5-A4-PREREQ-WORKBUDDY-SECOND-CANDIDATE-001 起 hy4-preview 也
+    # 成为资格化候选——economic 事实层本身仍不进入 selector；本检查只验证
+    # economics 不消费 + 候选选择顺序不受经济事实驱动。）
     reg = baseline_registry()
     dec = select_shadow_candidate(rc.RISK_LOW, rc.ROLE_EXECUTOR, "workbuddy", reg)
-    if dec.eligible != ("deepseek-v4-flash",) or dec.selected != "deepseek-v4-flash":
+    if dec.selected != "deepseek-v4-flash":
         failures.append(f"LOW workbuddy selector changed: eligible={dec.eligible}")
+    if not set(("deepseek-v4-flash", "hy4-preview")).issubset(set(dec.eligible)):
+        failures.append(f"LOW workbuddy selector eligible set changed: {dec.eligible}")
     reasons = {rec.candidate: rec.reason for rec in dec.excluded}
-    for mid in ("hy3", "hy4-preview"):
-        if reasons.get(mid) != EXCL_CAPABILITY_INSUFFICIENT:
-            failures.append(f"{mid}: expected CAPABILITY_INSUFFICIENT despite FRESH FREE fact")
+    if reasons.get("hy3") != EXCL_CAPABILITY_INSUFFICIENT:
+        failures.append("hy3: expected CAPABILITY_INSUFFICIENT despite FRESH FREE fact")
     if is_usable_candidate(reg["agent:workbuddy"]):
         failures.append("agent:workbuddy Auto anchor became usable")
     args, stdin_data, env_out = adapters._workbuddy_invocation("PROMPT", {})

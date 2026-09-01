@@ -343,6 +343,65 @@ def cheapness_rank(fact: "EconomicFact", now: datetime) -> int:
     return RANK_UNKNOWN_OR_STALE
 
 
+# TASK: AAF-v0.5-A4-PREREQ-WORKBUDDY-SECOND-CANDIDATE-001 —— candidate probe
+# priority 的 fail-closed 选择语义（Requirement 2/3/4）。本函数只回答「14 个未
+# 资格化候选中**先验证谁**」，是 probe 顺序决策，**不是 routing authority**：
+# 路由代码（adapters / shadow_routing / active_routing / runner / selector）仍
+# 零 import 本模块；经济事实仍永远低于 capability/qualification gate。任何
+# STALE / UNKNOWN / 字段缺失或矛盾的候选绝不因「猜它便宜」而被优先；没有任何
+# 候选拥有足够可信的 FRESH 经济事实时返回 None（= NO_TRUSTWORTHY_SECOND_CANDIDATE），
+# 调用方必须如实报告并停止，不得发明经济值、不得随意挑模型冒充 economic choice。
+NO_TRUSTWORTHY_SECOND_CANDIDATE = None  # 语义哨兵：无可信第二候选（Requirement 4）
+
+
+def select_probe_candidate(
+    facts: dict[str, "EconomicFact"],
+    now: datetime,
+    exclude_ids: tuple[str, ...] = (),
+) -> str | None:
+    """fail-closed 候选 probe 优先级选择（纯函数；Requirement 3）。
+
+    优先顺序：
+    1. RANK_AUTHORITATIVE_CHEAP（FRESH + 显式 free + multiplier 0.0 +
+       promotion_factor 0.0）：全部按 valid_until 升序（免费窗口**最早关闭**的
+       最优先——在它仍 FRESH 时验证最有时效价值），valid_until 相同再按 model_id
+       字典序（确定性全序 tie-break）；
+    2. 否则 RANK_FRESH_DISCOUNT（FRESH + discount + economic_fields_consistent）：
+       按 multiplier 升序（最低已知经济 rank/multiplier 优先），再 valid_until、
+       model_id（确定性全序）；
+    3. STALE / UNKNOWN / 无促销 / 全价 / 字段缺失或矛盾 → **永不优先**
+       （rank 2 候选直接排除，绝不出现在任何优先级序列中）。
+
+    返回：选中的 model_id；没有任何可信 FRESH 候选时返回
+    ``NO_TRUSTWORTHY_SECOND_CANDIDATE``（None）——调用方必须如实报告
+    NO_TRUSTWORTHY_SECOND_CANDIDATE 并停止（Requirement 4）。
+
+    ``now`` 必须带时区（与 classify_freshness 同一参考时间契约）。
+    ``exclude_ids``：调用方已资格化/不可考虑的候选（如已 QUALIFIED 的
+    deepseek-v4-flash），不参与本轮选择。
+    """
+    if now.tzinfo is None:
+        raise ValueError("now must be tz-aware (freshness reference time contract)")
+    candidates: list[tuple[int, float, str, str]] = []  # (rank, sort_key, key, model_id)
+    for mid, fact in facts.items():
+        if mid in exclude_ids:
+            continue
+        rank = cheapness_rank(fact, now)
+        if rank == RANK_UNKNOWN_OR_STALE:
+            continue  # STALE/UNKNOWN/不完整 永不优先（fail closed）
+        vu = _parse_ts(fact.valid_until)
+        if rank == RANK_AUTHORITATIVE_CHEAP:
+            # 免费窗口最早关闭者最优先（在仍 FRESH 时验证）
+            sort_key = vu.timestamp() if vu is not None else float("inf")
+        else:  # RANK_FRESH_DISCOUNT：最低已知 multiplier 优先
+            sort_key = fact.multiplier if fact.multiplier is not None else float("inf")
+        candidates.append((rank, sort_key, mid, mid))
+    if not candidates:
+        return NO_TRUSTWORTHY_SECOND_CANDIDATE
+    candidates.sort(key=lambda t: (t[0], t[1], t[2]))
+    return candidates[0][3]
+
+
 # ---------------------------------------------------------------------------
 # 数据结构
 # ---------------------------------------------------------------------------

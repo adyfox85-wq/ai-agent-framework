@@ -4,10 +4,13 @@
 目标：仅当 WorkBuddy validator stage 的 TASK 显式声明 Risk: LOW，且现有
 selector 选出**至少两个** eligible（capability + qualification）WorkBuddy
 candidate，且经济事实层对 eligible 候选提供 **FRESH、完整、一致、可审计**
-的经济事实时，把该 decision 升级为**真实** per-run ``--model`` 选择
-（routing_applied=true → 生产 WorkBuddy invocation 精确追加
-``--model <selected_model_id>``，其余参数零变化）。任何权威条件不满足 →
-routing_applied=false，保持 CodeBuddy Auto（[-p --output-format text -y]）。
+的经济事实，且经济过滤后仍**至少两个可信候选**（FIX-001：
+economically_trustworthy >= 2 —— 两候选 gate 作用于 capability +
+qualification + trustworthy economics 全部过滤之后）时，把该 decision 升级为
+**真实** per-run ``--model`` 选择（routing_applied=true → 生产 WorkBuddy
+invocation 精确追加 ``--model <selected_model_id>``，其余参数零变化）。任何
+权威条件不满足 → routing_applied=false，保持 CodeBuddy Auto
+（[-p --output-format text -y]）。
 
 复用纪律（Requirement 1，不创建第二套独立 eligibility 系统）：
 - 候选筛选 = 现有 ``shadow_routing.select_shadow_candidate``（A2 引擎原样调用，
@@ -28,6 +31,12 @@ Activation gates（Requirement 2/4/5/11，全部满足才 routing_applied=true�
   eligible 候选中 cheapness_rank ∈ {RANK_AUTHORITATIVE_CHEAP(0),
   RANK_FRESH_DISCOUNT(1)} 的候选进入经济排序；STALE / UNKNOWN /
   字段缺失或矛盾 / 无已知便宜 rank（rank 2）→ 永不获胜（fail closed）。
+- **最小候选数 gate 作用于全部过滤之后**（FIX-001，Codex Requirement 5
+  blocker 收口）：capability + qualification + trustworthy economics 全部门槛
+  完成后仍须 **economically_trustworthy >= 2** 才允许 economic winner
+  selection；经济门槛后只剩 1 个可信候选（或 0 个）→ 不路由
+  （1 个 → INSUFFICIENT_ECONOMIC_CANDIDATES；0 个 →
+  NO_TRUSTWORTHY_ECONOMIC_WINNER），保持 CodeBuddy Auto。
 - 存在确定性可信经济 winner（全部 rank 2 → NO_TRUSTWORTHY_ECONOMIC_WINNER
   → Auto；Requirement 11）。
 
@@ -89,8 +98,15 @@ DECISION_KIND = "workbuddy_active_routing"
 # 同一 override 机制；本 slice 只携带 model，绝不携带 provider/effort）。
 ENV_WORKBUDDY_MODEL = "AAF_WORKBUDDY_MODEL"
 
-# Requirement 5：active routing 至少需要两个 eligible candidates。
+# Requirement 5：active routing 至少需要两个 eligible candidates
+# （capability + qualification gate；FIX-001 保持不变）。
 MIN_ELIGIBLE_CANDIDATES = 2
+
+# Requirement 5（FIX-001，Codex blocker 收口）：最小候选数 gate 必须作用于
+# **全部**过滤之后（capability sufficiency + qualification/usability +
+# trustworthy economics）。只有 economically_trustworthy >= 2 时才有
+# 两个可比较候选，才允许 economic winner selection；否则保持 CodeBuddy Auto。
+MIN_ECONOMIC_CANDIDATES = 2
 
 AUTHORITY_STATEMENT = (
     "workbuddy_active_routing.json is the AUTHORITATIVE active-routing decision "
@@ -104,7 +120,12 @@ AUTHORITY_STATEMENT = (
     "Registry/Risk contracts, and the A4 economic fact layer "
     "(workbuddy_economics.cheapness_rank: FRESH + complete + consistent facts "
     "only; STALE/UNKNOWN/incomplete/contradictory fail closed) — no second "
-    "independent eligibility system. fallback_used is always false: no "
+    "independent eligibility system. Active routing additionally requires at "
+    "least two candidates to survive the COMPLETE filter chain (capability + "
+    "qualification + trustworthy economics, FIX-001: economically_trustworthy "
+    ">= 2); fewer than two comparable candidates after any gate -> CodeBuddy "
+    "Auto (INSUFFICIENT_ELIGIBLE_CANDIDATES / INSUFFICIENT_ECONOMIC_CANDIDATES "
+    "/ NO_TRUSTWORTHY_ECONOMIC_WINNER). fallback_used is always false: no "
     "fallback mechanism exists. Contrast with shadow_observation.json "
     "(hypothetical, authoritative=false) and active_routing.json (A3 Hermes "
     "stage)."
@@ -134,6 +155,11 @@ REASON_ROLE_NOT_VALIDATOR = "ROLE_NOT_VALIDATOR"
 REASON_RISK_UNAVAILABLE = "RISK_UNAVAILABLE"
 REASON_RISK_NOT_LOW = "RISK_NOT_LOW"
 REASON_INSUFFICIENT_ELIGIBLE = "INSUFFICIENT_ELIGIBLE_CANDIDATES"
+# FIX-001（Codex Requirement 5 blocker）：capability+qualification gate 已通过、
+# 经济信任度 gate 也已通过，但经济过滤后只剩 1 个可信候选 —— 没有两个
+# 可比较候选，禁止 active route。显式区别于 INSUFFICIENT_ELIGIBLE_CANDIDATES
+# （后者 = capability/qualification 后不足两个，绝不混用，Requirement 4）。
+REASON_INSUFFICIENT_ECONOMIC = "INSUFFICIENT_ECONOMIC_CANDIDATES"
 REASON_NO_TRUSTWORTHY_WINNER = "NO_TRUSTWORTHY_ECONOMIC_WINNER"
 
 # 经济排除原因（Requirement 6：STALE / UNKNOWN / incomplete / contradictory
@@ -378,10 +404,25 @@ def decide_workbuddy_route(
                 "contradictory / no known cheap rank all fail closed) — no "
                 "deterministic trustworthy economic winner, CodeBuddy Auto preserved"
             )
+        elif len(economically_trustworthy) < MIN_ECONOMIC_CANDIDATES:
+            # FIX-001（Codex Requirement 5 blocker）：capability+qualification
+            # gate 已通过、经济信任度 gate 也已通过，但经济过滤后只剩 1 个可信
+            # 候选 —— 没有两个可比较候选，绝不 active route（保持 CodeBuddy
+            # Auto）。显式区别于 INSUFFICIENT_ELIGIBLE_CANDIDATES（那是
+            # capability/qualification 后不足两个，Requirement 4 不得混用）。
+            reason = (
+                f"{REASON_INSUFFICIENT_ECONOMIC}: {len(economically_trustworthy)} "
+                f"eligible WorkBuddy candidate(s) with trustworthy economics "
+                f"after capability + qualification + trustworthy-economics gates "
+                f"({len(eligible)} passed capability+qualification) — active "
+                f"economic routing requires at least {MIN_ECONOMIC_CANDIDATES} "
+                "comparable candidates; fewer than two -> CodeBuddy Auto preserved"
+            )
         else:
             # Requirement 7：rank 0（权威免费）outranks rank 1（已知折扣）；
             # rank 1 内更低 multiplier 获胜；经济完全相等 → model_id 字典序
-            # 确定性 tie-break（输入顺序无关）。
+            # 确定性 tie-break（输入顺序无关）。仅当 economically_trustworthy
+            # >= 2（两个可比较候选）才允许 winner selection（FIX-001）。
             ranked.sort(key=lambda t: (t[0], t[1], t[2]))
             winner_rank, winner_multiplier, winner = ranked[0]
             routing_applied = True
@@ -390,8 +431,10 @@ def decide_workbuddy_route(
             reason = (
                 f"{REASON_APPLIED}: explicit Risk=LOW + "
                 f"{len(eligible)} eligible WorkBuddy candidates (capability + "
-                f"qualification gates) + trustworthy economic facts -> economic "
-                f"winner {winner!r} (cheapness_rank={winner_rank}, "
+                f"qualification gates) + {len(economically_trustworthy)} "
+                f"trustworthy economic candidates (>= {MIN_ECONOMIC_CANDIDATES} "
+                f"comparable) -> economic winner {winner!r} "
+                f"(cheapness_rank={winner_rank}, "
                 f"multiplier={winner_multiplier}) -> active route with per-run "
                 f"--model {winner}"
             )

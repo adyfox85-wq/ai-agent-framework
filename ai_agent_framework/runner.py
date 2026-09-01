@@ -531,22 +531,28 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                         routing_env_saved = active_routing_mod.apply_routing_env(active_record)
                 elif agent == 'workbuddy':
                     # v0.5 A4 active economic routing（TASK: AAF-v0.5-A4-WORKBUDDY-
-                    # ECONOMIC-ROUTING-001；A4 = STARTED first slice）。复用现有
-                    # selector（capability+qualification）+ A4 economic fact layer，
-                    # 不创建第二套 eligibility 系统：仅当显式 Risk: LOW 且至少两个
-                    # eligible WorkBuddy candidates 且经济事实 FRESH/完整/一致/可审计
-                    # 时，经济 winner 升级为真实 per-run --model（routing_applied=true
-                    # → 设置 AAF_WORKBUDDY_MODEL 覆盖，adapters._workbuddy_invocation
-                    # 精确追加 --model <winner>；无 --effort / 无 provider override /
-                    # 无 fallback / 无 retry escalation）。其余情况（Risk 缺失 /
-                    # MEDIUM/HIGH/CRITICAL / 不足两个 eligible / 经济事实 stale-unknown-
-                    # 不完整 / 无确定性可信经济 winner）→ routing_applied=false，
-                    # 保持 CodeBuddy Auto。审计 artifact = workbuddy_active_routing.json
-                    # （authoritative=true，与 shadow_observation.json hypothetical /
-                    # active_routing.json A3 Hermes 明确区分）；artifact 写失败 →
-                    # fail closed（无审计证据不得路由）。无 silent fallback：routing
-                    # 后 invocation 失败按现有异常语义如实 FRAMEWORK_ERROR（链中断 →
-                    # WAITING），绝不自动退回 Auto 或换模型。
+                    # ECONOMIC-ROUTING-001；FIX-001：经济两候选 gate 收口，A4 =
+                    # STARTED）。复用现有 selector（capability+qualification）+
+                    # A4 economic fact layer，不创建第二套 eligibility 系统：仅当
+                    # 显式 Risk: LOW 且至少两个 eligible WorkBuddy candidates 且
+                    # 经济事实 FRESH/完整/一致/可审计 **且经济过滤后仍至少两个
+                    # 可信候选**（FIX-001：economically_trustworthy >= 2 —— 两候选
+                    # gate 作用于 capability+qualification+trustworthy-economics
+                    # 全部过滤之后，只剩 1 个 → INSUFFICIENT_ECONOMIC_CANDIDATES
+                    # → Auto）时，经济 winner 升级为真实 per-run --model
+                    # （routing_applied=true → 设置 AAF_WORKBUDDY_MODEL 覆盖，
+                    # adapters._workbuddy_invocation 精确追加 --model <winner>；
+                    # 无 --effort / 无 provider override / 无 fallback / 无 retry
+                    # escalation）。其余情况（Risk 缺失 / MEDIUM/HIGH/CRITICAL /
+                    # 不足两个 eligible / 经济事实 stale-unknown-不完整 / 经济后
+                    # 不足两个可信候选 / 无确定性可信经济 winner）→
+                    # routing_applied=false，保持 CodeBuddy Auto。审计 artifact =
+                    # workbuddy_active_routing.json（authoritative=true，与
+                    # shadow_observation.json hypothetical / active_routing.json A3
+                    # Hermes 明确区分）；artifact 写失败 → fail closed（无审计证据
+                    # 不得路由）。无 silent fallback：routing 后 invocation 失败按
+                    # 现有异常语义如实 FRAMEWORK_ERROR（链中断 → WAITING），绝不
+                    # 自动退回 Auto 或换模型。
                     task_risk = parse_task_fields(task).get('Risk') or None
                     wb_record = workbuddy_routing_mod.decide_workbuddy_route(
                         task_risk, ROLE_VALIDATOR, agent,

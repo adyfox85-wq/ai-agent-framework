@@ -4,14 +4,15 @@
 Fresh Runner 要求必须 fresh-runner N+1。每个 runner 场景用**全新 python 进程**
 运行真实 runner（tests/fresh_runner_wrapper.py）；fake hermes/codebuddy/codex
 .bat 是真实 child process；fake codebuddy 把完整 argv 落盘 marker（精确证明
-实际 invocation 形状——A4 起 LOW 任务经 active economic routing 追加
---model hy4-preview；registry qualification 本身不会自动加 --model）。
+实际 invocation 形状——A4 FIX-001 起，真实 economic facts 下经济过滤后只有
+hy4-preview 一个可信候选 → LOW 任务保持 CodeBuddy Auto；registry qualification
+本身不会自动加 --model）。
 
   N1（Risk: LOW）  -> 全生命周期 SUCCESS；fake codebuddy marker ARGS 精确 =
-                      "-p --output-format text -y --model hy4-preview"（A4 active
-                      economic routing 生效：恰好一个 --model、无 --effort）；
-                      lifecycle/REPORT 正常；Hermes stage 仍走既有 A3 LOW
-                      routing（qwen3:4b@custom）不变。
+                      "-p --output-format text -y"（CodeBuddy Auto，无 --model
+                      ——FIX-001：真实 facts 只有 1 个可信候选，两候选 gate 后
+                      不路由）；lifecycle/REPORT 正常；Hermes stage 仍走既有
+                      A3 LOW routing（qwen3:4b@custom）不变。
   N2（Risk: HIGH, control） -> 全生命周期 SUCCESS；不路由（configured
                       deepseek-v4-flash@deepseek，paid 授权消费）；fake
                       codebuddy marker ARGS 仍精确 = Auto 形状（qualification
@@ -55,11 +56,10 @@ N1_TASK_ID = "AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-001-N1-LOW"
 N2_TASK_ID = "AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-001-N2-HIGH"
 
 # production WorkBuddy invocation 的精确 Auto 形状（无 --model / --effort）。
-# A4 起（AAF-v0.5-A4-WORKBUDDY-ECONOMIC-ROUTING-001）：显式 LOW 任务经 active
-# economic routing 追加 --model <经济 winner>（本驱动 N1 更新为 routed 形状；
-# qualification 数据本身仍不会自动加 --model——是 A4 routing 在加）。
+# FIX-001（AAF-v0.5-A4-WORKBUDDY-ECONOMIC-ROUTING-001-FIX-001）：真实 economic
+# facts 下经济过滤后只有 1 个可信候选 → 两候选 gate 不满足 → LOW 任务保持
+# CodeBuddy Auto（qualification 数据本身从不自动加 --model）。
 EXPECTED_AUTO_ARGS = "-p --output-format text -y"
-EXPECTED_ROUTED_ARGS = "-p --output-format text -y --model hy4-preview"
 
 _HERMES_BAT = r"""@echo off
 rem AAF-v0.5-A4-PREREQ-WORKBUDDY-QUALIFICATION-001 fresh-runner N+1 fake Hermes CLI.
@@ -264,12 +264,13 @@ def main() -> int:
     }
     try:
         # ---------- N1: Risk: LOW 全生命周期 ----------
-        # A4 起（AAF-v0.5-A4-WORKBUDDY-ECONOMIC-ROUTING-001）显式 LOW 任务经
-        # active economic routing 真实追加 --model hy4-preview（经济 winner）。
+        # FIX-001 起：真实 economic facts 下经济过滤后只剩 hy4-preview 一个
+        # 可信候选 → 两候选 gate（capability+qualification+trustworthy
+        # economics 全部过滤后 >= 2）不满足 → WorkBuddy 保持 CodeBuddy Auto。
         n1_dir = EVIDENCE_ROOT / "N1-low"
         n1 = _run_scenario(
             n1_dir,
-            _task(N1_TASK_ID, "LOW", "验证 qualification 后 framework 正常运行（A4 active economic routing 生效：WorkBuddy stage 真实 --model hy4-preview）。"),
+            _task(N1_TASK_ID, "LOW", "验证 qualification 后 framework 正常运行（FIX-001：真实 facts 只有 1 个可信候选 → WorkBuddy stage 保持 CodeBuddy Auto，无 --model）。"),
             extra_env={},
         )
         out1 = n1["out"]
@@ -285,7 +286,7 @@ def main() -> int:
             "report_exists": (out1 / "REPORT.md").exists(),
             "manifest_exists": (out1 / "context_manifest.json").exists(),
             "codebuddy_argv": args1,
-            "invocation_is_routed": args1 == EXPECTED_ROUTED_ARGS,
+            "invocation_stays_auto": args1 == EXPECTED_AUTO_ARGS,
         }
         scenario_record["scenarios"]["N1-low"] = record1
         ok1 = (
@@ -295,11 +296,11 @@ def main() -> int:
             and cx1.get("verdict") == "APPROVE"
             and (out1 / "REPORT.md").exists()
             and (out1 / "context_manifest.json").exists()
-            and args1 == EXPECTED_ROUTED_ARGS
-            and (args1 or "").count("--model") == 1
+            and args1 == EXPECTED_AUTO_ARGS
+            and "--model" not in (args1 or "")
             and "--effort" not in (args1 or "")
         )
-        print(f"[N1] LOW lifecycle + active economic route -> {'PASS' if ok1 else 'FAIL'} (argv={args1!r})")
+        print(f"[N1] LOW lifecycle + CodeBuddy Auto -> {'PASS' if ok1 else 'FAIL'} (argv={args1!r})")
         if not ok1:
             failures += 1
 

@@ -1,9 +1,13 @@
 """AAF v0.5 A4 — WorkBuddy active economic routing 聚焦测试
 （TASK: AAF-v0.5-A4-WORKBUDDY-ECONOMIC-ROUTING-001，A4 first slice）。
 
-覆盖 Requirement 15 测试矩阵 + 审计/隔离守卫：
-- explicit LOW + 两个 qualified + fresh trustworthy economics → routing applied，
-  选中经济 winner（hy4-preview），真实 argv 含恰好一个 --model <winner>
+覆盖 Requirement 15 测试矩阵 + 审计/隔离守卫（FIX-001 起两候选 gate 作用于
+全部过滤之后）：
+- explicit LOW + 两个 qualified + **两个** fresh trustworthy economics → routing
+  applied，选中经济 winner（hy4-preview），真实 argv 含恰好一个 --model <winner>
+- FIX-001：两个 eligible 但经济过滤后只剩 1 个 trustworthy candidate（真实
+  baseline facts）→ routing_applied=false（INSUFFICIENT_ECONOMIC_CANDIDATES）
+  → Auto（不伪造第二可信候选）
 - selected = 经济 winner（不是 selector 默认的 deepseek-v4-flash）
 - missing Risk / MEDIUM / HIGH / CRITICAL → Auto（CodeBuddy Auto 保持）
 - 只有一个 eligible candidate → Auto
@@ -107,6 +111,21 @@ def _unknown_fact(model_id: str) -> we.EconomicFact:
     return _fact(model_id=model_id, multiplier=0.17, multiplier_raw="x0.17")
 
 
+def _two_trustworthy_facts() -> dict[str, we.EconomicFact]:
+    """FIX-001 受控 fixture：两个 eligible 候选**都有** trustworthy economics。
+
+    - deepseek-v4-flash → FRESH discount（rank 1，multiplier 0.17，
+      economic_fields_consistent=True）；
+    - hy4-preview → FRESH free（rank 0，权威免费）。
+    经济 winner = hy4-preview（rank 0 outranks rank 1）。只用于受控场景，
+    与真实 baseline facts（deepseek-v4-flash freshness UNKNOWN）明确区分。
+    """
+    return {
+        "deepseek-v4-flash": _fresh_discount_fact("deepseek-v4-flash", multiplier=0.17),
+        "hy4-preview": _fresh_free_fact("hy4-preview", valid_until="2026-09-11T00:00:00+08:00"),
+    }
+
+
 def _structured_ok(agent: str) -> str:
     if agent == "hermes":
         block = '{"status": "SUCCESS", "commit": null, "changed_files": [], "warnings": []}'
@@ -118,22 +137,24 @@ def _structured_ok(agent: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 1. explicit LOW + 两个 qualified + fresh trustworthy economics → routing applied
+# 1. FIX-001：两候选 gate 作用于全部过滤之后（capability + qualification +
+#    trustworthy economics）。真实 baseline facts 只有 1 个可信候选 → Auto。
 # ---------------------------------------------------------------------------
 
 
-def test_low_two_qualified_fresh_economics_routes_to_hy4_preview():
+def test_low_two_eligible_one_trustworthy_economics_auto():
     """baseline registry + baseline facts：LOW validator/workbuddy → 两个 eligible
-    （deepseek-v4-flash + hy4-preview）；经济 winner = hy4-preview
-    （RANK_AUTHORITATIVE_CHEAP，FRESH + 显式免费 + multiplier 0.0 + factor 0.0）；
-    deepseek-v4-flash（freshness UNKNOWN）被经济排除但仍是 eligible 候选。"""
+    （deepseek-v4-flash + hy4-preview）；但经济过滤后只剩 hy4-preview 一个
+    trustworthy candidate（deepseek-v4-flash freshness UNKNOWN 被经济排除）→
+    routing_applied=false（INSUFFICIENT_ECONOMIC_CANDIDATES），CodeBuddy Auto
+    保持（Requirement 5 FIX-001：当前真实 facts 不被人为伪造成可路由）。"""
     rec = wr.decide_workbuddy_route(
         RISK_LOW, ROLE_VALIDATOR, "workbuddy", mr.baseline_registry(),
         now=NOW, risk_source=so.TASK_RISK_SOURCE,
     )
-    assert rec["routing_applied"] is True
-    assert rec["selected"] == ECONOMIC_WINNER
-    assert rec["routed_model"] == ECONOMIC_WINNER
+    assert rec["routing_applied"] is False
+    assert rec["selected"] is None
+    assert rec["routed_model"] is None
     assert rec["eligible"] == list(QUALIFIED_WORKBUDDY_IDS)
     assert rec["economically_trustworthy"] == [ECONOMIC_WINNER]
     assert rec["economically_excluded"] == [
@@ -142,7 +163,8 @@ def test_low_two_qualified_fresh_economics_routes_to_hy4_preview():
     assert rec["fallback_used"] is False
     assert rec["risk_class"] == RISK_LOW
     assert rec["risk_source"] == so.TASK_RISK_SOURCE
-    assert rec["reason"].startswith(wr.REASON_APPLIED)
+    assert rec["reason"].startswith(wr.REASON_INSUFFICIENT_ECONOMIC)
+    assert "CodeBuddy Auto" in rec["invocation"]
     # 经济事实已记录（auditable：facts used）
     assert "hy4-preview" in rec["economic_facts"]
     assert rec["economic_facts"]["hy4-preview"]["cheapness_rank"] == we.RANK_AUTHORITATIVE_CHEAP
@@ -151,15 +173,20 @@ def test_low_two_qualified_fresh_economics_routes_to_hy4_preview():
 
 
 def test_selected_is_economic_winner_not_selector_default():
-    """selector 默认选中 deepseek-v4-flash（key tie-break），但 active routing 的
-    selected 必须是经济 winner（hy4-preview）——经济选择只作用于 eligible 候选，
-    是确定性且非 selector 默认的（Requirement 7/8）。"""
+    """selector 默认选中 deepseek-v4-flash（key tie-break）；受控两可信候选
+    （FIX-001 fixture）下 active routing 的 selected 必须是经济 winner
+    （hy4-preview，rank 0 权威免费 outranks rank 1 折扣）——经济选择只作用于
+    eligible 候选，是确定性且非 selector 默认的（Requirement 7/8）。"""
     rec = wr.decide_workbuddy_route(
         RISK_LOW, ROLE_VALIDATOR, "workbuddy", mr.baseline_registry(),
+        facts=_two_trustworthy_facts(),
         now=NOW, risk_source=so.TASK_RISK_SOURCE,
     )
+    assert rec["routing_applied"] is True
     assert rec["selector_selected"] == SELECTOR_DEFAULT
     assert rec["selected"] == ECONOMIC_WINNER
+    assert rec["routed_model"] == ECONOMIC_WINNER
+    assert rec["economically_trustworthy"] == [ECONOMIC_WINNER, "deepseek-v4-flash"]
     assert rec["selected"] != rec["selector_selected"]
 
 
@@ -382,11 +409,13 @@ def test_unknown_economics_auto():
     assert {e["candidate"] for e in rec["economically_excluded"]} == set(QUALIFIED_WORKBUDDY_IDS)
 
 
-def test_contradictory_economics_auto():
+def test_contradictory_economics_never_enters_ordering():
     """免费促销带非零 factor（内部矛盾，economic_fields_consistent=False）→
-    rank 2 → fail closed → Auto（FIX-001 gate 原样消费）。"""
+    rank 2 → fail closed，绝不进入经济排序（FIX-001 gate 原样消费）。受控场景：
+    另有两个可信候选（free-ok rank 0 + disc-ok rank 1）→ 满足两候选 gate，
+    winner 必须是完整一致的 free-ok，矛盾候选被排除且永不获胜。"""
     reg = _registry(
-        _entry(model="free-ok"), _entry(model="free-broken"),
+        _entry(model="free-ok"), _entry(model="free-broken"), _entry(model="disc-ok"),
     )
     facts = {
         "free-ok": _fresh_free_fact("free-ok"),
@@ -396,6 +425,7 @@ def test_contradictory_economics_auto():
             promotion_status="free", promotion_factor=0.5,
             valid_from="2026-01-01T00:00:00+08:00", valid_until="2026-12-31T00:00:00+08:00",
         ),
+        "disc-ok": _fresh_discount_fact("disc-ok", multiplier=0.5),
     }
     rec = wr.decide_workbuddy_route(
         RISK_LOW, ROLE_VALIDATOR, "workbuddy", reg, facts=facts,
@@ -403,6 +433,7 @@ def test_contradictory_economics_auto():
     )
     assert rec["routing_applied"] is True
     assert rec["selected"] == "free-ok"  # 只有完整一致的事实进入经济排序
+    assert rec["economically_trustworthy"] == ["free-ok", "disc-ok"]
     excluded = {e["candidate"]: e["reason"] for e in rec["economically_excluded"]}
     assert excluded["free-broken"] == wr.ECON_INCONSISTENT
 
@@ -541,8 +572,10 @@ def test_economic_cost_cannot_bypass_capability_qualification():
 def test_no_effort_anywhere(monkeypatch):
     rec = wr.decide_workbuddy_route(
         RISK_LOW, ROLE_VALIDATOR, "workbuddy", mr.baseline_registry(),
+        facts=_two_trustworthy_facts(),
         now=NOW, risk_source=so.TASK_RISK_SOURCE,
     )
+    assert rec["routing_applied"] is True
     assert "no --effort" in rec["invocation"]
     fake_exe = "C:/fake-bin/codebuddy.exe"
     monkeypatch.setattr(adapters, "_require", lambda cmd: fake_exe)
@@ -554,8 +587,10 @@ def test_no_effort_anywhere(monkeypatch):
 def test_no_fallback_semantics():
     rec = wr.decide_workbuddy_route(
         RISK_LOW, ROLE_VALIDATOR, "workbuddy", mr.baseline_registry(),
+        facts=_two_trustworthy_facts(),
         now=NOW, risk_source=so.TASK_RISK_SOURCE,
     )
+    assert rec["routing_applied"] is True
     assert rec["fallback_used"] is False
     # validate fail closed：任何 fallback_used=True 都是违规
     bad = dict(rec)
@@ -582,6 +617,7 @@ def test_no_fallback_semantics():
 def test_artifact_authority_semantics(tmp_path):
     rec = wr.decide_workbuddy_route(
         RISK_LOW, ROLE_VALIDATOR, "workbuddy", mr.baseline_registry(),
+        facts=_two_trustworthy_facts(),
         now=NOW, risk_source=so.TASK_RISK_SOURCE,
     )
     assert rec["authoritative"] is True
@@ -646,8 +682,10 @@ def test_env_apply_restore(monkeypatch):
     monkeypatch.delenv(wr.ENV_WORKBUDDY_MODEL, raising=False)
     rec = wr.decide_workbuddy_route(
         RISK_LOW, ROLE_VALIDATOR, "workbuddy", mr.baseline_registry(),
+        facts=_two_trustworthy_facts(),
         now=NOW, risk_source=so.TASK_RISK_SOURCE,
     )
+    assert rec["routing_applied"] is True
     saved = wr.apply_workbuddy_model_env(rec)
     assert os.environ.get(wr.ENV_WORKBUDDY_MODEL) == ECONOMIC_WINNER
     assert wr.ENV_WORKBUDDY_MODEL in saved
@@ -723,7 +761,7 @@ AAF_TASK_END
     return body.replace("# Objective\n", f"Risk: {risk}\n\n# Objective\n", 1)
 
 
-def _run_runner(tmp_path, monkeypatch, task_text, fake_run_agent=None):
+def _run_runner(tmp_path, monkeypatch, task_text, fake_run_agent=None, facts=None):
     task_file = tmp_path / "TASK.md"
     task_file.write_text(task_text, encoding="utf-8")
     ws = tmp_path / "ws"
@@ -738,6 +776,10 @@ def _run_runner(tmp_path, monkeypatch, task_text, fake_run_agent=None):
 
     def fixed_decide(risk_class, role, stage_agent, registry, **kw):
         kw.pop("now", None)  # runner 传真实 wall clock；测试固定参考时间
+        if facts is not None:
+            # FIX-001 受控 fixture 注入（仅测试；生产 runner 始终 facts=None =
+            # baseline_economic_facts()，本 wrapper 只在 LOW 场景注入）
+            kw["facts"] = facts
         return real_decide(risk_class, role, stage_agent, registry, now=NOW, **kw)
 
     monkeypatch.setattr(runner_mod.workbuddy_routing_mod, "decide_workbuddy_route", fixed_decide)
@@ -746,9 +788,10 @@ def _run_runner(tmp_path, monkeypatch, task_text, fake_run_agent=None):
 
 
 def test_runner_low_writes_workbuddy_routing_artifact_and_env(tmp_path, monkeypatch):
-    """LOW 全链：workbuddy_active_routing.json routing_applied=true（hy4-preview）；
-    AAF_WORKBUDDY_MODEL 在 workbuddy invocation 时可见；执行后已还原；
-    stage result 携带 workbuddy_active_routing_ref；全链 SUCCESS。"""
+    """LOW 全链（受控两可信候选 fixture）：workbuddy_active_routing.json
+    routing_applied=true（hy4-preview）；AAF_WORKBUDDY_MODEL 在 workbuddy
+    invocation 时可见；执行后已还原；stage result 携带
+    workbuddy_active_routing_ref；全链 SUCCESS。"""
     seen = {}
 
     def fake_run_agent(agent, prompt, workspace):
@@ -756,7 +799,10 @@ def test_runner_low_writes_workbuddy_routing_artifact_and_env(tmp_path, monkeypa
             seen["wb_model"] = os.environ.get(wr.ENV_WORKBUDDY_MODEL)
         return _structured_ok(agent)
 
-    out = _run_runner(tmp_path, monkeypatch, _task_text(RISK_LOW), fake_run_agent)
+    out = _run_runner(
+        tmp_path, monkeypatch, _task_text(RISK_LOW),
+        fake_run_agent, facts=_two_trustworthy_facts(),
+    )
     # invocation 时 env 覆盖可见
     assert seen["wb_model"] == ECONOMIC_WINNER
     # 执行完成后 env 已还原（不泄漏）

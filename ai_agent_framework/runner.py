@@ -620,6 +620,7 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 # 失败 → 无 fallback 上下文（A0 authority 持有），不评估。
                 fallback_runtime_ref = None
                 fallback_overlay_saved = None
+                fb_paid_gate_ref = None
                 if agent == 'hermes' and fb_exc is not None:
                     try:
                         fb_risk = parse_task_fields(task).get('Risk') or None
@@ -660,6 +661,7 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                                     )
                                 fallback_runtime_ref = fb_outcome.get('artifact_ref')
                                 fallback_overlay_saved = fb_outcome.get('overlay_saved') or None
+                                fb_paid_gate_ref = fb_outcome.get('paid_gate_artifact_ref') or None
                     except Exception as a5_exc:
                         # A5 层内部失败不得掩盖原始 stage 失败（也不得导致第二模型）
                         print(
@@ -784,6 +786,13 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     # （详细记录在 fallback_runtime.json——仅当 Hermes stage 原始
                     # invocation 失败并触发 A5 评估时存在）。
                     stage['fallback_runtime_ref'] = dict(fallback_runtime_ref)
+                if fb_paid_gate_ref:
+                    # v0.5 A5-003：authoritative paid escalation Cost Gate audit
+                    # 引用（详细记录在 paid_escalation_gate.json——仅当 Hermes
+                    # stage fallback-eligible 失败无 FREE 候选但存在合格 paid
+                    # candidate、Cost Gate 授权评估发生时存在；gate 绝不发起
+                    # paid invocation）。
+                    stage['paid_escalation_gate_ref'] = dict(fb_paid_gate_ref)
                 if wb_active_routing_ref:
                     # v0.5 A4-001：WorkBuddy authoritative active-routing authority
                     # 引用（详细决策在 workbuddy_active_routing.json；与 A3 Hermes

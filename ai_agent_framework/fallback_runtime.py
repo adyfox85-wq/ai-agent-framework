@@ -106,10 +106,34 @@ qualification）：selector 的 executor scope=main 闸原样生效（auxiliary/
 scope 候选绝不进入 fallback candidates——AAF-v0.5-A3-HERMES-EXECUTOR-
 QUALIFICATION-FIX-001 语义保持，测试锁定）。
 
-范围边界：不实现 paid escalation / free→paid 授权流程（A0 authority 语义保持，
-本层绝不发起付费模型调用）；A6（health/quarantine/requalification）与 A4+
-（broader agent scope）显式 outside；A3 初始 routing / A0 guard / A4 经济路由
-行为零修改。
+A5-003（TASK: AAF-v0.5-A5-PAID-ESCALATION-GATE-001 —— paid escalation /
+Cost Gate runtime foundation，本文件新增接线；gate 审计语义模块 =
+``fallback_paid_gate.py``）：
+当原始 invocation 以 fallback-eligible failure 失败、无合格 FREE/LOCAL_FREE
+fallback 可用（本单元 FREE gate 结果为空）但 contract 层存在**合格 paid
+candidate**（已通过 A1/A2 资格闸、与 original 不同）时，本编排器以既有 A0
+Paid Guard（``cost_guard.evaluate`` —— 唯一付费授权 authority）对确定性选中
+的 paid candidate 做显式、可审计的授权判断并持久化权威 gate audit
+（``paid_escalation_gate.json``，decision_kind=paid_escalation_gate_audit）：
+- A0 ALLOWED_AUTHORIZED_PAID + exact candidate scope → gate AUTHORIZED
+  （ready-for-paid-invocation 资格；**绝不 invocation**——attempted/used 恒
+  False；A0 已按既有一次性语义在其准入边界 claim 该授权，本层如实转述
+  authorization_present/matched/consumed）；
+- A0 BLOCKED_COST_APPROVAL → gate BLOCKED（absent/mismatch/replay）；
+- guard malformed / guard 解析 model≠candidate / ALLOWED_FREE（成本视图冲突）
+  / guard 异常 → gate FAIL_CLOSED（fail closed）。
+考虑前置（Requirement 2）：failure_class ∈ TRIGGER_CAPABLE_CLASSES 且
+automatic_fallback_count_used == 0（paid 只作为 FREE 路径不可用时的替代，
+绝不在已消耗一次 model-level fallback 之后再次考虑——no chain/loop 保持）；
+free candidate 存在时 free 路径优先（gate 不运行）。零第二授权系统、零 paid
+invocation（Requirement 4/6/8）。free fallback 路径（上述 A5-002 语义）零修改。
+
+范围边界：**paid escalation 授权评估（Cost Gate）已交付**，但 paid fallback
+model **invocation** 仍不实现（gate 只记录 AUTHORIZED / ready-for-paid-
+invocation 资格状态，绝不在本单元发起付费模型调用——未来 paid invocation
+任务 scope；A0 authority 语义保持）；A6（health/quarantine/requalification）
+与 A4+（broader agent scope）显式 outside；A3 初始 routing / A0 guard / A4
+经济路由行为零修改。
 """
 
 from __future__ import annotations
@@ -125,6 +149,7 @@ from typing import Any, Callable
 from . import active_routing as active_routing_mod
 from . import cost_guard as cost_guard_mod
 from . import fallback_contract as fc
+from . import fallback_paid_gate as fpg
 from . import model_registry as model_registry_mod
 from . import shadow_routing as shadow_routing_mod
 from .risk_contract import ROLE_EXECUTOR
@@ -1102,6 +1127,43 @@ def run_fallback_after_failure(
     #     admission 后才组装最终记录——本层 artifact = outcome evidence） ---
     outcome = _runtime_outcome(decision_record, registry, automatic_fallback_count_used)
     if not outcome["fallback_eligible"] or outcome["fallback_candidate"] is None:
+        # --- A5-003（TASK: AAF-v0.5-A5-PAID-ESCALATION-GATE-001）：paid
+        #     escalation Cost Gate 考虑（authorization evaluation ONLY） ---
+        # 仅当：contract 层有合格 paid candidate（decision=fallback_eligible
+        # ——A1/A2 闸已过、original 已排除）+ failure 是 fallback-eligible 类 +
+        # automatic fallback budget 未耗尽（count_used==0——free 路径不可用时的
+        # 替代考虑，绝不形成 chain/loop）。gate 内部任何意外失败都被收口为
+        # 显式 fail-closed evidence（outcome 的 paid_gate_error 字段），绝不
+        # 掩盖/改变本 runtime 的 not-eligible 结果（Requirement 7/9）。
+        paid_gate_result: dict | None = None
+        paid_gate_error: str | None = None
+        if (
+            decision_record["decision"] == fc.DECISION_FALLBACK_ELIGIBLE
+            and decision_record["failure_class"] in fc.TRIGGER_CAPABLE_CLASSES
+            and automatic_fallback_count_used == 0
+        ):
+            try:
+                paid_gate_result = _run_paid_escalation_gate(
+                    decision_record=decision_record,
+                    runtime_outcome=outcome,
+                    task_id=task_id,
+                    stage_agent=stage_agent,
+                    role=role,
+                    risk_class=risk_class,
+                    risk_source=risk_source,
+                    registry=registry,
+                    output_dir=output_dir,
+                    transport_retry_count=transport_retry_count,
+                    automatic_fallback_count_used=automatic_fallback_count_used,
+                )
+            except Exception as exc:  # noqa: BLE001 — gate 意外失败 fail closed
+                paid_gate_error = (
+                    f"unexpected paid escalation Cost Gate failure "
+                    f"({type(exc).__name__}: {_excerpt(str(exc))}) — no paid "
+                    "escalation authorization state was recorded (fail "
+                    "closed; no paid model invocation occurred and none was "
+                    "authorized; the original stage failure is preserved)"
+                )
         record = _emit(
             attempted=False,
             used=False,
@@ -1116,7 +1178,7 @@ def run_fallback_after_failure(
         )
         if record is None:
             return None
-        return {
+        result = {
             "result_text": None,
             "audit_record": record,
             "artifact_ref": {
@@ -1127,6 +1189,12 @@ def run_fallback_after_failure(
             "used": False,
             "overlay_saved": None,
         }
+        if paid_gate_result is not None:
+            result["paid_gate_record"] = paid_gate_result["record"]
+            result["paid_gate_artifact_ref"] = paid_gate_result["artifact_ref"]
+        elif paid_gate_error is not None:
+            result["paid_gate_error"] = paid_gate_error
+        return result
 
     # --- eligible：candidate env 覆盖 + A0 Paid Guard 求值（既有 authority） ---
     selected = outcome["fallback_candidate"]
@@ -1389,4 +1457,160 @@ def _no_attempt_result(
         "attempted": False,
         "used": False,
         "overlay_saved": None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# A5-003 paid escalation Cost Gate（TASK: AAF-v0.5-A5-PAID-ESCALATION-GATE-001；
+# authorization-evaluation ONLY——绝不 invocation）
+# ---------------------------------------------------------------------------
+
+
+def _run_paid_escalation_gate(
+    *,
+    decision_record: dict,
+    runtime_outcome: dict,
+    task_id: str,
+    stage_agent: str,
+    role: str,
+    risk_class: str,
+    risk_source: str,
+    registry: dict[str, model_registry_mod.RegistryEntry],
+    output_dir: Path | str,
+    transport_retry_count: int,
+    automatic_fallback_count_used: int,
+) -> dict:
+    """对合格 paid candidate 执行 Cost Gate（零 invocation），返回 gate 结果。
+
+    前置由调用方保证（decision=fallback_eligible + trigger-capable +
+    count_used==0 + runtime FREE gate 结果为空——本分支）；本函数：
+    1. paid candidate pool = contract candidates 中 registry cost_class 不在
+       FREE/LOCAL_FREE gate（``FALLBACK_COST_CLASSES``）的成员——同一 A1/A2
+       资格源（contract）、同一成本闸词汇（A3），零平行判断；pool 空 → None；
+    2. 确定性选中恰一 paid candidate（economic rank → locality → key 同序）；
+    3. candidate env 覆盖（复用 A3 env 契约 / ``restore_routing_env`` 还原；
+       candidate 无 base_url 时显式清除 stale 覆盖——A0 绝不被残留 loopback
+       误判 LOCAL_FREE）→ **既有 A0 Paid Guard**（``cost_guard.evaluate``，
+       唯一付费授权 authority）求值：exact task-scoped AAF_COST_AUTH 匹配时
+       A0 在其准入边界按既有一次性语义 claim（本层不 bypass/削弱/复刻 A0）；
+    4. ``fallback_paid_gate.interpret_guard`` → gate 状态（AUTHORIZED /
+       BLOCKED / FAIL_CLOSED——guard 异常 / record malformed / 解析 model≠
+       candidate / ALLOWED_FREE 冲突 / 未知 token 一律 FAIL_CLOSED）；
+    5. 权威 gate audit record 组装 + fail-closed 校验 + 原子落盘
+       （``paid_escalation_gate.json``）——**不发起任何 paid invocation**；
+       attempted/used 恒 False、final actual == original。
+
+    返回 {"record": gate audit record, "artifact_ref": {...}}；pool 为空（无
+    合格 paid candidate）→ None。任何 guard/interpret/组装异常由调用方的
+    兜底捕获转 paid_gate_error（fail closed）——本函数内部只把 A0 求值失败
+    转 FAIL_CLOSED gate record（Requirement 7：malformed/unknown → fail
+    closed + 显式证据）。
+    """
+    contract_candidates = [
+        key
+        for key in (decision_record.get("fallback_candidates") or [])
+        if isinstance(key, str) and key.strip()
+    ]
+    # pool：contract 已资格化（A1/A2）候选 - FREE/LOCAL_FREE gate 排除后的
+    # paid/unknown-cost 成员（与 _gated_fallback_candidates 同一 registry view；
+    # 本分支 FREE gate 结果为空 ⇒ 全部 contract 候选都在此池或不可解析）
+    pool = sorted(
+        key
+        for key in contract_candidates
+        if isinstance(
+            registry.get(key), model_registry_mod.RegistryEntry
+        )
+        and registry[key].cost_class not in FALLBACK_COST_CLASSES
+    )
+    if not pool:
+        return None
+    selected = _select_fallback_candidate(pool, registry)
+    entry = registry[selected]
+    paid_model, paid_provider = _split_candidate(selected)
+
+    # candidate env 覆盖 → A0 Paid Guard 求值（既有 authority；求值后还原 env
+    # ——本单元不发起 invocation，overlay 绝不留到调用方）
+    guard_record: dict | None = None
+    guard_error: str | None = None
+    overlay_saved: dict[str, str | None] | None = None
+    try:
+        overlay_saved = _apply_candidate_env(entry)
+    except (ValueError, OSError) as exc:
+        guard_error = (
+            "candidate env overlay failed "
+            f"({type(exc).__name__}: {_excerpt(str(exc))}) — the proposed "
+            "paid candidate cannot be evaluated; fail closed"
+        )
+    if guard_error is None:
+        try:
+            guard_record = cost_guard_mod.evaluate(
+                task_id, stage_agent, state_dir=output_dir
+            )
+        except Exception as exc:  # noqa: BLE001 — A0 求值失败 → fail closed
+            guard_error = (
+                "A0 Paid Guard evaluation for the proposed paid candidate "
+                "raised "
+                f"{type(exc).__name__}: {_excerpt(str(exc))} — authorization "
+                "state unknown; fail closed (no paid model invoked)"
+            )
+        finally:
+            if overlay_saved is not None:
+                active_routing_mod.restore_routing_env(overlay_saved)
+
+    if guard_error is not None:
+        interpretation = fpg.fail_closed_interpretation(guard_error)
+    else:
+        interpretation = fpg.interpret_guard(guard_record, paid_model, paid_provider)
+
+    extra_notes = [
+        f"proposed paid candidate {selected!r} was deterministically "
+        "selected from the qualified paid/unknown-cost pool "
+        f"{pool} (economic rank, locality, key tie-break — same ordering "
+        "as the FREE path); A0 Paid Guard evaluated under the candidate's "
+        "own env overlay (admission truth = candidate facts; base_url=None "
+        "clears any stale routing base_url)",
+    ]
+    if (
+        interpretation["gate_decision"] == fpg.GATE_DECISION_AUTHORIZED
+        and interpretation["authorization_consumed"] is True
+    ):
+        extra_notes.append(
+            "authorization consumption: the exact task-scoped one-time "
+            "authorization was claimed by the existing A0 Paid Guard at its "
+            "own admission boundary during this evaluation (A0 semantics "
+            "unmodified; one-time replay protection intact for this "
+            "execution context). Gate AUTHORIZED establishes "
+            "ready-for-paid-invocation ELIGIBILITY for a FUTURE paid "
+            "invocation task in its own execution context — this task "
+            "performed no paid invocation."
+        )
+    record = fpg.assemble_paid_gate_record(
+        decision_record=decision_record,
+        original_model=decision_record["original_model"],
+        original_provider=decision_record["original_provider"],
+        task_id=task_id,
+        stage_agent=stage_agent,
+        role=role,
+        risk_class=risk_class,
+        risk_source=risk_source,
+        transport_retry_count=transport_retry_count,
+        automatic_fallback_count_used=automatic_fallback_count_used,
+        free_fallback_unavailable_reason=(
+            runtime_outcome.get("decision_reason")
+            or "no eligible FREE/LOCAL_FREE fallback candidate"
+        ),
+        free_fallback_notes=list(runtime_outcome.get("notes") or []),
+        contract_candidates=contract_candidates,
+        paid_pool=pool,
+        paid_candidate=selected,
+        interpretation=interpretation,
+        extra_notes=extra_notes,
+    )
+    fpg.save_paid_gate(output_dir, record)
+    return {
+        "record": record,
+        "artifact_ref": {
+            "authority": str(output_dir / fpg.ARTIFACT_FILENAME),
+            "entry": stage_agent,
+        },
     }

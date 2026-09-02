@@ -1,10 +1,12 @@
 """AAF v0.5 A4 — Active economic routing for the WorkBuddy validator stage
-（A4 第一条 active-routing slice，TASK: AAF-v0.5-A4-WORKBUDDY-ECONOMIC-ROUTING-001）。
+（A4 active-routing slices，TASK: AAF-v0.5-A4-WORKBUDDY-ECONOMIC-ROUTING-001
+[LOW] + AAF-v0.5-A4-WORKBUDDY-ECONOMIC-ROUTING-002 [MEDIUM]）。
 
-目标：仅当 WorkBuddy validator stage 的 TASK 显式声明 Risk: LOW，且现有
-selector 选出**至少两个** eligible（capability + qualification）WorkBuddy
-candidate，且经济事实层对 eligible 候选提供 **FRESH、完整、一致、可审计**
-的经济事实，且经济过滤后仍**至少两个可信候选**（FIX-001：
+目标：仅当 WorkBuddy validator stage 的 TASK 显式声明 Risk: LOW 或 MEDIUM
+（002 把 active-routing risk 域从 explicit LOW 扩展到 explicit LOW + MEDIUM），
+且现有 selector 选出**至少两个** eligible（capability + qualification）
+WorkBuddy candidate，且经济事实层对 eligible 候选提供 **FRESH、完整、一致、
+可审计**的经济事实，且经济过滤后仍**至少两个可信候选**（FIX-001：
 economically_trustworthy >= 2 —— 两候选 gate 作用于 capability +
 qualification + trustworthy economics 全部过滤之后）时，把该 decision 升级为
 **真实** per-run ``--model`` 选择（routing_applied=true → 生产 WorkBuddy
@@ -24,7 +26,8 @@ invocation 精确追加 ``--model <selected_model_id>``，其余参数零变化�
 
 Activation gates（Requirement 2/4/5/11，全部满足才 routing_applied=true）：
 - stage_agent == "workbuddy" 且 role == "validator"
-- 显式 Risk == LOW（None / MEDIUM / HIGH / CRITICAL → 不生效）
+- 显式 Risk ∈ {LOW, MEDIUM}（002：risk 域 = explicit LOW + MEDIUM；
+  None / HIGH / CRITICAL → 不生效）
 - selector eligible candidates >= 2（capability + qualification gate；
   少于两个 → INSUFFICIENT_ELIGIBLE_CANDIDATES，保持 Auto）
 - 经济选择只消费 FRESH + 完整 + 一致 + 可审计的事实（Requirement 6）：
@@ -57,10 +60,11 @@ routing_applied 后真实 invocation 失败 → runner 如实 FRAMEWORK_ERROR
 **同一次 invocation**（同一 args，含 --model），绝不换模型 / 不退回 Auto /
 不升级付费层级（Requirement 10：无 retry escalation）。
 
-范围边界（Boundaries）：不实现 MEDIUM/HIGH active model routing、effort
-routing、automatic fallback、Cost Gate UX、health polling / quarantine、
-runtime requalification loop、Hermes 路由变更（A3 原样）、Codex 路由变更、
-A5/A6、本 slice 之外的 multi-agent routing。
+范围边界（Boundaries，002）：不实现 HIGH/CRITICAL active model routing
+（HIGH/CRITICAL 保持 CodeBuddy Auto）、effort routing、automatic fallback、
+Cost Gate UX、health polling / quarantine、runtime requalification loop、
+Hermes 路由变更（A3 原样）、Codex 路由变更、A5/A6、本 slice 之外的
+multi-agent routing。
 """
 
 from __future__ import annotations
@@ -73,7 +77,7 @@ from typing import Any
 
 from . import model_registry as model_registry_mod
 from . import workbuddy_economics as we
-from .risk_contract import RISK_CLASSES, RISK_LOW, ROLE_VALIDATOR
+from .risk_contract import RISK_CLASSES, RISK_LOW, RISK_MEDIUM, ROLE_VALIDATOR
 from .shadow_routing import STAGE_ROLES, select_shadow_candidate
 
 # ---------------------------------------------------------------------------
@@ -110,8 +114,9 @@ MIN_ECONOMIC_CANDIDATES = 2
 
 AUTHORITY_STATEMENT = (
     "workbuddy_active_routing.json is the AUTHORITATIVE active-routing decision "
-    "record for the WorkBuddy validator stage (A4 first slice, TASK: "
-    "AAF-v0.5-A4-WORKBUDDY-ECONOMIC-ROUTING-001): when routing_applied=true it "
+    "record for the WorkBuddy validator stage (A4 slices, TASK: "
+    "AAF-v0.5-A4-WORKBUDDY-ECONOMIC-ROUTING-001 [LOW] + -002 [MEDIUM]): when "
+    "routing_applied=true it "
     "DIRECTLY selects the real per-run CodeBuddy --model for this execution "
     "(adapters._workbuddy_invocation appends exactly --model <routed_model>; "
     "no --effort / no provider override / no fallback model / no retry "
@@ -153,7 +158,10 @@ REASON_APPLIED = "WORKBUDDY_ECONOMIC_ROUTE_APPLIED"
 REASON_AGENT_NOT_WORKBUDDY = "AGENT_NOT_WORKBUDDY"
 REASON_ROLE_NOT_VALIDATOR = "ROLE_NOT_VALIDATOR"
 REASON_RISK_UNAVAILABLE = "RISK_UNAVAILABLE"
-REASON_RISK_NOT_LOW = "RISK_NOT_LOW"
+# 002：active-routing risk 域 = explicit LOW + MEDIUM；HIGH/CRITICAL 在
+# active slice 之外（RISK_OUTSIDE_ACTIVE_SLICE，显式区别于 missing 的
+# RISK_UNAVAILABLE —— missing ≠ LOW/MEDIUM，HIGH/CRITICAL ≠ in-slice）。
+REASON_RISK_OUTSIDE_SLICE = "RISK_OUTSIDE_ACTIVE_SLICE"
 REASON_INSUFFICIENT_ELIGIBLE = "INSUFFICIENT_ELIGIBLE_CANDIDATES"
 # FIX-001（Codex Requirement 5 blocker）：capability+qualification gate 已通过、
 # 经济信任度 gate 也已通过，但经济过滤后只剩 1 个可信候选 —— 没有两个
@@ -276,7 +284,9 @@ def decide_workbuddy_route(
 
     参数：
     - ``risk_class``：TASK 显式声明的 Risk（RISK_CLASSES 成员）；None =
-      RISK_UNAVAILABLE（missing ≠ LOW → 不生效）。
+      RISK_UNAVAILABLE（missing ≠ LOW/MEDIUM → 不生效）。active-routing
+      risk 域 = explicit LOW + MEDIUM（002）；HIGH / CRITICAL 在 slice 之外
+      → 不生效。
     - ``role``：stage 角色（必须 validator 才可能生效）。
     - ``stage_agent``：stage agent（必须 workbuddy 才可能生效）。
     - ``registry``：候选 registry（A1 RegistryEntry dict；建议
@@ -362,13 +372,13 @@ def decide_workbuddy_route(
     elif risk_class is None:
         reason = (
             f"{REASON_RISK_UNAVAILABLE}: no explicit Risk declared in TASK — "
-            "missing != LOW (fail-safe no routing, CodeBuddy Auto preserved)"
+            "missing != LOW/MEDIUM (fail-safe no routing, CodeBuddy Auto preserved)"
         )
-    elif risk_class != RISK_LOW:
+    elif risk_class not in (RISK_LOW, RISK_MEDIUM):
         reason = (
-            f"{REASON_RISK_NOT_LOW}: explicit Risk={risk_class!r} — active "
-            "economic routing applies only to explicit LOW (MEDIUM/HIGH/CRITICAL "
-            "keep CodeBuddy Auto)"
+            f"{REASON_RISK_OUTSIDE_SLICE}: explicit Risk={risk_class!r} — "
+            "active economic routing applies only to explicit LOW/MEDIUM "
+            "(HIGH/CRITICAL keep CodeBuddy Auto)"
         )
     elif len(eligible) < MIN_ELIGIBLE_CANDIDATES:
         reason = (
@@ -429,7 +439,7 @@ def decide_workbuddy_route(
             selected = winner
             routed_model = winner
             reason = (
-                f"{REASON_APPLIED}: explicit Risk=LOW + "
+                f"{REASON_APPLIED}: explicit Risk={risk_class} + "
                 f"{len(eligible)} eligible WorkBuddy candidates (capability + "
                 f"qualification gates) + {len(economically_trustworthy)} "
                 f"trustworthy economic candidates (>= {MIN_ECONOMIC_CANDIDATES} "

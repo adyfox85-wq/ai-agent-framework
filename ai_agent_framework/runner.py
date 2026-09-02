@@ -531,19 +531,23 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                         routing_env_saved = active_routing_mod.apply_routing_env(active_record)
                 elif agent == 'workbuddy':
                     # v0.5 A4 active economic routing（TASK: AAF-v0.5-A4-WORKBUDDY-
-                    # ECONOMIC-ROUTING-001；FIX-001：经济两候选 gate 收口，A4 =
-                    # STARTED）。复用现有 selector（capability+qualification）+
-                    # A4 economic fact layer，不创建第二套 eligibility 系统：仅当
-                    # 显式 Risk: LOW 且至少两个 eligible WorkBuddy candidates 且
-                    # 经济事实 FRESH/完整/一致/可审计 **且经济过滤后仍至少两个
-                    # 可信候选**（FIX-001：economically_trustworthy >= 2 —— 两候选
-                    # gate 作用于 capability+qualification+trustworthy-economics
-                    # 全部过滤之后，只剩 1 个 → INSUFFICIENT_ECONOMIC_CANDIDATES
-                    # → Auto）时，经济 winner 升级为真实 per-run --model
+                    # ECONOMIC-ROUTING-001 [LOW] + -002 [MEDIUM]；FIX-001：经济两
+                    # 候选 gate 收口，A4 = STARTED）。复用现有 selector
+                    # （capability+qualification）+ A4 economic fact layer，不创建
+                    # 第二套 eligibility 系统：仅当显式 Risk: LOW 或 MEDIUM（002
+                    # 把 risk 域从 explicit LOW 扩展到 explicit LOW + MEDIUM；MEDIUM
+                    # 复用同一 selector 的 capability floor —— risk_contract
+                    # RISK_FLOORS[MEDIUM].validator = T3，绝不单独放宽 eligibility）
+                    # 且至少两个 eligible WorkBuddy candidates 且经济事实
+                    # FRESH/完整/一致/可审计 **且经济过滤后仍至少两个可信候选**
+                    # （FIX-001：economically_trustworthy >= 2 —— 两候选 gate 作用
+                    # 于 capability+qualification+trustworthy-economics 全部过滤
+                    # 之后，只剩 1 个 → INSUFFICIENT_ECONOMIC_CANDIDATES → Auto）
+                    # 时，经济 winner 升级为真实 per-run --model
                     # （routing_applied=true → 设置 AAF_WORKBUDDY_MODEL 覆盖，
                     # adapters._workbuddy_invocation 精确追加 --model <winner>；
                     # 无 --effort / 无 provider override / 无 fallback / 无 retry
-                    # escalation）。其余情况（Risk 缺失 / MEDIUM/HIGH/CRITICAL /
+                    # escalation）。其余情况（Risk 缺失 / HIGH/CRITICAL /
                     # 不足两个 eligible / 经济事实 stale-unknown-不完整 / 经济后
                     # 不足两个可信候选 / 无确定性可信经济 winner）→
                     # routing_applied=false，保持 CodeBuddy Auto。审计 artifact =

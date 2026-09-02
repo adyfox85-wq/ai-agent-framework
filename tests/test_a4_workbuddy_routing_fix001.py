@@ -28,7 +28,7 @@ G. input ordering 不影响结果
 + capability/qualification gate 优先于 economics（Req 5 不变：经济不能救活
   不足两个 eligible 的场景）
 
-边界（Boundaries）：无 MEDIUM/HIGH active routing、无 effort routing、无
+边界（Boundaries，002）：无 HIGH/CRITICAL active routing、无 effort routing、无
 automatic fallback、无 Cost Gate UX、无 health/quarantine、无 runtime
 requalification、无 Hermes（A3）/Codex 路由变更、无 A5/A6。
 """

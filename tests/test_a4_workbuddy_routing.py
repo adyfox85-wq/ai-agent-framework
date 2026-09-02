@@ -9,7 +9,9 @@
   baseline facts）→ routing_applied=false（INSUFFICIENT_ECONOMIC_CANDIDATES）
   → Auto（不伪造第二可信候选）
 - selected = 经济 winner（不是 selector 默认的 deepseek-v4-flash）
-- missing Risk / MEDIUM / HIGH / CRITICAL → Auto（CodeBuddy Auto 保持）
+- missing Risk / HIGH / CRITICAL → Auto（CodeBuddy Auto 保持）；MEDIUM 在
+  explicit LOW + MEDIUM active-slice 内（002）——真实 registry 下仍 Auto
+  （MEDIUM selector floor = T3，真实 WorkBuddy 候选 T4 不满足 → 0 eligible）
 - 只有一个 eligible candidate → Auto
 - stale / unknown / contradictory economics → Auto（fail closed）
 - capability-insufficient / qualification-unknown 候选在经济选择前被排除
@@ -21,7 +23,7 @@
 - runner 集成：LOW 全链 workbuddy_active_routing.json routing_applied=true、
   AAF_WORKBUDDY_MODEL 在 workbuddy invocation 时可见且事后还原；HIGH → false
 
-边界（Boundaries）：无 MEDIUM/HIGH active routing、无 effort routing、无
+边界（Boundaries，002）：无 HIGH/CRITICAL active routing、无 effort routing、无
 automatic fallback、无 Cost Gate UX、无 health polling/quarantine、无 runtime
 requalification loop、无 Hermes（A3）/Codex 路由变更、无 A5/A6。
 """
@@ -316,7 +318,8 @@ def test_run_agent_workbuddy_no_env_no_model(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 3. missing / MEDIUM / HIGH / CRITICAL → Auto（Requirement 11/15）
+# 3. missing / HIGH / CRITICAL → Auto（Requirement 11/15；002：risk 域 =
+#    explicit LOW + MEDIUM，HIGH/CRITICAL 在 active slice 之外）
 # ---------------------------------------------------------------------------
 
 
@@ -333,8 +336,9 @@ def test_missing_risk_auto():
     wr.validate_workbuddy_routing(rec)
 
 
-@pytest.mark.parametrize("risk", [RISK_MEDIUM, RISK_HIGH, RISK_CRITICAL])
-def test_non_low_risk_auto(risk):
+@pytest.mark.parametrize("risk", [RISK_HIGH, RISK_CRITICAL])
+def test_outside_slice_risk_auto(risk):
+    """HIGH / CRITICAL 在 active slice（LOW+MEDIUM）之外 → Auto。"""
     rec = wr.decide_workbuddy_route(
         risk, ROLE_VALIDATOR, "workbuddy", mr.baseline_registry(),
         now=NOW, risk_source="t",
@@ -342,7 +346,27 @@ def test_non_low_risk_auto(risk):
     assert rec["routing_applied"] is False
     assert rec["selected"] is None
     assert rec["routed_model"] is None
-    assert rec["reason"].startswith(wr.REASON_RISK_NOT_LOW)
+    assert rec["reason"].startswith(wr.REASON_RISK_OUTSIDE_SLICE)
+
+
+def test_medium_real_registry_auto_via_capability_floor():
+    """MEDIUM 在 active slice 内，但真实 registry 下仍 Auto：MEDIUM 复用既有
+    selector capability floor（risk_contract RISK_FLOORS[MEDIUM].validator =
+    T3），真实 WorkBuddy 候选（deepseek-v4-flash / hy4-preview）capability_tier
+    = T4 不满足 T3 floor → 0 eligible → INSUFFICIENT_ELIGIBLE_CANDIDATES →
+    Auto。**当前真实数据不被人为放宽/伪造**（Requirement 5/15：不硬编码候选
+    eligibility、不为凑 MEDIUM 路由而放宽能力下限）。"""
+    rec = wr.decide_workbuddy_route(
+        RISK_MEDIUM, ROLE_VALIDATOR, "workbuddy", mr.baseline_registry(),
+        now=NOW, risk_source="t",
+    )
+    assert rec["routing_applied"] is False
+    assert rec["selected"] is None
+    assert rec["routed_model"] is None
+    assert rec["eligible"] == []
+    assert rec["reason"].startswith(wr.REASON_INSUFFICIENT_ELIGIBLE)
+    assert "CodeBuddy Auto" in rec["invocation"]
+    wr.validate_workbuddy_routing(rec)
 
 
 # ---------------------------------------------------------------------------
@@ -843,7 +867,7 @@ def test_runner_high_preserves_auto(tmp_path, monkeypatch):
     assert rec["routing_applied"] is False
     assert rec["selected"] is None
     assert rec["routed_model"] is None
-    assert rec["reason"].startswith(wr.REASON_RISK_NOT_LOW)
+    assert rec["reason"].startswith(wr.REASON_RISK_OUTSIDE_SLICE)
     assert "CodeBuddy Auto" in rec["invocation"]
     run = json.loads((out / "run.json").read_text(encoding="utf-8"))
     assert run["status"] == "SUCCESS"

@@ -22,6 +22,23 @@ blocking runtime-contract defects 收口）：
    used=false；audit failure 显式 surface（绝不静默丢弃、绝不假装 attempt 未
    发生）；不发起第三模型、不重试另一个 fallback。
 
+FIX-002（TASK: AAF-v0.5-A5-FREE-FALLBACK-RUNTIME-001-FIX-002，Codex 唯一
+blocking 收口——fallback 第二模型已实际 invocation 后，audit validation /
+serialization / persistence 异常的统一 fail-closed 边界）：post-invocation
+authoritative audit closure 是 exception-safe 的 fail-closed 边界——
+1. ``_emit`` 的 catch 从 (ValueError, TypeError, OSError) 拓宽为 Exception：
+   audit 组装/校验/序列化/持久化中**任何**未预期的实现/runtime 异常
+   （RuntimeError / UnicodeError / KeyError / …）都是 audit closure 失败 →
+   收口为显式 fail-closed 结果（attempted=true / used=false / 绝不接受
+   fallback 输出 / audit_closure_error surface），**绝不**作为裸异常逃逸；
+2. 自 ALLOWED_FREE admission（第二模型 invocation 真实发生、attempted=true）
+   起，整个 invocation + audit closure 段由兜底 fail-closed 边界包裹：任何
+   未被内层捕获的异常（含 audit closure 之外的意外逃逸）都转换为结构化
+   fail-closed 返回（attempted=true / used=false / audit_closure_error /
+   overlay_saved 供调用方还原 env）——runner 绝不把这些降级为泛化
+   "layer error"（那会丢失 attempt 事实与 env 还原）；pre-invocation
+   编程错误（边界之外、无 attempt 发生）不在此捕获（原语义保持）。
+
 复用纪律（Requirement 1——不创建平行判断系统）：
 1. 决策 = ``fallback_contract.decide_fallback``（唯一权威 A5 decision contract；
    其内部复用 A2 selector -> A1 registry/risk 契约：role 适用性 → capability
@@ -979,7 +996,12 @@ def run_fallback_after_failure(
        closed；FIX-001：invocation **之后**的 audit 组装/校验/持久化失败 →
        该 invocation 的输出**不**被接受为成功 stage result——返回
        attempted=true / used=false / result_text=None 的 fail-closed 结构 +
-       audit_closure_error 显式 surface，不发起第三模型、不重试 fallback）。
+       audit_closure_error 显式 surface，不发起第三模型、不重试 fallback；
+       FIX-002：audit closure 的异常捕获从 (ValueError, TypeError, OSError)
+       拓宽为 Exception（RuntimeError / UnicodeError / 其他未预期实现/
+       runtime 异常一律收口，绝不作为裸异常逃逸），且自 admission 起整个
+       invocation + audit closure 段有兜底 fail-closed 边界——任何逃逸都
+       转为同样的结构化结果，runner 绝不降级为泛化 "layer error"）。
 
     返回 dict（runner 消费）：
     {"result_text", "audit_record", "artifact_ref", "attempted", "used",
@@ -1056,7 +1078,14 @@ def run_fallback_after_failure(
                 extra_evidence=extra_evidence,
             )
             save_fallback_runtime(output_dir, record)
-        except (ValueError, TypeError, OSError) as exc:
+        except Exception as exc:  # noqa: BLE001 — FIX-002：audit closure
+            # 边界。assemble（含 validator）/ 序列化 / 持久化的**任何**未预期
+            # 实现/runtime 异常（不限于 ValueError/TypeError/OSError；含
+            # RuntimeError / UnicodeError / KeyError 等）都是 audit closure
+            # 失败 → 统一收口为显式 fail-closed 结果（调用方把 emit_failure
+            # 带进返回结构），绝不作为裸异常逃逸到 runner 变成泛化
+            # "layer error"（那会丢失 attempted=true 事实、fallback 结果
+            # 接受判定与 env 还原路径）。
             emit_failure[:] = [
                 f"{type(exc).__name__}: {_excerpt(str(exc))}"
             ]
@@ -1218,65 +1247,119 @@ def run_fallback_after_failure(
 
     # --- A0 Paid Guard ALLOWED_FREE：本 FREE/LOCAL_FREE 单元唯一允许进入
     #     第二模型 invocation 的准入结果 → invoke 恰一次 ---
-    attempted = True
-    used = False
-    fb_output: str | None = None
-    invocation_evidence: list[str] = []
+    # FIX-002（Codex REQUEST_CHANGE 唯一 blocker 收口）：自此处起第二模型
+    # invocation 真实发生（attempted=true 不可撤销、绝不假装未发生）——整个
+    # invocation + authoritative audit closure 段是一个 exception-safe 的
+    # fail-closed 边界：任何未预期的实现/runtime 异常（_emit 内部已按
+    # Exception 全量收口为 audit closure 失败；此兜底再捕获边界内任何其他
+    # 逃逸，如输出接受判定 / evidence 文本构造的意外异常）都被转换为显式
+    # 结构化 fail-closed 结果（attempted=true / used=false /
+    # audit_closure_error / overlay_saved）——绝不作为裸异常逃逸到 runner
+    # 变成泛化 "layer error"（那会丢失 attempt 事实与 env 还原）；不发起
+    # 第三模型、不重试另一个 fallback（单次调用点语义保持）。边界之外
+    # （admission 之前、无 attempt 发生）的 pre-invocation 编程错误不在此
+    # 捕获（原语义保持）。
     try:
-        fb_output = invoke(stage_agent, prompt, workspace)
-    except Exception as exc:  # noqa: BLE001 — invocation 失败 = fallback 失败
-        invocation_evidence.append(
-            f"fallback invocation of {selected!r} raised "
-            f"{type(exc).__name__}: {_excerpt(str(exc))} — the failed fallback "
-            "remains ONE attempt (used=false) and must not trigger another "
-            "fallback (no chain/loop)"
-        )
-    if fb_output is not None:
-        if _output_is_valid(fb_output):
-            used = True
+        attempted = True
+        used = False
+        fb_output: str | None = None
+        invocation_evidence: list[str] = []
+        try:
+            fb_output = invoke(stage_agent, prompt, workspace)
+        except Exception as exc:  # noqa: BLE001 — invocation 失败 = fallback 失败
             invocation_evidence.append(
-                f"fallback invocation of {selected!r} produced an accepted "
-                "stage execution result (valid non-FRAMEWORK_ERROR output)"
+                f"fallback invocation of {selected!r} raised "
+                f"{type(exc).__name__}: {_excerpt(str(exc))} — the failed fallback "
+                "remains ONE attempt (used=false) and must not trigger another "
+                "fallback (no chain/loop)"
             )
-        else:
-            invocation_evidence.append(
-                f"fallback invocation of {selected!r} produced an invalid "
-                "result (empty or FRAMEWORK_ERROR-prefixed output) — the "
-                "failed fallback remains ONE attempt (used=false) and must "
-                "not trigger another fallback (no chain/loop)"
-            )
+        if fb_output is not None:
+            if _output_is_valid(fb_output):
+                used = True
+                invocation_evidence.append(
+                    f"fallback invocation of {selected!r} produced an accepted "
+                    "stage execution result (valid non-FRAMEWORK_ERROR output)"
+                )
+            else:
+                invocation_evidence.append(
+                    f"fallback invocation of {selected!r} produced an invalid "
+                    "result (empty or FRAMEWORK_ERROR-prefixed output) — the "
+                    "failed fallback remains ONE attempt (used=false) and must "
+                    "not trigger another fallback (no chain/loop)"
+                )
 
-    extra_notes = [
-        f"A0 Paid Guard admitted the fallback candidate as FREE "
-        f"(decision={guard_decision!r}, cost_class="
-        f"{guard_record.get('cost_class')!r}) — exactly one fallback "
-        "invocation attempted (ALLOWED_FREE is the only admission this "
-        "FREE/LOCAL_FREE unit executes; no authorization value involved)",
-    ]
-    record = _emit(
-        attempted=attempted,
-        used=used,
-        authorization_outcome=AUTH_OUTCOME_ALLOWED_FREE,
-        extra_notes=extra_notes,
-        extra_evidence=invocation_evidence,
-    )
-    if record is None:
-        # FIX-001（Codex BLOCKING #2 收口）：fallback invocation 已发生
-        # （attempted=true 不可撤销、绝不假装未发生），但权威 audit record 的
-        # 组装/校验/持久化失败 → authoritative audit closure 缺失 → 该
-        # invocation 的输出**不得**被接受为成功 stage result（used=false；
-        # result_text=None 保留原始失败 = fail-closed framework result）；
-        # audit failure 经 audit_closure_error 显式 surface（绝不静默丢弃）；
-        # 不发起第三模型、不重试另一个 fallback（单次调用点语义保持）。
-        exc_desc = emit_failure[-1] if emit_failure else "unknown audit closure failure"
+        extra_notes = [
+            f"A0 Paid Guard admitted the fallback candidate as FREE "
+            f"(decision={guard_decision!r}, cost_class="
+            f"{guard_record.get('cost_class')!r}) — exactly one fallback "
+            "invocation attempted (ALLOWED_FREE is the only admission this "
+            "FREE/LOCAL_FREE unit executes; no authorization value involved)",
+        ]
+        record = _emit(
+            attempted=attempted,
+            used=used,
+            authorization_outcome=AUTH_OUTCOME_ALLOWED_FREE,
+            extra_notes=extra_notes,
+            extra_evidence=invocation_evidence,
+        )
+        if record is None:
+            # FIX-001（Codex BLOCKING #2 收口）+ FIX-002（异常类型全量覆盖）：
+            # fallback invocation 已发生（attempted=true 不可撤销、绝不假装
+            # 未发生），但权威 audit record 的组装/校验/持久化失败（现在
+            # **任何**异常类型——含 RuntimeError / UnicodeError / 其他未预期
+            # 实现/runtime 异常——都在 _emit 内被收口，绝不逃逸）→
+            # authoritative audit closure 缺失 → 该 invocation 的输出**不得**
+            # 被接受为成功 stage result（used=false；result_text=None 保留
+            # 原始失败 = fail-closed framework result）；audit failure 经
+            # audit_closure_error 显式 surface（绝不静默丢弃）；不发起第三
+            # 模型、不重试另一个 fallback（单次调用点语义保持）。
+            exc_desc = emit_failure[-1] if emit_failure else "unknown audit closure failure"
+            audit_error = (
+                f"authoritative fallback runtime audit closure FAILED after the "
+                f"fallback invocation of {selected!r} was actually attempted "
+                f"(attempted=true; {exc_desc}) — the fallback output is NOT "
+                "accepted as the stage result (used=false, fail closed): no "
+                "third model invocation and no further fallback retry will "
+                "occur; the audit failure is surfaced here and to stderr, not "
+                "silently discarded"
+            )
+            return {
+                "result_text": None,
+                "audit_record": None,
+                "artifact_ref": None,
+                "attempted": True,
+                "used": False,
+                "overlay_saved": overlay_saved,
+                "audit_closure_error": audit_error,
+            }
+        return {
+            "result_text": fb_output if used else None,
+            "audit_record": record,
+            "artifact_ref": {
+                "authority": str(output_dir / ARTIFACT_FILENAME),
+                "entry": stage_agent,
+            },
+            "attempted": attempted,
+            "used": used,
+            "overlay_saved": overlay_saved,
+        }
+    except Exception as exc:  # noqa: BLE001 — FIX-002 兜底 fail-closed 边界
+        # post-invocation 边界内任何未被内层捕获的意外逃逸（不限于 audit
+        # 组装/校验/持久化——含输出接受判定等任何后续步骤的未预期实现/runtime
+        # 异常）：同样 fail closed——attempted=true / used=false（fallback
+        # 输出**绝不**被接受）/ 真实异常经 audit_closure_error 显式 surface /
+        # overlay_saved 返回供调用方还原 env；无第三模型、无进一步 fallback
+        # retry；原始 stage 失败由 result_text=None 保留（runner 语义）。
         audit_error = (
-            f"authoritative fallback runtime audit closure FAILED after the "
-            f"fallback invocation of {selected!r} was actually attempted "
-            f"(attempted=true; {exc_desc}) — the fallback output is NOT "
-            "accepted as the stage result (used=false, fail closed): no "
-            "third model invocation and no further fallback retry will "
-            "occur; the audit failure is surfaced here and to stderr, not "
-            "silently discarded"
+            f"unexpected {type(exc).__name__}: {_excerpt(str(exc))} escaped "
+            f"inside the post-invocation authoritative audit closure boundary "
+            f"after the fallback invocation of {selected!r} was actually "
+            "attempted (attempted=true) — the fallback output is NOT accepted "
+            "as the stage result (used=false, fail closed): no third model "
+            "invocation and no further fallback retry will occur; the failure "
+            "is surfaced here and to stderr, not silently discarded; the "
+            "fallback routing overlay is returned so the caller can restore "
+            "the environment"
         )
         return {
             "result_text": None,
@@ -1287,17 +1370,6 @@ def run_fallback_after_failure(
             "overlay_saved": overlay_saved,
             "audit_closure_error": audit_error,
         }
-    return {
-        "result_text": fb_output if used else None,
-        "audit_record": record,
-        "artifact_ref": {
-            "authority": str(output_dir / ARTIFACT_FILENAME),
-            "entry": stage_agent,
-        },
-        "attempted": attempted,
-        "used": used,
-        "overlay_saved": overlay_saved,
-    }
 
 
 def _no_attempt_result(

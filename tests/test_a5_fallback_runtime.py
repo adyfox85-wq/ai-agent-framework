@@ -1092,3 +1092,213 @@ def test_runner_fix001_audit_persistence_failure_output_not_accepted(tmp_path, m
     run = json.loads((out / "run.json").read_text(encoding="utf-8"))
     assert run["status"] == "WAITING"  # fail closed → 链中断
     assert cg.ENV_MODEL not in os.environ  # env 已还原
+
+
+# ---------------------------------------------------------------------------
+# FIX-002（TASK: AAF-v0.5-A5-FREE-FALLBACK-RUNTIME-001-FIX-002）：post-
+# invocation authoritative audit closure 是 exception-safe 的 fail-closed
+# 边界——audit validation / serialization / persistence 的**任何**异常类型
+# （RuntimeError / UnicodeError / 其他未预期实现/runtime 异常）都不能作为裸
+# 异常逃逸（Codex REQUEST_CHANGE 唯一 blocker：_emit 原只捕获
+# ValueError/TypeError/OSError）；attempted=true / used=false / 输出不被接受 /
+# audit_closure_error surface / 无第三模型 / env 还原全部保留。
+# ---------------------------------------------------------------------------
+
+
+def test_fix002_validator_runtime_error_after_fallback_success(tmp_path, monkeypatch):
+    """FIX-002 Codex blocker（validator 抛 RuntimeError）：fallback invocation
+    成功产出有效输出，但权威 audit validator 抛**未预期的 RuntimeError**（旧
+    实现 _emit 只捕获 ValueError/TypeError/OSError → 该异常会裸逃逸，record
+    None 路径与 audit_closure_error 返回无法执行）→ 现在统一收口：attempted=
+    true / used=false / result_text=None / audit_closure_error 显式 surface /
+    无 artifact / 无第三模型。"""
+    reg = _registry(_entry("fb-1"))
+    real_validate = fr.validate_fallback_runtime_record
+
+    def flaky_validate(record):
+        if record.get("fallback_attempted") is True:
+            raise RuntimeError("simulated audit validator RuntimeError (FIX-002)")
+        return real_validate(record)
+
+    monkeypatch.setattr(fr, "validate_fallback_runtime_record", flaky_validate)
+    calls = {}
+    outcome, out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path,
+                                   monkeypatch=monkeypatch)
+    assert calls["calls"] == 1  # fallback invocation 恰一次已发生；无第三模型
+    assert outcome["attempted"] is True       # 不假装 attempt 未发生
+    assert outcome["used"] is False           # 输出不被接受
+    assert outcome["result_text"] is None     # 原始失败保留（fail-closed）
+    assert outcome["audit_record"] is None
+    assert outcome["artifact_ref"] is None
+    assert outcome["overlay_saved"] is not None  # env 还原由调用方执行
+    assert "audit closure" in outcome["audit_closure_error"]
+    assert "RuntimeError" in outcome["audit_closure_error"]
+    assert "simulated audit validator RuntimeError" in outcome["audit_closure_error"]
+    assert not (out_dir / fr.ARTIFACT_FILENAME).exists()  # 无权威 audit 落盘
+    assert os.environ.get(cg.ENV_MODEL) != "fb-1"  # env 已还原
+
+
+def test_fix002_audit_persistence_runtime_error_after_fallback_success(tmp_path, monkeypatch):
+    """FIX-002（persistence 抛 RuntimeError）：fallback invocation 成功但权威
+    audit 写盘抛未预期 RuntimeError → 输出不被接受（attempted=true / used=
+    false / result_text=None）、audit_closure_error 显式 surface、无第三
+    模型、env 还原。"""
+    reg = _registry(_entry("fb-1"))
+
+    def failing_save(output_dir, record):
+        raise RuntimeError("simulated audit persistence RuntimeError (FIX-002)")
+
+    monkeypatch.setattr(fr, "save_fallback_runtime", failing_save)
+    calls = {}
+    outcome, out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path,
+                                   monkeypatch=monkeypatch)
+    assert calls["calls"] == 1
+    assert outcome["attempted"] is True
+    assert outcome["used"] is False
+    assert outcome["result_text"] is None
+    assert outcome["audit_record"] is None
+    assert outcome["artifact_ref"] is None
+    assert "audit closure" in outcome["audit_closure_error"]
+    assert "RuntimeError" in outcome["audit_closure_error"]
+    assert "simulated audit persistence RuntimeError" in outcome["audit_closure_error"]
+    assert not (out_dir / fr.ARTIFACT_FILENAME).exists()
+    assert os.environ.get(cg.ENV_MODEL) != "fb-1"
+
+
+def test_fix002_audit_persistence_unicode_error_after_fallback_success(tmp_path, monkeypatch):
+    """FIX-002（persistence 抛 UnicodeError——序列化/编码类失败的代表）：
+    fallback invocation 成功但权威 audit 写盘抛 UnicodeError → 输出不被接受
+    （attempted=true / used=false / result_text=None）、audit_closure_error
+    显式 surface（含 UnicodeError 类型与消息）、无第三模型、env 还原。"""
+    reg = _registry(_entry("fb-1"))
+
+    def failing_save(output_dir, record):
+        raise UnicodeError("simulated audit persistence UnicodeError (FIX-002)")
+
+    monkeypatch.setattr(fr, "save_fallback_runtime", failing_save)
+    calls = {}
+    outcome, out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path,
+                                   monkeypatch=monkeypatch)
+    assert calls["calls"] == 1
+    assert outcome["attempted"] is True
+    assert outcome["used"] is False
+    assert outcome["result_text"] is None
+    assert outcome["audit_record"] is None
+    assert outcome["artifact_ref"] is None
+    assert "audit closure" in outcome["audit_closure_error"]
+    assert "UnicodeError" in outcome["audit_closure_error"]
+    assert "simulated audit persistence UnicodeError" in outcome["audit_closure_error"]
+    assert not (out_dir / fr.ARTIFACT_FILENAME).exists()
+    assert os.environ.get(cg.ENV_MODEL) != "fb-1"
+
+
+def test_fix002_unexpected_post_invocation_escape_fail_closed(tmp_path, monkeypatch):
+    """FIX-002 兜底边界（_emit 之外、invocation 之后的意外逃逸）：fallback
+    invocation 成功产出有效输出，但输出接受判定（_output_is_valid）抛未预期
+    RuntimeError——旧实现该异常从编排器裸逃逸（attempted=true 事实丢失、env
+    覆盖无法还原）→ 现在 post-invocation 边界兜底收口：attempted=true /
+    used=false / result_text=None / audit_closure_error 显式 surface（真实
+    异常类型+消息）/ overlay_saved 返回 / 无第三模型。"""
+    reg = _registry(_entry("fb-1"))
+
+    def broken_output_is_valid(text):
+        raise RuntimeError("simulated output-acceptance fault (FIX-002)")
+
+    monkeypatch.setattr(fr, "_output_is_valid", broken_output_is_valid)
+    calls = {}
+    outcome, out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path,
+                                   monkeypatch=monkeypatch)
+    assert calls["calls"] == 1  # fallback invocation 恰一次已发生；无第三模型
+    assert outcome["attempted"] is True       # attempt 事实不被任何异常抹掉
+    assert outcome["used"] is False           # fallback 输出不被接受
+    assert outcome["result_text"] is None     # 原始失败保留（fail-closed）
+    assert outcome["audit_record"] is None
+    assert outcome["artifact_ref"] is None
+    assert outcome["overlay_saved"] is not None  # env 还原由调用方执行
+    err = outcome["audit_closure_error"]
+    assert "audit closure" in err
+    assert "RuntimeError" in err
+    assert "simulated output-acceptance fault" in err
+    assert "escaped inside the post-invocation" in err
+    assert not (out_dir / fr.ARTIFACT_FILENAME).exists()
+    assert os.environ.get(cg.ENV_MODEL) != "fb-1"
+
+
+def test_runner_fix002_persistence_runtime_error_not_reduced_to_layer_error(tmp_path, monkeypatch):
+    """真实 runner + audit 写盘抛 RuntimeError（Codex blocker 精确场景）：
+    original 失败 → fallback 恰一次成功（env 覆盖 zzz-fb）→ 权威 audit 持久化
+    抛 RuntimeError（旧实现：_emit 裸逃逸 → runner 只打印 "layer error"、不
+    append audit closure、overlay 无法还原）→ 现在 runner 消费结构化 fail-
+    closed outcome：FRAMEWORK_ERROR 保留 + `FRAMEWORK_ERROR[a5-fallback
+    audit closure failed]` 显式 append（非泛化 layer error）、无
+    fallback_runtime.json、WAITING、无第三模型、env 还原。"""
+    monkeypatch.setattr(mr, "baseline_registry", lambda: _registry(
+        _entry("aaa-orig"),
+        _entry("zzz-fb"),
+    ))
+    seen = {"hermes_calls": 0}
+
+    def fake_run_agent(agent, prompt, workspace):
+        if agent == "hermes":
+            seen["hermes_calls"] += 1
+            if seen["hermes_calls"] == 1:
+                raise RuntimeError("original invocation failed (simulated)")
+            return _structured_ok(agent)  # fallback invocation 本身成功
+        return _structured_ok(agent)
+
+    def failing_save(output_dir, record):
+        raise RuntimeError("simulated audit persistence RuntimeError (FIX-002)")
+
+    monkeypatch.setattr(fr, "save_fallback_runtime", failing_save)
+    out = _run_runner(tmp_path, monkeypatch, _task(RISK_LOW), fake_run_agent)
+    assert seen["hermes_calls"] == 2  # original + 恰一次 fallback；无第三模型
+    result = (out / "hermes_result.md").read_text(encoding="utf-8")
+    assert result.startswith("FRAMEWORK_ERROR")  # fallback 输出未被接受
+    # runner 消费了结构化 audit-closure outcome（不是泛化 "layer error"）：
+    # 只有结构化路径才会 append 该显式 marker
+    assert "FRAMEWORK_ERROR[a5-fallback audit closure failed]" in result
+    assert "audit closure" in result
+    assert "RuntimeError" in result
+    assert "layer error" not in result
+    assert fr.load_fallback_runtime(out) is None  # 无权威 audit artifact
+    run = json.loads((out / "run.json").read_text(encoding="utf-8"))
+    assert run["status"] == "WAITING"  # fail closed → 链中断
+    assert cg.ENV_MODEL not in os.environ  # env 已还原（不泄漏）
+
+
+def test_runner_fix002_validator_runtime_error_fail_closed(tmp_path, monkeypatch):
+    """真实 runner + audit validator 抛 RuntimeError：original 失败 → fallback
+    恰一次成功 → 权威 audit 校验抛未预期 RuntimeError → 输出不被接受、
+    audit closure failure 显式 append、WAITING、无第三模型、env 还原。"""
+    monkeypatch.setattr(mr, "baseline_registry", lambda: _registry(
+        _entry("aaa-orig"),
+        _entry("zzz-fb"),
+    ))
+    seen = {"hermes_calls": 0}
+    real_validate = fr.validate_fallback_runtime_record
+
+    def fake_run_agent(agent, prompt, workspace):
+        if agent == "hermes":
+            seen["hermes_calls"] += 1
+            if seen["hermes_calls"] == 1:
+                raise RuntimeError("original invocation failed (simulated)")
+            return _structured_ok(agent)  # fallback invocation 本身成功
+        return _structured_ok(agent)
+
+    def flaky_validate(record):
+        if record.get("fallback_attempted") is True:
+            raise RuntimeError("simulated audit validator RuntimeError (FIX-002)")
+        return real_validate(record)
+
+    monkeypatch.setattr(fr, "validate_fallback_runtime_record", flaky_validate)
+    out = _run_runner(tmp_path, monkeypatch, _task(RISK_LOW), fake_run_agent)
+    assert seen["hermes_calls"] == 2  # original + 恰一次 fallback；无第三模型
+    result = (out / "hermes_result.md").read_text(encoding="utf-8")
+    assert result.startswith("FRAMEWORK_ERROR")
+    assert "FRAMEWORK_ERROR[a5-fallback audit closure failed]" in result
+    assert "audit closure" in result
+    assert "simulated audit validator RuntimeError" in result
+    assert fr.load_fallback_runtime(out) is None
+    run = json.loads((out / "run.json").read_text(encoding="utf-8"))
+    assert run["status"] == "WAITING"
+    assert cg.ENV_MODEL not in os.environ

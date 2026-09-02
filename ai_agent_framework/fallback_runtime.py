@@ -6,6 +6,22 @@ TASK: AAF-v0.5-A5-FREE-FALLBACK-RUNTIME-001
 fallback-eligible failure 失败后，**至多一次** automatic model-level fallback
 attempt，且只允许 FREE / LOCAL_FREE 合格候选。本任务**不实现 paid escalation**。
 
+FIX-001（TASK: AAF-v0.5-A5-FREE-FALLBACK-RUNTIME-001-FIX-001，Codex 两个
+blocking runtime-contract defects 收口）：
+1. **准入 fail-closed**：本 FREE/LOCAL_FREE fallback runtime 只允许 A0 Paid
+   Guard 结果 = ``ALLOWED_FREE`` 的候选进入第二模型 invocation；
+   ``ALLOWED_AUTHORIZED_PAID``（权威 Cost/Paid Guard 解析为 paid /
+   authorized-paid 语义）**绝不**发起 fallback invocation——即使 registry
+   候选最初标为 FREE/LOCAL_FREE、即使 ``AAF_COST_AUTH`` 存在且精确匹配（A0
+   在 admission 边界按既有一次性语义 claim 该授权，本层不 bypass/削弱/复刻
+   A0；paid escalation = 后续 A5 任务的 scope，本单元只拒绝并 fail closed）。
+2. **authoritative audit closure 是 fallback 结果被接受的前提**：fallback
+   invocation 已发生后，若权威 audit record 的组装/校验/持久化失败——该
+   invocation 的输出**不得**被接受为成功 stage result（fail-closed framework
+   result：result_text=None 保留原始失败），语义如实记录 attempted=true /
+   used=false；audit failure 显式 surface（绝不静默丢弃、绝不假装 attempt 未
+   发生）；不发起第三模型、不重试另一个 fallback。
+
 复用纪律（Requirement 1——不创建平行判断系统）：
 1. 决策 = ``fallback_contract.decide_fallback``（唯一权威 A5 decision contract；
    其内部复用 A2 selector -> A1 registry/risk 契约：role 适用性 → capability
@@ -15,11 +31,15 @@ attempt，且只允许 FREE / LOCAL_FREE 合格候选。本任务**不实现 pai
    ——同一成本闸词汇，不另建）并做确定性选择（零现金类内按 locality → key，
    与 A2 selector 的次级 tie-break 偏好一致）。
 2. 准入 = 既有 A0 Paid Guard（``cost_guard.evaluate``）在 fallback candidate 的
-   env 覆盖下求值：ALLOWED_FREE / ALLOWED_AUTHORIZED_PAID → 允许恰一次
-   invocation；其余（BLOCKED_COST_APPROVAL / guard 失败）→ **不发起第二模型**
-   （fail closed；无 silent paid fallback——A0 authority 持有，授权消费/一次性
-   语义不变）。eligibility 与 admission 之间任何失败一律视作 admission 被拒
-   （authorization_outcome=BLOCKED_COST_APPROVAL + 显式 notes），不产生 attempt。
+   env 覆盖下求值（A0 是 effective cost 的权威解析层）：**仅
+   ALLOWED_FREE → 允许恰一次 invocation**；``ALLOWED_AUTHORIZED_PAID`` →
+   **不发起第二模型**（FIX-001——authoritative result 解析为 paid 语义即拒绝；
+   显式 notes 记录 A0 已按既有一次性语义 claim 精确 scope 授权、本 FREE-only
+   单元拒绝执行 paid fallback，fail closed）；其余（BLOCKED_COST_APPROVAL /
+   guard 失败）→ **不发起第二模型**（fail closed；无 silent paid fallback——
+   A0 authority 持有，授权消费/一次性语义不变）。eligibility 与 admission
+   之间任何失败一律视作 admission 被拒（authorization_outcome=
+   BLOCKED_COST_APPROVAL + 显式 notes），不产生 attempt。
 3. 初始选择 = A3 active routing 行为零修改（Requirement 9）：fallback 只发生在
    **真实原始 invocation 失败之后**（runner 在 try/except 捕获到 invocation
    异常后调用本层），绝不与 initial model selection 混淆。
@@ -38,7 +58,9 @@ One-fallback / no-chain rule（Requirement 2/5/7）：
   第二次）；
 - fallback_attempted=true 仅当第二个不同模型的 invocation 被实际发起；
 - fallback_used=true 仅当该 fallback invocation 的输出成为被接受的 stage
-  执行结果（valid、非 FRAMEWORK_ERROR）；
+  执行结果（valid、非 FRAMEWORK_ERROR）**且权威 audit record 已成功组装、
+  校验并持久化**（FIX-001：authoritative audit closure 是接受前提——audit
+  失败时 attempted=true / used=false，输出不被接受）；
 - 失败的 fallback：used=false，stage 保留原始失败文本（不替换、不伪装）。
 
 Audit（Requirement 6/10）：每个 live outcome 持久化 ``fallback_runtime.json``
@@ -54,8 +76,13 @@ authority 明确区分，互不混淆。
 
 执行顺序纪律：A5 审计 artifact 记录的是**执行结果**（outcome evidence），
 与 A3 active_routing（执行前 admission evidence）不同——本层在 outcome 确定后
-持久化最终记录；eligible 但 admission 被拒（BLOCKED）同样是最终状态并被
-完整审计。持久化失败 → 不发起第二模型（fail closed）。
+持久化最终记录；eligible 但 admission 被拒（BLOCKED / authorized-paid 被本
+FREE-only 单元拒绝）同样是最终状态并被完整审计。持久化失败（发生在第二模型
+invocation **之前**）→ 不发起第二模型（fail closed）。FIX-001：发生在第二模型
+invocation **之后**的 audit 失败（组装/校验/持久化）→ invocation 不可撤销
+（attempted=true 如实记录）但其输出**绝不**被接受（used=false、result_text=None
+保留原始失败），audit failure 经返回结构显式 surface——fail closed，不发起
+第三模型、不重试另一个 fallback。
 
 Executor 资格（Context：Hermes executor candidate 必须有真实 main-executor
 qualification）：selector 的 executor scope=main 闸原样生效（auxiliary/unknown
@@ -403,13 +430,23 @@ def assemble_runtime_audit_record(
             "budget is consumed by at most one attempt — no third model, no "
             "fallback chain/loop"
         )
-    evidence.append(
-        "no silent paid fallback: this runtime unit never invokes a paid or "
-        "unknown-cost model — candidates are FREE/LOCAL_FREE only "
-        f"(gate {sorted(FALLBACK_COST_CLASSES)}) and every candidate "
-        "invocation passes the existing A0 Paid Guard admission "
-        f"(authorization_outcome={authorization_outcome!r})"
-    )
+    if attempted:
+        evidence.append(
+            "no silent paid fallback: the single fallback invocation passed "
+            "the existing A0 Paid Guard admission with an ALLOWED_FREE "
+            f"decision (authorization_outcome={authorization_outcome!r}) — "
+            "this FREE/LOCAL_FREE unit never invokes a paid or unknown-cost "
+            f"model (gate {sorted(FALLBACK_COST_CLASSES)}); an "
+            "ALLOWED_AUTHORIZED_PAID admission is refused before invocation "
+            "(FIX-001)"
+        )
+    else:
+        evidence.append(
+            "no silent paid fallback: no second model invocation occurred "
+            f"(authorization_outcome={authorization_outcome!r}) — paid / "
+            "unknown-cost / authorized-paid semantics never enter invocation "
+            "in this FREE/LOCAL_FREE unit (FIX-001 admission fail-closed)"
+        )
     if not attempted:
         evidence.append(
             "no automatic model switch occurred: final actual model/provider "
@@ -588,8 +625,11 @@ def validate_fallback_runtime_record(record: dict) -> None:
     与 contract validator（validate_fallback_record，foundation 语义）分层：
     本 validator 校验**已执行 stage** 的记录——attempted/used/final actual 按
     Requirement 7 语义真实反映执行结果；contract decision record 的 foundation
-    不变量（attempted/used 恒 False）零修改、互不混淆。任一违例 → ValueError
-    （不返回部分有效状态）。
+    不变量（attempted/used 恒 False）零修改、互不混淆。FIX-001 语义：attempted
+    只允许 authorization_outcome=ALLOWED_FREE（本 FREE/LOCAL_FREE 单元绝不执行
+    authorized-paid 候选）；eligible-未attempt 允许 BLOCKED（A0 拒绝）或
+    ALLOWED_AUTHORIZED_PAID（A0 准入为 paid 但本 FREE-only 单元拒绝执行）。
+    任一违例 → ValueError（不返回部分有效状态）。
     """
     if not isinstance(record, dict):
         raise ValueError(f"record must be a dict, got {type(record).__name__}")
@@ -726,24 +766,32 @@ def validate_fallback_runtime_record(record: dict) -> None:
             raise ValueError(
                 "an attempted fallback requires an executable fallback_candidate"
             )
+        if record["authorization_outcome"] != AUTH_OUTCOME_ALLOWED_FREE:
+            raise ValueError(
+                "an attempted fallback requires an A0 Paid Guard "
+                "ALLOWED_FREE admission (this FREE/LOCAL_FREE fallback "
+                "runtime never executes an ALLOWED_AUTHORIZED_PAID "
+                "candidate — paid fallback is a later A5 unit's scope; "
+                "no silent paid execution; FIX-001 admission fail-closed)"
+            )
+    elif decision_token == fc.DECISION_FALLBACK_ELIGIBLE:
+        # eligible 但未 attempt：合法路径只有 admission 边界拒绝——A0 BLOCKED
+        # （guard 拒绝 / admission 前失败）或 A0 准入为 paid 但本 FREE-only
+        # 单元拒绝执行 authorized-paid fallback（FIX-001；A0 已按既有一次性
+        # 语义 claim 精确 scope 授权，但本单元绝不因此执行 paid fallback）
         if record["authorization_outcome"] not in (
-            AUTH_OUTCOME_ALLOWED_FREE,
+            AUTH_OUTCOME_BLOCKED,
             AUTH_OUTCOME_ALLOWED_AUTHORIZED_PAID,
         ):
             raise ValueError(
-                "an attempted fallback requires an A0 Paid Guard ALLOWED "
-                "admission (BLOCKED_COST_APPROVAL never leads to an "
-                "invocation — no silent paid fallback)"
-            )
-    elif decision_token == fc.DECISION_FALLBACK_ELIGIBLE:
-        # eligible 但未 attempt：唯一合法路径 = admission 被拒（A0 BLOCKED /
-        # admission 前失败，一律按 BLOCKED fail closed 记录）
-        if record["authorization_outcome"] != AUTH_OUTCOME_BLOCKED:
-            raise ValueError(
-                "fallback_eligible with no attempt requires "
-                "authorization_outcome=BLOCKED_COST_APPROVAL (admission "
-                "denied — an eligible-but-not-attempted record is otherwise "
-                "contradictory)"
+                "fallback_eligible with no attempt requires the admission "
+                "to have been denied at the boundary: authorization_outcome "
+                "must be BLOCKED_COST_APPROVAL (A0 Paid Guard denied) or "
+                "ALLOWED_AUTHORIZED_PAID (A0 admitted the candidate as PAID "
+                "but this FREE/LOCAL_FREE fallback runtime refuses to "
+                "execute paid fallback — attempted=false, no second model) "
+                "— an eligible-but-not-attempted record is otherwise "
+                "contradictory"
             )
 
     if decision_token in (
@@ -916,18 +964,29 @@ def run_fallback_after_failure(
     5. runtime eligible 时：candidate env 覆盖（复用 A3 env 契约与
        ``active_routing.restore_routing_env`` 还原机制；candidate 无 base_url 时
        显式清除 stale 覆盖，admission truth = candidate 自身事实）→ A0 Paid
-       Guard 求值（既有 authority）：
-       - ALLOWED_FREE / ALLOWED_AUTHORIZED_PAID → invoke 恰一次；
+       Guard 求值（既有 authority；FIX-001 admission fail-closed）：
+       - **仅 ALLOWED_FREE → invoke 恰一次**（本 FREE/LOCAL_FREE 单元唯一
+         允许进入第二模型 invocation 的准入结果）；
+       - ALLOWED_AUTHORIZED_PAID → 还原 env，**不 invocation**
+         （authorization_outcome=ALLOWED_AUTHORIZED_PAID 如实记录 A0 结果 +
+         显式 notes：A0 已按既有一次性语义 claim 精确 scope 授权，但本
+         FREE-only 单元拒绝执行 paid fallback——paid escalation 是后续 A5
+         任务 scope，fail closed）；
        - BLOCKED_COST_APPROVAL / admission 前失败 → 还原 env，不 invocation
          （authorization_outcome=BLOCKED_COST_APPROVAL + 显式 notes）；
     6. 最终 audit record 组装 + 校验 + 落盘（artifact 记录的是 outcome
-       evidence；持久化失败 → 不发起第二模型，fail closed）。
+       evidence；invocation **之前**的持久化失败 → 不发起第二模型，fail
+       closed；FIX-001：invocation **之后**的 audit 组装/校验/持久化失败 →
+       该 invocation 的输出**不**被接受为成功 stage result——返回
+       attempted=true / used=false / result_text=None 的 fail-closed 结构 +
+       audit_closure_error 显式 surface，不发起第三模型、不重试 fallback）。
 
     返回 dict（runner 消费）：
     {"result_text", "audit_record", "artifact_ref", "attempted", "used",
-     "overlay_saved"}；result_text=None → runner 保留其原始 FRAMEWORK_ERROR
-    文本；overlay_saved 非 None 仅当已发起 candidate invocation——调用方必须
-    在 model/shadow observation **之后**、A3 routing env 还原**之前**调用
+     "overlay_saved"}（audit closure 失败时另含 "audit_closure_error"）；
+    result_text=None → runner 保留其原始 FRAMEWORK_ERROR 文本；overlay_saved
+    非 None 仅当已发起 candidate invocation——调用方必须在 model/shadow
+    observation **之后**、A3 routing env 还原**之前**调用
     ``active_routing.restore_routing_env(overlay_saved)`` 还原（observation 必须
     如实看到 final actual invocation model）。前置不满足 → None。
     """
@@ -961,6 +1020,10 @@ def run_fallback_after_failure(
     except (ValueError, TypeError):
         return None  # malformed/无法决策 → fail closed：不评估、不 attempt
 
+    # 最近一次 _emit 失败详情（FIX-001：audit closure 失败必须显式 surface，
+    # 绝不静默丢弃——post-invocation 路径将其带进返回结构）
+    emit_failure: list[str] = []
+
     def _emit(
         *,
         attempted: bool,
@@ -969,7 +1032,11 @@ def run_fallback_after_failure(
         extra_notes: list[str] | None = None,
         extra_evidence: list[str] | None = None,
     ) -> dict | None:
-        """组装 + 校验 + 落盘最终 audit record；失败 → None（fail closed）。"""
+        """组装 + 校验 + 落盘最终 audit record；失败 → None（fail closed）。
+
+        失败详情记录到 ``emit_failure``（FIX-001：调用方必须显式 surface，
+        绝不静默丢弃 audit failure）。
+        """
         try:
             record = assemble_runtime_audit_record(
                 decision_record=decision_record,
@@ -990,6 +1057,9 @@ def run_fallback_after_failure(
             )
             save_fallback_runtime(output_dir, record)
         except (ValueError, TypeError, OSError) as exc:
+            emit_failure[:] = [
+                f"{type(exc).__name__}: {_excerpt(str(exc))}"
+            ]
             if os.environ.get("AAF_FALLBACK_DEBUG"):
                 print(
                     f"[a5-fallback][debug] _emit failed: "
@@ -1080,11 +1150,50 @@ def run_fallback_after_failure(
         return _no_attempt_result(output_dir, stage_agent, record)
 
     guard_decision = guard_record.get("decision")
-    if guard_decision not in (
-        AUTH_OUTCOME_ALLOWED_FREE,
-        AUTH_OUTCOME_ALLOWED_AUTHORIZED_PAID,
-    ):
-        # A0 BLOCKED（缺精确 task-scoped 授权 / 成本未知 / 无法准入）→ 不 invocation
+    if guard_decision == AUTH_OUTCOME_ALLOWED_AUTHORIZED_PAID:
+        # FIX-001（Codex BLOCKING #1 收口）：A0 Paid Guard 的权威结果 =
+        # authorized-paid 语义 → 本 FREE/LOCAL_FREE fallback runtime **绝不**
+        # 发起该候选的 invocation——registry 候选最初标为 FREE/LOCAL_FREE 不
+        # 改变该结论（A0 是 effective cost 的权威解析层）；AAF_COST_AUTH 存在
+        # 且精确匹配也不能把本单元变成 paid fallback（A0 在 admission 边界按
+        # 既有一次性语义 claim 该授权——本层不 bypass、不削弱、不复刻 A0，
+        # 也不消耗超出 A0 既有语义的授权；paid escalation = 后续 A5 任务的
+        # scope，本单元只拒绝并 fail closed）。
+        active_routing_mod.restore_routing_env(overlay_saved)
+        record = _emit(
+            attempted=False,
+            used=False,
+            authorization_outcome=AUTH_OUTCOME_ALLOWED_AUTHORIZED_PAID,
+            extra_notes=[
+                "A0 Paid Guard admitted the fallback candidate as PAID "
+                f"(decision={guard_decision!r}, cost_class="
+                f"{guard_record.get('cost_class')!r}, required_scope="
+                f"{guard_record.get('required_scope')!r}) — the exact "
+                "task-scoped authorization was atomically claimed at the A0 "
+                "admission boundary by the existing Paid Guard (one-time "
+                "semantics preserved; A0 authority unmodified — this unit "
+                "does not bypass, weaken or replicate it) BUT this "
+                "FREE/LOCAL_FREE fallback runtime NEVER executes an "
+                "authorized-paid / paid-classified fallback candidate: paid "
+                "escalation is a later A5 unit's scope. No second model was "
+                "invoked; no silent paid fallback (fail closed; the original "
+                "stage failure is preserved)",
+            ],
+            extra_evidence=[
+                f"authorized-paid candidate {selected!r} was NOT invoked: "
+                "the authoritative A0 Paid Guard result "
+                "ALLOWED_AUTHORIZED_PAID resolves paid semantics — this "
+                "FREE/LOCAL_FREE fallback runtime refuses paid fallback "
+                "execution; attempted=false, no second model invocation "
+                "(FIX-001 admission fail-closed; AAF_COST_AUTH cannot "
+                "convert this unit into paid fallback)",
+            ],
+        )
+        return _no_attempt_result(output_dir, stage_agent, record)
+
+    if guard_decision != AUTH_OUTCOME_ALLOWED_FREE:
+        # A0 BLOCKED（缺精确 task-scoped 授权 / 成本未知 / 无法准入 / guard
+        # record 异常）→ 不 invocation（unknown-paid 语义同样 fail closed）
         active_routing_mod.restore_routing_env(overlay_saved)
         blocked_notes = [
             "A0 Paid Guard denied the fallback candidate admission "
@@ -1107,7 +1216,8 @@ def run_fallback_after_failure(
         )
         return _no_attempt_result(output_dir, stage_agent, record)
 
-    # --- ALLOWED：invoke 恰一次 ---
+    # --- A0 Paid Guard ALLOWED_FREE：本 FREE/LOCAL_FREE 单元唯一允许进入
+    #     第二模型 invocation 的准入结果 → invoke 恰一次 ---
     attempted = True
     used = False
     fb_output: str | None = None
@@ -1137,33 +1247,45 @@ def run_fallback_after_failure(
             )
 
     extra_notes = [
-        f"A0 Paid Guard admitted the fallback candidate (decision="
-        f"{guard_decision!r}, cost_class={guard_record.get('cost_class')!r}) "
-        "— exactly one fallback invocation attempted",
+        f"A0 Paid Guard admitted the fallback candidate as FREE "
+        f"(decision={guard_decision!r}, cost_class="
+        f"{guard_record.get('cost_class')!r}) — exactly one fallback "
+        "invocation attempted (ALLOWED_FREE is the only admission this "
+        "FREE/LOCAL_FREE unit executes; no authorization value involved)",
     ]
-    if guard_decision == AUTH_OUTCOME_ALLOWED_AUTHORIZED_PAID:
-        extra_notes.append(
-            "authorization consumed at the admission boundary by the existing "
-            "task-scoped Paid Guard (one-time semantics preserved; this unit "
-            "runs no separate authorization flow)"
-        )
     record = _emit(
         attempted=attempted,
         used=used,
-        authorization_outcome=guard_decision,
+        authorization_outcome=AUTH_OUTCOME_ALLOWED_FREE,
         extra_notes=extra_notes,
         extra_evidence=invocation_evidence,
     )
     if record is None:
-        # attempt 已发生（不可撤销）但审计落盘失败——如实返回结果并显式标注
-        # （runner 侧 FRAMEWORK_ERROR 语义保持；审计缺失不伪装）
+        # FIX-001（Codex BLOCKING #2 收口）：fallback invocation 已发生
+        # （attempted=true 不可撤销、绝不假装未发生），但权威 audit record 的
+        # 组装/校验/持久化失败 → authoritative audit closure 缺失 → 该
+        # invocation 的输出**不得**被接受为成功 stage result（used=false；
+        # result_text=None 保留原始失败 = fail-closed framework result）；
+        # audit failure 经 audit_closure_error 显式 surface（绝不静默丢弃）；
+        # 不发起第三模型、不重试另一个 fallback（单次调用点语义保持）。
+        exc_desc = emit_failure[-1] if emit_failure else "unknown audit closure failure"
+        audit_error = (
+            f"authoritative fallback runtime audit closure FAILED after the "
+            f"fallback invocation of {selected!r} was actually attempted "
+            f"(attempted=true; {exc_desc}) — the fallback output is NOT "
+            "accepted as the stage result (used=false, fail closed): no "
+            "third model invocation and no further fallback retry will "
+            "occur; the audit failure is surfaced here and to stderr, not "
+            "silently discarded"
+        )
         return {
-            "result_text": fb_output if used else None,
+            "result_text": None,
             "audit_record": None,
             "artifact_ref": None,
-            "attempted": attempted,
-            "used": used,
+            "attempted": True,
+            "used": False,
             "overlay_saved": overlay_saved,
+            "audit_closure_error": audit_error,
         }
     return {
         "result_text": fb_output if used else None,

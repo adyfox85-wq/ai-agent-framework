@@ -816,3 +816,279 @@ def test_runner_same_model_only_no_fallback(tmp_path, monkeypatch):
     fr.validate_fallback_runtime_record(audit)
     run = json.loads((out / "run.json").read_text(encoding="utf-8"))
     assert run["status"] == "WAITING"
+
+
+# ---------------------------------------------------------------------------
+# 3. FIX-001（TASK: AAF-v0.5-A5-FREE-FALLBACK-RUNTIME-001-FIX-001）
+#    admission fail-closed + authoritative audit closure 收口
+# ---------------------------------------------------------------------------
+
+
+def test_fix001_authorized_paid_never_invokes(tmp_path, monkeypatch):
+    """FIX-001 Codex BLOCKING #1：registry 候选标 FREE（远程免费）但 A0 Paid
+    Guard 权威解析 = paid + AAF_COST_AUTH 精确匹配 → ALLOWED_AUTHORIZED_PAID
+    → 本 FREE-only 单元拒绝：无第二 invocation、attempted=false、
+    authorization_outcome=ALLOWED_AUTHORIZED_PAID 如实记录（A0 已在 admission
+    边界按既有一次性语义 claim 授权——A0 零修改）、no-silent-paid evidence、
+    artifact 校验通过、env 覆盖已还原。"""
+    monkeypatch.setattr(cg, "resolve_effective_hermes", _REAL_RESOLVE)
+    reg = _registry(
+        _entry(
+            "remote-free",
+            provider="remote-api",
+            cost=FREE,
+            base_url=None,
+            locality=mr.LOCALITY_REMOTE,
+        )
+    )
+    auth = cg.scope_string("A5R-UNIT-1", "hermes", "remote-free", "remote-api")
+    monkeypatch.setenv(cg.ENV_AUTH, auth)
+    calls = {}
+    outcome, out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path,
+                                   monkeypatch=monkeypatch)
+    rec = outcome["audit_record"]
+    assert calls["calls"] == 0  # authorized-paid 绝不进入第二模型 invocation
+    assert outcome["attempted"] is False
+    assert outcome["used"] is False
+    assert outcome["result_text"] is None  # 原始失败保留
+    assert outcome["overlay_saved"] is None
+    assert os.environ.get(cg.ENV_MODEL) != "remote-free"  # env 已还原
+    assert rec["decision"] == fc.DECISION_FALLBACK_ELIGIBLE  # contract 层 eligible
+    assert rec["fallback_eligible"] is True
+    assert rec["fallback_attempted"] is False
+    assert rec["fallback_used"] is False
+    # A0 权威 token 如实记录（不伪装成 BLOCKED / 不伪造 guard 结果）
+    assert rec["authorization_outcome"] == fr.AUTH_OUTCOME_ALLOWED_AUTHORIZED_PAID
+    assert rec["paid_escalation_required"] is False
+    assert rec["final_actual_model"] == rec["original_model"]
+    # A0 在 admission 边界按既有一次性语义 claim 了精确 scope 授权（既有行为，
+    # 本层不 bypass/复刻；claim ≠ 本单元执行 paid fallback）
+    assert (out_dir / cg.CONSUMPTION_FILENAME).exists()
+    notes_text = " ".join(rec["notes"])
+    evidence_text = " ".join(rec["no_silent_fallback_evidence"])
+    assert "paid escalation is a later A5 unit's scope" in notes_text
+    assert "was NOT invoked" in evidence_text
+    assert "no silent paid fallback" in evidence_text
+    fr.validate_fallback_runtime_record(rec)
+    # artifact 落盘 + reload 复验
+    loaded = fr.load_fallback_runtime(out_dir)
+    assert loaded is not None
+    fr.validate_fallback_runtime_record(loaded)
+    assert loaded["authorization_outcome"] == fr.AUTH_OUTCOME_ALLOWED_AUTHORIZED_PAID
+
+
+def test_fix001_cost_auth_cannot_convert_free_unit_to_paid(tmp_path, monkeypatch):
+    """FIX-001：AAF_COST_AUTH 存在且精确匹配 → 若候选真实免费（LOCAL_FREE
+    loopback），guard 仍 ALLOWED_FREE → 恰一次 invocation、零授权消费（A0
+    只在 paid 分支 claim）；auth 存在本身既不阻断免费 fallback 也不能把本
+    单元变成 paid fallback。"""
+    monkeypatch.setattr(cg, "resolve_effective_hermes", _REAL_RESOLVE)
+    # 本地 LOCAL_FREE 候选（loopback 端点 → guard ALLOWED_FREE）
+    reg = _registry(_entry("fb-local"))
+    auth = cg.scope_string("A5R-UNIT-1", "hermes", "fb-local", "custom")
+    monkeypatch.setenv(cg.ENV_AUTH, auth)
+    calls = {}
+    outcome, out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path,
+                                   monkeypatch=monkeypatch)
+    rec = outcome["audit_record"]
+    assert calls["calls"] == 1  # 真实免费候选仍可 fallback（auth 不阻断免费）
+    assert outcome["attempted"] is True
+    assert outcome["used"] is True
+    assert rec["authorization_outcome"] == fr.AUTH_OUTCOME_ALLOWED_FREE
+    assert rec["fallback_attempted"] is True
+    assert rec["fallback_used"] is True
+    assert not (out_dir / cg.CONSUMPTION_FILENAME).exists()  # 零授权消费
+    fr.validate_fallback_runtime_record(rec)
+
+
+def test_fix001_auth_mismatch_blocked_no_invocation(tmp_path, monkeypatch):
+    """FIX-001：registry FREE 远程候选 + AAF_COST_AUTH 存在但 scope 不匹配 →
+    A0 BLOCKED（unknown-paid/未授权语义）→ 无第二 invocation、attempted=false、
+    authorization_outcome=BLOCKED_COST_APPROVAL、notes 显式 mismatch。"""
+    monkeypatch.setattr(cg, "resolve_effective_hermes", _REAL_RESOLVE)
+    reg = _registry(
+        _entry(
+            "remote-free",
+            provider="remote-api",
+            cost=FREE,
+            base_url=None,
+            locality=mr.LOCALITY_REMOTE,
+        )
+    )
+    monkeypatch.setenv(cg.ENV_AUTH, "WRONG|scope|remote-free|remote-api")
+    calls = {}
+    outcome, out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path,
+                                   monkeypatch=monkeypatch)
+    rec = outcome["audit_record"]
+    assert calls["calls"] == 0
+    assert outcome["attempted"] is False
+    assert rec["authorization_outcome"] == fr.AUTH_OUTCOME_BLOCKED
+    assert rec["fallback_attempted"] is False
+    assert any("did not exactly match" in n for n in rec["notes"])
+    fr.validate_fallback_runtime_record(rec)
+
+
+def test_fix001_validator_rejects_attempted_with_authorized_paid(tmp_path):
+    """FIX-001 validator 不变量：attempted=true 只允许 ALLOWED_FREE admission；
+    ALLOWED_AUTHORIZED_PAID + attempted=true（paid fallback 执行）→ ValueError；
+    eligible-未attempt 且 auth=NONE（非合法拒绝形态）→ ValueError。"""
+    reg = _registry(_entry("fb-1"))
+    outcome, out_dir, _state = _run(reg, tmp_path=tmp_path)
+    rec = dict(outcome["audit_record"])
+    fr.validate_fallback_runtime_record(rec)
+    bad = dict(rec, authorization_outcome=fr.AUTH_OUTCOME_ALLOWED_AUTHORIZED_PAID)
+    with pytest.raises(ValueError):
+        fr.validate_fallback_runtime_record(bad)
+    bad = dict(rec, fallback_attempted=False, fallback_used=False,
+               authorization_outcome=fr.AUTH_OUTCOME_NONE)
+    with pytest.raises(ValueError):
+        fr.validate_fallback_runtime_record(bad)
+
+
+def test_fix001_audit_validation_failure_after_fallback_success(tmp_path, monkeypatch):
+    """FIX-001 Codex BLOCKING #2（audit validation failure）：fallback invocation
+    成功产出有效输出，但权威 audit 校验失败 → 输出**不**被接受（attempted=true /
+    used=false / result_text=None）、audit failure 显式 surface、无 artifact、
+    无第三模型 invocation。"""
+    reg = _registry(_entry("fb-1"))
+    real_validate = fr.validate_fallback_runtime_record
+
+    def flaky_validate(record):
+        if record.get("fallback_attempted") is True:
+            raise ValueError("simulated audit validation failure (FIX-001)")
+        return real_validate(record)
+
+    monkeypatch.setattr(fr, "validate_fallback_runtime_record", flaky_validate)
+    calls = {}
+    outcome, out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path,
+                                   monkeypatch=monkeypatch)
+    assert calls["calls"] == 1  # fallback invocation 恰一次已发生；无第三模型
+    assert outcome["attempted"] is True       # 不假装 attempt 未发生
+    assert outcome["used"] is False           # 输出不被接受
+    assert outcome["result_text"] is None     # 原始失败保留（fail-closed）
+    assert outcome["audit_record"] is None
+    assert outcome["artifact_ref"] is None
+    assert "audit closure" in outcome["audit_closure_error"]
+    assert "simulated audit validation failure" in outcome["audit_closure_error"]
+    assert not (out_dir / fr.ARTIFACT_FILENAME).exists()  # 无权威 audit 落盘
+    # overlay 由调用方还原（模拟 runner 语义）
+    assert os.environ.get(cg.ENV_MODEL) != "fb-1"
+
+
+def test_fix001_audit_persistence_failure_after_fallback_success(tmp_path, monkeypatch):
+    """FIX-001 Codex BLOCKING #2（audit persistence failure）：fallback invocation
+    成功但权威 audit 写盘失败 → 输出**不**被接受（attempted=true / used=false /
+    result_text=None）、audit failure 显式 surface、无 artifact、无第三模型。"""
+    reg = _registry(_entry("fb-1"))
+
+    def failing_save(output_dir, record):
+        raise OSError("simulated audit persistence failure (FIX-001)")
+
+    monkeypatch.setattr(fr, "save_fallback_runtime", failing_save)
+    calls = {}
+    outcome, out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path,
+                                   monkeypatch=monkeypatch)
+    assert calls["calls"] == 1
+    assert outcome["attempted"] is True
+    assert outcome["used"] is False
+    assert outcome["result_text"] is None
+    assert outcome["audit_record"] is None
+    assert outcome["artifact_ref"] is None
+    assert "audit closure" in outcome["audit_closure_error"]
+    assert "simulated audit persistence failure" in outcome["audit_closure_error"]
+    assert not (out_dir / fr.ARTIFACT_FILENAME).exists()
+    assert os.environ.get(cg.ENV_MODEL) != "fb-1"
+
+
+def test_fix001_audit_failure_when_fallback_invocation_also_failed(tmp_path, monkeypatch):
+    """FIX-001：fallback invocation 自身失败 + audit closure 也失败 → 仍如实
+    attempted=true / used=false、audit failure 显式 surface（不静默丢弃）。"""
+    reg = _registry(_entry("fb-1"))
+
+    def failing_invoke(agent, prompt, workspace):
+        raise RuntimeError("fallback model also failed (simulated)")
+
+    def failing_save(output_dir, record):
+        raise OSError("simulated audit persistence failure (FIX-001)")
+
+    monkeypatch.setattr(fr, "save_fallback_runtime", failing_save)
+    outcome, out_dir, state = _run(reg, invoke=failing_invoke, tmp_path=tmp_path,
+                                   monkeypatch=monkeypatch)
+    assert state["calls"] == 0  # invoke 抛异常 → default_invoke 未被调用
+    assert outcome["attempted"] is True
+    assert outcome["used"] is False
+    assert outcome["result_text"] is None
+    assert "audit closure" in outcome["audit_closure_error"]
+
+
+# ---- FIX-001 runner 集成 ----
+
+
+def test_runner_fix001_authorized_paid_no_fallback_invocation(tmp_path, monkeypatch):
+    """真实 runner：A3 路由 aaa-orig（LOCAL_FREE）失败 → A5 候选 = registry
+    FREE 远程模型 + AAF_COST_AUTH 精确匹配 → guard ALLOWED_AUTHORIZED_PAID →
+    本 FREE-only 单元拒绝 → 恰 1 次 invocation（无第二模型）、audit
+    attempted=false / auth=ALLOWED_AUTHORIZED_PAID、run=WAITING、无 silent
+    paid execution、env 不泄漏。"""
+    monkeypatch.setattr(cg, "resolve_effective_hermes", _REAL_RESOLVE)
+    monkeypatch.setattr(mr, "baseline_registry", lambda: _registry(
+        _entry("aaa-orig"),
+        _entry("remote-free", provider="remote-api", cost=FREE, base_url=None,
+               locality=mr.LOCALITY_REMOTE),
+    ))
+    auth = cg.scope_string("A5R-RUN", "hermes", "remote-free", "remote-api")
+    monkeypatch.setenv(cg.ENV_AUTH, auth)
+    hermes_calls = {"n": 0}
+
+    def fake_run_agent(agent, prompt, workspace):
+        if agent == "hermes":
+            hermes_calls["n"] += 1
+            raise RuntimeError("original invocation failed (simulated)")
+        return _structured_ok(agent)
+
+    out = _run_runner(tmp_path, monkeypatch, _task(RISK_LOW), fake_run_agent)
+    assert hermes_calls["n"] == 1  # 无第二模型 invocation（no silent paid）
+    audit = fr.load_fallback_runtime(out)
+    assert audit["fallback_attempted"] is False
+    assert audit["authorization_outcome"] == fr.AUTH_OUTCOME_ALLOWED_AUTHORIZED_PAID
+    assert audit["fallback_eligible"] is True
+    assert audit["final_actual_model"] == audit["original_model"]
+    assert any("was NOT invoked" in e for e in audit["no_silent_fallback_evidence"])
+    fr.validate_fallback_runtime_record(audit)
+    run = json.loads((out / "run.json").read_text(encoding="utf-8"))
+    assert run["status"] == "WAITING"
+    assert cg.ENV_MODEL not in os.environ  # env 不泄漏到后续 stage
+
+
+def test_runner_fix001_audit_persistence_failure_output_not_accepted(tmp_path, monkeypatch):
+    """真实 runner + audit 写盘失败注入：original 失败 → fallback 恰一次成功
+    调用（env 覆盖 zzz-fb）→ audit 持久化失败 → fallback 输出**不**成为 stage
+    result：FRAMEWORK_ERROR 保留 + audit closure failure 显式 append、无
+    fallback_runtime.json、run=WAITING、无第三模型。"""
+    monkeypatch.setattr(mr, "baseline_registry", lambda: _registry(
+        _entry("aaa-orig"),
+        _entry("zzz-fb"),
+    ))
+    seen = {"hermes_calls": 0}
+
+    def fake_run_agent(agent, prompt, workspace):
+        if agent == "hermes":
+            seen["hermes_calls"] += 1
+            if seen["hermes_calls"] == 1:
+                raise RuntimeError("original invocation failed (simulated)")
+            return _structured_ok(agent)  # fallback invocation 本身成功
+        return _structured_ok(agent)
+
+    def failing_save(output_dir, record):
+        raise OSError("simulated audit persistence failure (FIX-001)")
+
+    monkeypatch.setattr(fr, "save_fallback_runtime", failing_save)
+    out = _run_runner(tmp_path, monkeypatch, _task(RISK_LOW), fake_run_agent)
+    assert seen["hermes_calls"] == 2  # original + 恰一次 fallback；无第三模型
+    result = (out / "hermes_result.md").read_text(encoding="utf-8")
+    assert result.startswith("FRAMEWORK_ERROR")  # fallback 输出未被接受
+    assert "audit closure" in result  # audit failure 显式 surface（不静默丢弃）
+    assert fr.load_fallback_runtime(out) is None  # 无权威 audit artifact
+    run = json.loads((out / "run.json").read_text(encoding="utf-8"))
+    assert run["status"] == "WAITING"  # fail closed → 链中断
+    assert cg.ENV_MODEL not in os.environ  # env 已还原

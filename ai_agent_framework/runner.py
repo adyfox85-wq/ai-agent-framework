@@ -640,6 +640,24 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                             if fb_outcome is not None:
                                 if fb_outcome.get('result_text') is not None:
                                     result_text = fb_outcome['result_text']
+                                a5_audit_closure_error = fb_outcome.get('audit_closure_error')
+                                if a5_audit_closure_error:
+                                    # v0.5 A5 FIX-001：authoritative audit 未闭合 →
+                                    # fallback 输出不得成为 stage result（fallback
+                                    # 层已返回 result_text=None / used=false）——
+                                    # 显式 surface audit failure：stderr + 追加到
+                                    # stage result 文本（attempt 证据持久化，绝不
+                                    # 静默丢弃；不发起第三模型、不重试 fallback）。
+                                    print(
+                                        f'[a5-fallback] {a5_audit_closure_error}',
+                                        file=sys.stderr,
+                                    )
+                                    result_text = (
+                                        f'{result_text}\n'
+                                        'FRAMEWORK_ERROR[a5-fallback audit '
+                                        'closure failed]: '
+                                        f'{a5_audit_closure_error}'
+                                    )
                                 fallback_runtime_ref = fb_outcome.get('artifact_ref')
                                 fallback_overlay_saved = fb_outcome.get('overlay_saved') or None
                     except Exception as a5_exc:

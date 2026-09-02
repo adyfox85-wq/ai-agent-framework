@@ -24,7 +24,9 @@ from ai_agent_framework import model_observation as mo
 from ai_agent_framework import model_registry as mr
 from ai_agent_framework import risk_contract as rc
 from ai_agent_framework.shadow_routing import (
+    EXCL_AUXILIARY_ONLY,
     EXCL_CAPABILITY_INSUFFICIENT,
+    EXCL_MAIN_INVOCATION_UNPROVEN,
     EXCL_NOT_QUALIFIED,
     EXCL_QUALIFICATION_UNKNOWN,
     EXCL_ROLE_NOT_APPLICABLE,
@@ -55,7 +57,13 @@ REMOTE = mr.LOCALITY_REMOTE
 
 
 def _entry(**overrides) -> mr.RegistryEntry:
-    """测试便捷构造：默认 = 已 qualified、FREE 成本的 T3 条目（stage=hermes）。"""
+    """测试便捷构造：默认 = 已 qualified、FREE 成本的 T3 条目（stage=hermes）。
+
+    scope=main（TASK: AAF-v0.5-A3-HERMES-EXECUTOR-QUALIFICATION-FIX-001）：
+    executor 角色要求 qualification evidence 覆盖真实主调用路径——「有效
+    executor 候选」fixture 必须显式声明 main scope；auxiliary/unknown-scope
+    候选的排除语义由专项测试锁定。
+    """
     base = dict(
         model="m1",
         provider="p1",
@@ -63,7 +71,9 @@ def _entry(**overrides) -> mr.RegistryEntry:
         capability_tier=mr.CAP_TIER_T3,
         cost_class=FREE,
         locality=mr.LOCALITY_UNKNOWN,
-        qualification=mr.RuntimeQualification(status=mr.QUAL_STATUS_QUALIFIED),
+        qualification=mr.RuntimeQualification(
+            status=mr.QUAL_STATUS_QUALIFIED, scope=mr.QUAL_SCOPE_MAIN
+        ),
     )
     base.update(overrides)
     return mr.RegistryEntry(**base)
@@ -72,7 +82,9 @@ def _entry(**overrides) -> mr.RegistryEntry:
 def _qualified(tier: str, model: str = "m", provider: str = "p", **kw) -> mr.RegistryEntry:
     return _entry(
         model=model, provider=provider, capability_tier=tier,
-        qualification=mr.RuntimeQualification(status=mr.QUAL_STATUS_QUALIFIED),
+        qualification=mr.RuntimeQualification(
+            status=mr.QUAL_STATUS_QUALIFIED, scope=mr.QUAL_SCOPE_MAIN
+        ),
         **kw,
     )
 
@@ -569,21 +581,26 @@ def test_a1_registry_schema_strictness_preserved():
 # ---------------------------------------------------------------------------
 
 
-def test_baseline_registry_low_selects_qwen3_local_free():
-    """RW-030-001 核心验收：LOW Hermes shadow 决策把 qwen3:4b@custom
-    （T4 + QUALIFIED + LOCAL_FREE）视为 eligible 并被选中——LOCAL_FREE
-    经济偏好正常生效（rank 0 < deepseek UNKNOWN rank 2），形成第一个真实
-    可用的 LOCAL_FREE Hermes candidate；deepseek 仍 eligible 但经济排序落败。"""
+def test_baseline_registry_low_excludes_aux_only_qwen3():
+    """TASK: AAF-v0.5-A3-HERMES-EXECUTOR-QUALIFICATION-FIX-001 核心验收：
+    LOW Hermes executor 决策**不再**把 qwen3:4b@custom 当作 eligible——其
+    qualification evidence 只覆盖 auxiliary 槽位 + 本地端点（scope=auxiliary），
+    不覆盖真实 Hermes main-chat 调用路径（`hermes ... -m qwen3:4b
+    --provider custom` = HTTP 400）→ 以 AUXILIARY_ONLY 排除；deepseek
+    （scope=main）成为唯一 eligible 并被选中（sole eligible，不再有
+    LOCAL_FREE 经济偏好可作用——aux-only 候选根本不进入经济排序）。"""
     decision = select_shadow_candidate(
         rc.RISK_LOW, rc.ROLE_EXECUTOR, "hermes", mr.baseline_registry(),
     )
     assert decision.required_floor == "T4"
-    assert decision.selected == "qwen3:4b@custom"
-    assert decision.eligible == ("deepseek-v4-flash@deepseek", "qwen3:4b@custom")
+    assert decision.eligible == ("deepseek-v4-flash@deepseek",)
+    assert decision.selected == "deepseek-v4-flash@deepseek"
     assert decision.no_candidate_reason is None
-    assert decision.selection_reason == REASON_LOWEST_KNOWN_COST
-    assert decision.deciding_dimension == DECIDED_BY_COST
+    assert decision.selection_reason == REASON_SOLE_ELIGIBLE
+    assert decision.deciding_dimension == DECIDED_SOLE_ELIGIBLE
     reasons = _excluded_reasons(decision)
+    # aux-only 候选被显式排除（qualification scope 不足，先于经济排序）
+    assert reasons["qwen3:4b@custom"] == EXCL_AUXILIARY_ONLY
     # 其它候选保持 UNKNOWN / 不适用（零推断、零提升）
     assert reasons["qwen2.5vl:3b@custom"] == EXCL_CAPABILITY_INSUFFICIENT
     assert reasons["agent:workbuddy"] == EXCL_ROLE_NOT_APPLICABLE

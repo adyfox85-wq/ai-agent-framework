@@ -63,6 +63,10 @@ def _promo_sole_registry() -> dict:
         locality=model_registry_mod.LOCALITY_REMOTE,
         qualification=model_registry_mod.RuntimeQualification(
             status=model_registry_mod.QUAL_STATUS_QUALIFIED,
+            # scope=main（TASK: AAF-v0.5-A3-HERMES-EXECUTOR-QUALIFICATION-FIX-001）：
+            # 该 fixture 要测的是 A3 cost gate（FREE_PROMO 拒绝），不是 scope 闸
+            # ——候选必须是 eligible executor 才会到达 cost gate。
+            scope=model_registry_mod.QUAL_SCOPE_MAIN,
             evidence=("fresh-runner-fix001-promo-fixture",),
             observed_at="2026-09-01T00:00:00+08:00",
         ),

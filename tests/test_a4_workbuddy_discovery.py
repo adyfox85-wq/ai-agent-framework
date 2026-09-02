@@ -32,6 +32,7 @@ from ai_agent_framework.model_registry import (
     is_usable_candidate,
 )
 from ai_agent_framework.shadow_routing import (
+    EXCL_AUXILIARY_ONLY,
     EXCL_CAPABILITY_INSUFFICIENT,
     EXCL_ROLE_NOT_APPLICABLE,
     NO_SHADOW_CANDIDATE,
@@ -181,15 +182,19 @@ def test_selector_sees_workbuddy_candidates_but_only_qualified_eligible(risk_cla
 
 
 def test_selector_workbuddy_candidates_not_visible_to_hermes_stage():
-    """候选只属 workbuddy stage；hermes stage 不受影响（既有选择零变化）。"""
+    """候选只属 workbuddy stage；hermes stage 不受 WorkBuddy 候选影响。"""
     reg = mr.baseline_registry()
     decision = select_shadow_candidate(rc.RISK_LOW, rc.ROLE_EXECUTOR, "hermes", reg)
     reasons = _excluded_reasons(decision)
     for mid in WORKBUDDY_CANDIDATE_IDS:
         assert reasons[mid] == EXCL_ROLE_NOT_APPLICABLE
-    # Hermes 既有 eligible/selected 语义不变（qwen3:4b@custom 仍被选中）
-    assert "qwen3:4b@custom" in decision.eligible
-    assert decision.selected == "qwen3:4b@custom"
+    # Hermes 选择语义按 TASK: AAF-v0.5-A3-HERMES-EXECUTOR-QUALIFICATION-FIX-001
+    # 收紧：qwen3:4b@custom（aux-only evidence）不再是 eligible Hermes executor
+    # 候选 → AUXILIARY_ONLY 排除；唯一 eligible/selected = deepseek-v4-flash@deepseek
+    assert "qwen3:4b@custom" not in decision.eligible
+    assert reasons["qwen3:4b@custom"] == EXCL_AUXILIARY_ONLY
+    assert decision.eligible == ("deepseek-v4-flash@deepseek",)
+    assert decision.selected == "deepseek-v4-flash@deepseek"
 
 
 def test_workbuddy_candidates_do_not_leak_into_codex_stage():

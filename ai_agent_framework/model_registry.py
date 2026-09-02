@@ -68,6 +68,24 @@ QUAL_STATUS_NOT_QUALIFIED = "not_qualified"
 QUAL_STATUS_UNKNOWN = "unknown"
 QUAL_STATUSES = (QUAL_STATUS_QUALIFIED, QUAL_STATUS_NOT_QUALIFIED, QUAL_STATUS_UNKNOWN)
 
+# qualification evidence 的调用上下文 scope（证据覆盖「哪个调用路径」）。
+# 与 status 相互独立：QUALIFIED 只声明「有 runtime evidence」，scope 声明
+# 「该 evidence 覆盖什么调用上下文」——二者都未验证时各自 UNKNOWN。
+#   - QUAL_SCOPE_MAIN：evidence 覆盖该 agent 的**真实主调用路径**（Hermes =
+#     main-chat invocation，如 ``hermes ... -m <model>`` executor 调用；
+#     WorkBuddy/CodeBuddy = CLI 主 invocation）。Hermes executor active
+#     routing（A3）唯一可接受的 qualification scope。
+#   - QUAL_SCOPE_AUXILIARY：evidence 只覆盖 auxiliary / 端点级上下文
+#     （vision / compression / title_generation / web_extract /
+#     summarization 等辅助槽位、本地 OpenAI-compatible 端点直连等）——
+#     **绝不**满足主 executor 资格（RW-030-001 的 qwen3:4b probe 即此类）。
+#   - QUAL_SCOPE_UNKNOWN（缺省）：evidence 未声明 / 未覆盖主调用路径；
+#     fail closed——executor 角色绝不把未证明主调用能力的候选当作可执行。
+QUAL_SCOPE_MAIN = "main"
+QUAL_SCOPE_AUXILIARY = "auxiliary"
+QUAL_SCOPE_UNKNOWN = "unknown"
+QUAL_SCOPES = (QUAL_SCOPE_MAIN, QUAL_SCOPE_AUXILIARY, QUAL_SCOPE_UNKNOWN)
+
 # FREE 是一个价格/成本属性集合（成本维度）；绝不等于 qualification。
 FREE_OF_COST_CLASSES = frozenset(
     (COST_CLASS_LOCAL_FREE, COST_CLASS_FREE, COST_CLASS_FREE_PROMO)
@@ -125,16 +143,23 @@ class RuntimeQualification:
     """运行时 qualification（独立于成本）。
 
     status 只允许 QUAL_STATUSES 三值；未观测 = unknown（显式）。
+    scope 只允许 QUAL_SCOPES 三值；未声明 = unknown（显式）——QUALIFIED
+    只声明「有 runtime evidence」，evidence 是否覆盖 agent 的**主调用路径**
+    由 scope 单独表达（executor active routing 要求 scope == main；
+    auxiliary / 端点级 evidence 绝不构成主 executor 资格）。
     evidence / observed_at 供未来运行时观测填充；本任务不产生观测。
     """
 
     status: str = QUAL_STATUS_UNKNOWN
     evidence: tuple[str, ...] = ()
     observed_at: str | None = None
+    scope: str = QUAL_SCOPE_UNKNOWN
 
     def __post_init__(self) -> None:
         if self.status not in QUAL_STATUSES:
             raise ValueError(f"invalid qualification status: {self.status!r}")
+        if self.scope not in QUAL_SCOPES:
+            raise ValueError(f"invalid qualification scope: {self.scope!r}")
         for item in self.evidence:
             if not isinstance(item, str):
                 raise ValueError(f"qualification evidence must be str, got {type(item).__name__}")
@@ -235,6 +260,7 @@ def entry_to_dict(entry: RegistryEntry) -> dict[str, Any]:
             "status": entry.qualification.status,
             "evidence": list(entry.qualification.evidence),
             "observed_at": entry.qualification.observed_at,
+            "scope": entry.qualification.scope,
         },
         "evidence": list(entry.evidence),
         "notes": list(entry.notes),
@@ -248,6 +274,7 @@ def entry_from_dict(data: dict[str, Any]) -> RegistryEntry:
         status=qual.get("status", QUAL_STATUS_UNKNOWN),
         evidence=tuple(qual.get("evidence", [])),
         observed_at=qual.get("observed_at"),
+        scope=qual.get("scope", QUAL_SCOPE_UNKNOWN),
     )
     return RegistryEntry(
         model=data.get("model"),
@@ -544,13 +571,19 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
     证据支持的例外（各有独立已接受证据，互不推导）：
     - deepseek-v4-flash@deepseek（TASK: AAF-v0.5-A2-SHADOW-ROUTING-004）：已接受的
       AAF 执行/审查证据（003-FIX-001 HIGH 任务实际执行至 Codex APPROVE）→ 最低
-      已证能力 T2 + accepted-evidence qualification=QUALIFIED；其余维度（cost_class
+      已证能力 T2 + accepted-evidence qualification=QUALIFIED；evidence 覆盖真实
+      Hermes main-chat executor 调用路径 → qualification.scope=main（executor
+      active routing 的合格证据要求）；其余维度（cost_class
       等）无证据即保持 UNKNOWN。
     - qwen3:4b@custom（TASK: AAF-v0.5-A2PLUS-RW030-001）：隔离非权威真实 runtime
       qualification probe 证据（本地端点可达 / 身份匹配 / 受控 Risk: LOW
       executor-like task 完成并产生预期结构化结果）→ 最低已证能力 T4（LOW executor
-      floor）+ accepted-evidence qualification=QUALIFIED；LOCAL_FREE 保持（本地端点
-      成本证据）；绝不因 LOCAL_FREE 自动 QUALIFIED。
+      floor）+ accepted-evidence qualification=QUALIFIED；但 evidence 只覆盖
+      Hermes **auxiliary 槽位**身份与本地端点直连（从未经 main-chat invocation
+      验证；真实 `hermes ... -m qwen3:4b --provider custom` = HTTP 400）→
+      qualification.scope=auxiliary（TASK: AAF-v0.5-A3-HERMES-EXECUTOR-
+      QUALIFICATION-FIX-001）——不构成 Hermes 主 executor 资格；LOCAL_FREE 保持
+      （本地端点成本证据）；绝不因 LOCAL_FREE 自动 QUALIFIED。
     - WorkBuddy 候选身份（TASK: AAF-v0.5-A4-PREREQ-WORKBUDDY-DISCOVERY-001）：
       15 个 identity-only 条目 = 当前 CodeBuddy CLI（--model 帮助行，v2.141.0，
       observed_at=2026-09-02T01:23:05+08:00）文档化的 model IDs——发现身份 ≠
@@ -599,6 +632,10 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
                 status=QUAL_STATUS_QUALIFIED,
                 evidence=(_EVID_A2_004_HERMES_T2,),
                 observed_at=_EVID_A2_004_OBSERVED_AT,
+                # scope=main：evidence = 真实 AAF 执行（003-FIX-001 HIGH 任务
+                # 以该模型经 Hermes main-chat invocation 执行至 Codex APPROVE）
+                # ——覆盖真实主调用路径，是 Hermes executor 资格的合格证据。
+                scope=QUAL_SCOPE_MAIN,
             ),
             evidence=(_EVID_CAP002_PROBE, _EVID_A0_REPORT, _EVID_A2_004_HERMES_T2),
             notes=(
@@ -609,6 +646,8 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
                 "execution/review evidence（003-FIX-001 HIGH 任务实际执行至 Codex "
                 "APPROVE；HIGH executor floor = T2）；accepted evidence snapshot — "
                 "不表示永久健康、不产生动态 health/quarantine 行为；T1/T0 未证明",
+                "qualification.scope=main：evidence 覆盖真实 Hermes main-chat "
+                "executor 调用路径（A3 executor active routing 的合格证据要求）",
             ),
         ),
         # Hermes auxiliary.vision（本地 Ollama 端点）
@@ -647,6 +686,16 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
                 status=QUAL_STATUS_QUALIFIED,
                 evidence=(_EVID_RW030_001_PROBE,),
                 observed_at=_EVID_RW030_001_OBSERVED_AT,
+                # scope=auxiliary（TASK: AAF-v0.5-A3-HERMES-EXECUTOR-
+                # QUALIFICATION-FIX-001）：RW-030-001 probe 的 evidence 只覆盖
+                # Hermes **auxiliary 槽位**身份（compression/title_generation/
+                # web_extract/summarization）+ 本地 Ollama 端点
+                # /v1/chat/completions 直连——从未经 Hermes main-chat invocation
+                # 验证（`hermes config get model` 记录主模型仍为
+                # deepseek-v4-flash；真实 `hermes ... -m qwen3:4b --provider
+                # custom` 返回 HTTP 400：qwen3:4b 不是受支持的主 API 模型）。
+                # auxiliary/端点级 evidence 不构成 Hermes 主 executor 资格。
+                scope=QUAL_SCOPE_AUXILIARY,
             ),
             evidence=(_EVID_CAP002_PROBE, _EVID_RW030_001_PROBE),
             notes=(
@@ -663,6 +712,13 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
                 "协议错误/执行失败；LOW probe 成功只证明最低 T4（LOW executor "
                 "floor），不推断 T3/T2/T1/T0；accepted evidence snapshot — 不表示"
                 "永久健康、不产生动态 health/quarantine 行为",
+                "qualification.scope=auxiliary（TASK: AAF-v0.5-A3-HERMES-EXECUTOR-"
+                "QUALIFICATION-FIX-001）：evidence 只覆盖 auxiliary/本地端点级"
+                "上下文——probe 未以真实 Hermes main-chat invocation（hermes ... "
+                "-m qwen3:4b --provider custom）验证该模型；该真实调用返回 HTTP 400"
+                "（qwen3:4b 不是受支持的主 API 模型，base_url Markdown 假设已被"
+                "证伪）。auxiliary-only/端点级 evidence 绝不构成 Hermes 主 executor"
+                "资格（executor active routing 要求 scope=main）",
             ),
         ),
         # WorkBuddy/CodeBuddy：当前模型不由用户 config 暴露（身份本身 UNKNOWN）。
@@ -748,6 +804,10 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
                 status=QUAL_STATUS_QUALIFIED,
                 evidence=(_EVID_A4_WORKBUDDY_QUALIFICATION_001_PROBE,),
                 observed_at=_EVID_A4_WORKBUDDY_QUALIFICATION_001_OBSERVED_AT,
+                # scope=main：evidence = 真实 CodeBuddy CLI 主 invocation probe
+                # （`codebuddy -p --output-format text -y --model deepseek-v4-flash`
+                # ——即 WorkBuddy stage 的真实主调用形态）。
+                scope=QUAL_SCOPE_MAIN,
             ),
             evidence=(
                 _EVID_A4_WORKBUDDY_MODEL_LIST,
@@ -808,6 +868,10 @@ def baseline_entries() -> tuple[RegistryEntry, ...]:
                 status=QUAL_STATUS_QUALIFIED,
                 evidence=(_EVID_A4_WORKBUDDY_SECOND_CANDIDATE_001_PROBE,),
                 observed_at=_EVID_A4_WORKBUDDY_SECOND_CANDIDATE_001_OBSERVED_AT,
+                # scope=main：evidence = 真实 CodeBuddy CLI 主 invocation probe
+                # （`codebuddy -p --output-format text -y --model hy4-preview`
+                # ——即 WorkBuddy stage 的真实主调用形态）。
+                scope=QUAL_SCOPE_MAIN,
             ),
             evidence=(
                 _EVID_A4_WORKBUDDY_MODEL_LIST,

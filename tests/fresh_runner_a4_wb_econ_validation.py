@@ -176,7 +176,7 @@ def _make_fakebin(scenario_dir: Path) -> Path:
     return fakebin
 
 
-def _run_scenario(scenario_dir: Path, task_text: str) -> dict:
+def _run_scenario(scenario_dir: Path, task_text: str, extra_env: dict | None = None) -> dict:
     scenario_dir.mkdir(parents=True, exist_ok=True)
     for stale in (scenario_dir / "out",):
         if stale.exists():
@@ -201,6 +201,8 @@ def _run_scenario(scenario_dir: Path, task_text: str) -> dict:
     for var in (cg.ENV_MODEL, cg.ENV_PROVIDER, cg.ENV_BASE_URL, cg.ENV_AUTH):
         if var in env:
             del env[var]
+    if extra_env:
+        env.update(extra_env)
     result = subprocess.run(
         [sys.executable, str(WRAPPER), str(task_file), "--workspace", str(ws),
          "--output", str(out)],
@@ -273,6 +275,11 @@ def main() -> int:
                 "验证 economic metadata 事实层引入后 framework 生命周期正常"
                 "（FIX-001：真实 facts 只有 1 个可信候选 → WorkBuddy stage 保持 CodeBuddy Auto，无 --model）。",
             ),
+            # Hermes stage：EXECUTOR-QUALIFICATION-FIX 起 LOW 真实 facts 不再路由
+            # qwen3（aux-only 排除）→ configured deepseek 保留 → 精确授权走 A0。
+            extra_env={
+                cg.ENV_AUTH: f"{N1_TASK_ID}|hermes|deepseek-v4-flash|deepseek",
+            },
         )
         out1 = n1["out"]
         run1 = _read_json(out1 / "run.json") or {}

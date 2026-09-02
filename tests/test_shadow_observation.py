@@ -26,7 +26,11 @@ from ai_agent_framework import shadow_observation as so
 
 FREE = mo.COST_CLASS_FREE
 LOCAL_FREE = mo.COST_CLASS_LOCAL_FREE
-QUALIFIED = mr.RuntimeQualification(status=mr.QUAL_STATUS_QUALIFIED)
+# scope=main：fixture 的「有效 executor 候选」必须声明 evidence 覆盖真实主调用
+# 路径（TASK: AAF-v0.5-A3-HERMES-EXECUTOR-QUALIFICATION-FIX-001）。
+QUALIFIED = mr.RuntimeQualification(
+    status=mr.QUAL_STATUS_QUALIFIED, scope=mr.QUAL_SCOPE_MAIN
+)
 
 
 def _entry(**overrides) -> mr.RegistryEntry:
@@ -162,26 +166,34 @@ def test_baseline_registry_critical_no_eligible_candidate_no_shadow_candidate(tm
     assert "baseline_registry" in record["registry_source"]
 
 
-def test_baseline_registry_low_shadow_selects_qwen3_local_free(tmp_path):
-    """RW-030-001 核心验收（shadow observation 级）：LOW Hermes shadow 决策
-    产生真实 LOCAL_FREE hypothetical candidate——selected_candidate=
-    qwen3:4b@custom（T4+QUALIFIED+LOCAL_FREE 经济偏好胜过 UNKNOWN 成本的
-    deepseek）；actual model/provider 不变、非权威、零执行影响。"""
+def test_baseline_registry_low_shadow_selects_deepseek(tmp_path):
+    """TASK: AAF-v0.5-A3-HERMES-EXECUTOR-QUALIFICATION-FIX-001 核心验收
+    （shadow observation 级）：LOW Hermes shadow 决策**不再**产生
+    qwen3:4b@custom hypothetical candidate——其 evidence 只覆盖 auxiliary
+    槽位（scope=auxiliary），不覆盖真实 main-chat 调用路径（HTTP 400 实证）
+    → AUXILIARY_ONLY 排除；唯一 eligible = deepseek-v4-flash@deepseek
+    （scope=main）并被选中，actual == selected → actual_vs_shadow=SAME；
+    actual model/provider 不变、非权威、零执行影响。"""
     obs = _observation(model="deepseek-v4-flash", provider="deepseek")
     record = so.build_shadow_observation(
         "hermes", tmp_path, observation=obs,
         risk_class=rc.RISK_LOW, risk_source="test-authoritative",
     )
-    assert record["selected_candidate"] == "qwen3:4b@custom"
-    assert record["decision"]["eligible"] == [
-        "deepseek-v4-flash@deepseek", "qwen3:4b@custom",
-    ]
+    assert record["selected_candidate"] == "deepseek-v4-flash@deepseek"
+    assert record["decision"]["eligible"] == ["deepseek-v4-flash@deepseek"]
     assert record["decision"]["required_floor"] == "T4"
+    assert record["decision"]["selection_reason"] == "sole_eligible_candidate"
     assert record["actual_model"] == "deepseek-v4-flash"
     assert record["actual_provider"] == "deepseek"
-    assert record["actual_vs_shadow"] == so.MATCH_DIFFERENT
+    assert record["actual_vs_shadow"] == so.MATCH_SAME
     assert record["authoritative"] is False
     assert record["execution_affected"] is False
+    # aux-only 候选以显式排除记录出现（可审计）
+    aux_excl = [
+        e for e in record["decision"]["excluded"]
+        if e["candidate"] == "qwen3:4b@custom"
+    ]
+    assert aux_excl and aux_excl[0]["reason"] == "AUXILIARY_ONLY"
 
 
 def test_baseline_registry_high_shadow_selects_deepseek(tmp_path):

@@ -1,8 +1,10 @@
 """AAF v0.5 A3 — Active routing (LOW-risk Hermes free routing) 定向测试
-（TASK: AAF-v0.5-A3-HERMES-FREE-ROUTING-001）。
+（TASK: AAF-v0.5-A3-HERMES-FREE-ROUTING-001；executor-qualification 语义按
+TASK: AAF-v0.5-A3-HERMES-EXECUTOR-QUALIFICATION-FIX-001 收紧）。
 
 覆盖 Requirement 10 测试矩阵 + 审计/隔离守卫：
-- LOW + qwen3 qualified → active route 到 qwen3（真实 model/provider 选择）
+- LOW + main-scope qualified free → active route 到该候选（真实 model/provider 选择）
+- auxiliary-only / 非主调用 evidence 候选 → 绝不 active route（FIX 语义）
 - LOW 但 free candidate 不合格 → 保持 configured model
 - missing Risk → 保持 configured model
 - MEDIUM/HIGH/CRITICAL → 保持 configured model
@@ -41,7 +43,12 @@ _REAL_RESOLVE = cg.resolve_effective_hermes
 FREE = mo.COST_CLASS_FREE
 LOCAL_FREE = mo.COST_CLASS_LOCAL_FREE
 PAID = mo.COST_CLASS_PAID
-QUALIFIED = mr.RuntimeQualification(status=mr.QUAL_STATUS_QUALIFIED)
+# scope=main（TASK: AAF-v0.5-A3-HERMES-EXECUTOR-QUALIFICATION-FIX-001）：
+# 「有效 Hermes executor 候选」的 qualification evidence 必须覆盖真实
+# main-chat 调用路径；auxiliary-only / 未声明主调用 scope 的候选不得 executor。
+QUALIFIED = mr.RuntimeQualification(
+    status=mr.QUAL_STATUS_QUALIFIED, scope=mr.QUAL_SCOPE_MAIN
+)
 
 
 def _entry(**overrides) -> mr.RegistryEntry:
@@ -63,36 +70,49 @@ def _registry(*entries: mr.RegistryEntry) -> dict[str, mr.RegistryEntry]:
 
 
 # ---------------------------------------------------------------------------
-# 1. LOW + qualified free → active route（Requirement 3/10）
+# 1. LOW + main-scope qualified free → active route；基线真实 registry →
+#    aux-only 候选被排除、configured model 保留（Requirement 3/10 + FIX）
 # ---------------------------------------------------------------------------
 
 
-def test_low_qualified_free_routes_to_qwen3_baseline():
-    """基线 registry：LOW executor + hermes → qwen3:4b@custom 被真实选中。"""
+def test_baseline_low_keeps_configured_no_valid_free_executor():
+    """基线 registry（当前真实证据）：LOW executor + hermes → qwen3:4b@custom
+    不再被选中/路由——其 qualification evidence 只覆盖 auxiliary 槽位
+    （scope=auxiliary），不覆盖真实 Hermes main-chat 调用路径（真实
+    `hermes ... -m qwen3:4b --provider custom` = HTTP 400）。唯一 main-scope
+    eligible = deepseek-v4-flash@deepseek，但 cost_class=UNKNOWN 非 FREE →
+    A3 cost gate 拒绝 → routing_applied=false，configured DeepSeek 保留，
+    零 fallback（Acceptance: LOW task preserves configured DeepSeek when no
+    valid free executor exists）。"""
     rec = ar.decide_active_route(
         RISK_LOW, ROLE_EXECUTOR, "hermes", mr.baseline_registry(),
         risk_source=so.TASK_RISK_SOURCE,
         configured_model="deepseek-v4-flash", configured_provider="deepseek",
     )
-    assert rec["routing_applied"] is True
-    assert rec["selected"] == "qwen3:4b@custom"
-    assert rec["routed_model"] == "qwen3:4b"
-    assert rec["routed_provider"] == "custom"
-    assert rec["routed_base_url"] == "http://127.0.0.1:11434/v1"
+    assert rec["routing_applied"] is False
+    assert rec["selected"] == "deepseek-v4-flash@deepseek"
+    assert rec["routed_model"] is None
+    assert rec["routed_provider"] is None
+    assert rec["routed_base_url"] is None
     assert rec["configured_model"] == "deepseek-v4-flash"
     assert rec["configured_provider"] == "deepseek"
     assert rec["fallback_attempted"] is False
-    assert rec["reason"].startswith(ar.REASON_APPLIED)
+    assert rec["reason"].startswith(ar.REASON_SELECTED_NOT_FREE)
+    assert "UNKNOWN" in rec["reason"]
     assert rec["risk_class"] == RISK_LOW
     assert rec["risk_source"] == so.TASK_RISK_SOURCE
-    # 复用现有 selector：considered/eligible/selected 与 A2 决策一致
-    assert "qwen3:4b@custom" in rec["eligible"]
+    # 复用现有 selector：aux-only 候选以显式排除记录出现（可审计）
     assert "deepseek-v4-flash@deepseek" in rec["eligible"]
+    assert "qwen3:4b@custom" not in rec["eligible"]
+    aux_excl = [e for e in rec["excluded"] if e["candidate"] == "qwen3:4b@custom"]
+    assert aux_excl and aux_excl[0]["reason"] == "AUXILIARY_ONLY"
     ar.validate_active_routing(rec)
 
 
-def test_low_synthetic_qualified_free_routes():
-    """合成 registry：唯一合格 free 候选 → 单选胜出（sole_eligible）。"""
+def test_low_main_scope_qualified_free_routes():
+    """受控合成 registry：唯一 main-scope 合格 free 候选 → 单选胜出
+    （sole_eligible）并 active route（valid qualified Hermes executor 行为
+    保持支持——FIX 不阻断真正主调用合格的免费 executor）。"""
     reg = _registry(
         _entry(model="m1", provider="p1", capability_tier=mr.CAP_TIER_T4),
     )
@@ -233,10 +253,9 @@ def test_audit_fields_present():
     assert rec["risk_source"] == so.TASK_RISK_SOURCE
     assert isinstance(rec["candidates_considered"], list) and rec["candidates_considered"]
     assert isinstance(rec["eligible"], list) and rec["eligible"]
-    assert rec["selected"] == "qwen3:4b@custom"
-    assert rec["routing_applied"] is True
-    assert rec["routed_model"] == "qwen3:4b"
-    assert rec["routed_provider"] == "custom"
+    assert rec["selected"] == "deepseek-v4-flash@deepseek"
+    assert rec["routing_applied"] is False
+    assert rec["routed_model"] is None
     assert rec["configured_model"] == "deepseek-v4-flash"
     assert rec["reason"]
     assert rec["fallback_attempted"] is False
@@ -246,7 +265,9 @@ def test_audit_fields_present():
 
 def test_active_vs_shadow_clearly_distinguished(tmp_path):
     """同一 LOW 场景：shadow 记录 authoritative=false（hypothetical），
-    active 记录 authoritative=true（真实决策）——两者可明确区分。"""
+    active 记录 authoritative=true（真实决策）——两者可明确区分；两者消费
+    同一 selector 决策（deepseek-v4-flash@deepseek 被选中，qwen3 aux-only
+    被排除，active routing 因 cost=UNKNOWN 不 applied）。"""
     # A2 shadow（假设性）：绝不改变执行
     shadow = so.build_shadow_observation(
         "hermes", tmp_path, observation=None,
@@ -255,23 +276,26 @@ def test_active_vs_shadow_clearly_distinguished(tmp_path):
     )
     assert shadow["authoritative"] is False
     assert shadow["execution_affected"] is False
-    # A3 active（authoritative）：真实选择
+    # A3 active（authoritative）：真实决策
     active = ar.decide_active_route(
         RISK_LOW, ROLE_EXECUTOR, "hermes", mr.baseline_registry(),
         risk_source=so.TASK_RISK_SOURCE,
     )
     assert active["authoritative"] is True
     assert active["decision_kind"] == "active_routing"
-    assert active["routing_applied"] is True
-    # 同一 selector 决策被两者消费（不创建第二套路由判断）
-    assert shadow["decision"]["selected"] == active["selected"] == "qwen3:4b@custom"
+    assert active["routing_applied"] is False
+    # 同一 selector 决策被两者消费（不创建第二套路由判断）；aux-only 排除
+    assert shadow["decision"]["selected"] == active["selected"] == "deepseek-v4-flash@deepseek"
+    assert shadow["decision"]["eligible"] == ["deepseek-v4-flash@deepseek"]
 
 
 def test_validate_fail_closed_routing_applied_requires_model():
     rec = ar.decide_active_route(
-        RISK_LOW, ROLE_EXECUTOR, "hermes", mr.baseline_registry(),
+        RISK_LOW, ROLE_EXECUTOR, "hermes",
+        _registry(_entry(model="m1", provider="p1", capability_tier=mr.CAP_TIER_T4)),
         risk_source="test",
     )
+    assert rec["routing_applied"] is True
     rec["routed_model"] = None
     with pytest.raises(ValueError, match="routed_model"):
         ar.validate_active_routing(rec)
@@ -302,17 +326,33 @@ def test_validate_fail_closed_authoritative_must_be_true():
 # ---------------------------------------------------------------------------
 
 
+def _main_free_registry(
+    model: str = "m1", provider: str = "p1",
+    base_url: str = "http://127.0.0.1:11434/v1",
+) -> dict:
+    """受控 main-scope LOCAL_FREE registry（受控 fixture——非 baseline）。
+
+    qualification.scope=main（evidence 覆盖真实 main-chat 调用路径的合成
+    声明），成本 LOCAL_FREE + loopback base_url ——「有效 Hermes free
+    executor」的受控形态；baseline 当前没有这种候选（qwen3 aux-only）。
+    """
+    return _registry(
+        _entry(model=model, provider=provider, capability_tier=mr.CAP_TIER_T4,
+               base_url=base_url),
+    )
+
+
 def test_apply_restore_env_roundtrip(monkeypatch):
     for var in (cg.ENV_MODEL, cg.ENV_PROVIDER, cg.ENV_BASE_URL):
         monkeypatch.delenv(var, raising=False)
     rec = ar.decide_active_route(
-        RISK_LOW, ROLE_EXECUTOR, "hermes", mr.baseline_registry(),
+        RISK_LOW, ROLE_EXECUTOR, "hermes", _main_free_registry(),
         risk_source="test",
     )
     assert rec["routing_applied"] is True
     saved = ar.apply_routing_env(rec)
-    assert os.environ[cg.ENV_MODEL] == "qwen3:4b"
-    assert os.environ[cg.ENV_PROVIDER] == "custom"
+    assert os.environ[cg.ENV_MODEL] == "m1"
+    assert os.environ[cg.ENV_PROVIDER] == "p1"
     assert os.environ[cg.ENV_BASE_URL] == "http://127.0.0.1:11434/v1"
     ar.restore_routing_env(saved)
     assert cg.ENV_MODEL not in os.environ
@@ -323,11 +363,11 @@ def test_apply_restore_env_roundtrip(monkeypatch):
 def test_apply_restore_preserves_preexisting_values(monkeypatch):
     monkeypatch.setenv(cg.ENV_MODEL, "old-model")
     rec = ar.decide_active_route(
-        RISK_LOW, ROLE_EXECUTOR, "hermes", mr.baseline_registry(),
+        RISK_LOW, ROLE_EXECUTOR, "hermes", _main_free_registry(),
         risk_source="test",
     )
     saved = ar.apply_routing_env(rec)
-    assert os.environ[cg.ENV_MODEL] == "qwen3:4b"
+    assert os.environ[cg.ENV_MODEL] == "m1"
     ar.restore_routing_env(saved)
     assert os.environ[cg.ENV_MODEL] == "old-model"
 
@@ -341,7 +381,7 @@ def test_apply_env_requires_applied_record():
 
 
 def test_routed_env_reaches_invocation_args(monkeypatch, tmp_path):
-    """A3 env 覆盖 → adapters.run_agent 透传 -m qwen3:4b --provider custom
+    """A3 env 覆盖 → adapters.run_agent 透传 -m m1 --provider p1
     （guard 解析的 effective model == 实际 invocation model 的 argv 端证明）。"""
     import subprocess as subprocess_mod
 
@@ -363,7 +403,7 @@ def test_routed_env_reaches_invocation_args(monkeypatch, tmp_path):
     from ai_agent_framework.adapters import run_agent
 
     rec = ar.decide_active_route(
-        RISK_LOW, ROLE_EXECUTOR, "hermes", mr.baseline_registry(),
+        RISK_LOW, ROLE_EXECUTOR, "hermes", _main_free_registry(),
         risk_source="test",
     )
     saved = ar.apply_routing_env(rec)
@@ -373,12 +413,12 @@ def test_routed_env_reaches_invocation_args(monkeypatch, tmp_path):
         ar.restore_routing_env(saved)
     args = captured["args"]
     assert "-m" in args
-    assert args[args.index("-m") + 1] == "qwen3:4b"
+    assert args[args.index("-m") + 1] == "m1"
     assert "--provider" in args
-    assert args[args.index("--provider") + 1] == "custom"
+    assert args[args.index("--provider") + 1] == "p1"
     # 子进程 env 也携带覆盖（fresh-runner N+1 的 marker 证据同源）
-    assert captured["env_model"] == "qwen3:4b"
-    assert captured["env_provider"] == "custom"
+    assert captured["env_model"] == "m1"
+    assert captured["env_provider"] == "p1"
 
 
 # ---------------------------------------------------------------------------
@@ -475,10 +515,70 @@ def _run_runner(tmp_path, monkeypatch, task_text, fake_run_agent=None):
     return out
 
 
-def test_runner_low_routes_env_and_writes_artifacts(tmp_path, monkeypatch):
-    """LOW task 全链：routing applied → env 覆盖在 invocation 时可见 →
-    active_routing.json 落盘（authoritative=true）→ env 已还原 →
-    shadow artifact 仍为 hypothetical（authoritative=false）。"""
+def test_runner_low_real_facts_no_route_keeps_configured(tmp_path, monkeypatch):
+    """FIX 全链（真实 baseline registry）：LOW task → qwen3:4b@custom 不再被
+    路由（aux-only evidence 排除）→ routing_applied=false（selected=deepseek
+    但 cost UNKNOWN 非 FREE → SELECTED_NOT_FREE）、invocation 时零 env 覆盖
+    （configured model 保留）、fallback_attempted=false、active_routing.json
+    落盘（authoritative=true）、env 还原、全链 SUCCESS。"""
+    seen_env = {}
+
+    def fake_run_agent(agent, prompt, workspace):
+        if agent == "hermes":
+            seen_env["model"] = os.environ.get(cg.ENV_MODEL)
+            seen_env["provider"] = os.environ.get(cg.ENV_PROVIDER)
+            seen_env["base_url"] = os.environ.get(cg.ENV_BASE_URL)
+        return _structured_ok(agent)
+
+    out = _run_runner(tmp_path, monkeypatch, _task(RISK_LOW), fake_run_agent)
+    # 不路由 → invocation 时无 env 覆盖（configured model/provider 保留）
+    assert seen_env["model"] is None
+    assert seen_env["provider"] is None
+    assert seen_env["base_url"] is None
+    assert cg.ENV_MODEL not in os.environ
+    # active_routing.json：权威决策记录，未 applied，理由可审计
+    active = ar.load_active_routing(out)
+    assert active is not None
+    assert active["routing_applied"] is False
+    assert active["authoritative"] is True
+    assert active["selected"] == "deepseek-v4-flash@deepseek"
+    assert active["routed_model"] is None
+    # configured model = conftest hermetic resolution 的 stand-in（qwen3:4b/ollama
+    # ——测试环境无真实 hermes config；语义 = configured 保留、未被覆盖）
+    assert active["configured_model"] == "qwen3:4b"
+    assert active["configured_provider"] == "ollama"
+    assert active["reason"].startswith(ar.REASON_SELECTED_NOT_FREE)
+    assert active["fallback_attempted"] is False
+    # aux-only 候选的显式排除出现在权威记录（可审计）
+    aux_excl = [e for e in active["excluded"] if e["candidate"] == "qwen3:4b@custom"]
+    assert aux_excl and aux_excl[0]["reason"] == "AUXILIARY_ONLY"
+    # shadow artifact：hypothetical 语义保持
+    shadow = so.load_shadow_observation(out)
+    assert shadow is not None
+    assert shadow["authoritative"] is False
+    assert shadow["execution_affected"] is False
+    assert shadow["risk_class"] == RISK_LOW
+    assert shadow["selected_candidate"] == "deepseek-v4-flash@deepseek"
+    # stage result 引用并存
+    stage = json.loads((out / "hermes_result.json").read_text(encoding="utf-8"))
+    assert stage.get("active_routing_ref", {}).get("entry") == "hermes"
+    assert stage.get("shadow_observation_ref", {}).get("entry") == "hermes"
+    # 全链 SUCCESS
+    run = json.loads((out / "run.json").read_text(encoding="utf-8"))
+    assert run["status"] == "SUCCESS"
+
+
+def test_runner_low_main_free_routes_env_and_writes_artifacts(tmp_path, monkeypatch):
+    """FIX 回归（受控 main-scope LOCAL_FREE registry）：真正主调用合格的
+    Hermes free executor 仍被 active route——routing_applied=true → invocation
+    时 env 覆盖可见 → active_routing.json（authoritative=true）→ env 还原 →
+    shadow actual_vs_shadow=SAME → 全链 SUCCESS（valid qualified Hermes
+    executor behavior remains supported）。"""
+    monkeypatch.setattr(mr, "baseline_registry", _main_free_registry)
+    # guard 走真实 resolve（env override 优先）：routing env（m1/p1/loopback）
+    # 在 guard 求值前已生效 → guard 解析的 effective model == 实际 invocation
+    # model（A3 既有不变量；conftest hermetic resolution 只用于其他 runner 测试）。
+    monkeypatch.setattr(cg, "resolve_effective_hermes", _REAL_RESOLVE)
     seen_env = {}
 
     def fake_run_agent(agent, prompt, workspace):
@@ -490,8 +590,8 @@ def test_runner_low_routes_env_and_writes_artifacts(tmp_path, monkeypatch):
 
     out = _run_runner(tmp_path, monkeypatch, _task(RISK_LOW), fake_run_agent)
     # invocation 时 env 覆盖可见（adapters.run_agent 将透传 -m/--provider）
-    assert seen_env["model"] == "qwen3:4b"
-    assert seen_env["provider"] == "custom"
+    assert seen_env["model"] == "m1"
+    assert seen_env["provider"] == "p1"
     assert seen_env["base_url"] == "http://127.0.0.1:11434/v1"
     # 执行完成后 env 已还原（不泄漏到后续 stage/调用方）
     assert cg.ENV_MODEL not in os.environ
@@ -500,7 +600,7 @@ def test_runner_low_routes_env_and_writes_artifacts(tmp_path, monkeypatch):
     assert active is not None
     assert active["routing_applied"] is True
     assert active["authoritative"] is True
-    assert active["selected"] == "qwen3:4b@custom"
+    assert active["selected"] == "m1@p1"
     assert active["fallback_attempted"] is False
     # shadow artifact：hypothetical 语义保持
     shadow = so.load_shadow_observation(out)
@@ -513,14 +613,12 @@ def test_runner_low_routes_env_and_writes_artifacts(tmp_path, monkeypatch):
     stage = json.loads((out / "hermes_result.json").read_text(encoding="utf-8"))
     assert stage.get("active_routing_ref", {}).get("entry") == "hermes"
     assert stage.get("shadow_observation_ref", {}).get("entry") == "hermes"
-    # guard 记录存在。注：单元测试环境里 conftest 把 guard 的 effective-model
-    # resolution 固定为 hermetic dict（qwen3:4b/ollama）；「routed env 覆盖 →
-    # guard 真实解析 → LOCAL_FREE → ALLOWED_FREE」的端到端证明由
-    # test_guard_recognizes_routed_local_free_without_auth（真实 resolve）与
-    # fresh-runner N+1（真实进程）覆盖——A3 不变量 = guard 解析的 effective
-    # model == 实际 invocation model（env 覆盖在 guard 求值前已生效）。
+    # guard 记录：routed LOCAL_FREE（loopback base_url）→ ALLOWED_FREE（零授权）。
+    # 注：conftest 把 guard 的 effective-model resolution 固定为 hermetic dict
+    # （qwen3:4b/ollama）；routing env 覆盖（m1/p1/loopback）优先于 resolution，
+    # guard 以既有 loopback 判定识别 LOCAL_FREE。
     guard = json.loads((out / cg.ARTIFACT_FILENAME).read_text(encoding="utf-8"))
-    assert guard["model"] == "qwen3:4b"
+    assert guard["model"] == "m1"
     # 全链 SUCCESS
     run = json.loads((out / "run.json").read_text(encoding="utf-8"))
     assert run["status"] == "SUCCESS"
@@ -529,12 +627,13 @@ def test_runner_low_routes_env_and_writes_artifacts(tmp_path, monkeypatch):
 def test_runner_low_invocation_failure_no_fallback(tmp_path, monkeypatch):
     """routing 后 local invocation 失败 → 如实 FRAMEWORK_ERROR、零 fallback
     （run_agent 只被调用一次；不切回 deepseek/其他模型；证据保留）。"""
+    monkeypatch.setattr(mr, "baseline_registry", _main_free_registry)
     calls = []
 
     def fake_run_agent(agent, prompt, workspace):
         calls.append(agent)
         if agent == "hermes":
-            raise RuntimeError("local qwen3 invocation failed (simulated)")
+            raise RuntimeError("local main-free invocation failed (simulated)")
         return _structured_ok(agent)
 
     out = _run_runner(tmp_path, monkeypatch, _task(RISK_LOW), fake_run_agent)
@@ -578,7 +677,9 @@ def test_runner_non_low_risk_no_routing(tmp_path, monkeypatch, risk):
 
 
 def test_runner_routing_works_with_model_observation_disabled(tmp_path, monkeypatch):
-    """AAF_MODEL_OBSERVATION=0 时 telemetry 关闭但 active routing（执行权威）仍生效。"""
+    """AAF_MODEL_OBSERVATION=0 时 telemetry 关闭但 active routing（执行权威）仍生效
+    （受控 main-scope LOCAL_FREE registry）。"""
+    monkeypatch.setattr(mr, "baseline_registry", _main_free_registry)
     monkeypatch.setenv(mo.ENV_TOGGLE, "0")
     seen_env = {}
 
@@ -588,7 +689,7 @@ def test_runner_routing_works_with_model_observation_disabled(tmp_path, monkeypa
         return _structured_ok(agent)
 
     out = _run_runner(tmp_path, monkeypatch, _task(RISK_LOW), fake_run_agent)
-    assert seen_env["model"] == "qwen3:4b"
+    assert seen_env["model"] == "m1"
     active = ar.load_active_routing(out)
     assert active["routing_applied"] is True
     # telemetry 关闭 → 无 shadow artifact（既有语义保持）

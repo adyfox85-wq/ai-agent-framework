@@ -349,12 +349,13 @@ def test_runner_high_risk_shadow_selects_deepseek(tmp_path, monkeypatch):
     assert received[0][0] == "hermes"
 
 
-def test_runner_low_risk_shadow_selects_qwen3_local_free(tmp_path, monkeypatch):
-    """RW-030-001 核心验收（runner 级）：LOW TASK → 写出的 shadow artifact 中
-    qwen3:4b@custom 是 eligible 且被选中的真实 hypothetical candidate
-    （LOCAL_FREE 经济偏好生效），selected_candidate=qwen3:4b@custom；
-    actual execution 调用形态不变（run_agent 仍三位置参数、恰一次 hermes
-    调用）；authoritative=false / execution_affected=false 保持。"""
+def test_runner_low_risk_shadow_selects_deepseek(tmp_path, monkeypatch):
+    """TASK: AAF-v0.5-A3-HERMES-EXECUTOR-QUALIFICATION-FIX-001 核心验收
+    （runner 级）：LOW TASK → 写出的 shadow artifact 中 qwen3:4b@custom
+    **不再**是 eligible hypothetical candidate（aux-only evidence →
+    AUXILIARY_ONLY 排除）；唯一 eligible/selected = deepseek-v4-flash@deepseek
+    （scope=main）；actual execution 调用形态不变（run_agent 仍三位置参数、
+    恰一次 hermes 调用）；authoritative=false / execution_affected=false 保持。"""
     received = []
 
     def fake_run_agent(agent, prompt, workspace):
@@ -372,14 +373,18 @@ def test_runner_low_risk_shadow_selects_qwen3_local_free(tmp_path, monkeypatch):
     record = so.load_shadow_observation(out)
     assert record is not None
     assert record["risk_class"] == rc.RISK_LOW
-    assert record["selected_candidate"] == "qwen3:4b@custom"
-    assert record["decision"]["eligible"] == [
-        "deepseek-v4-flash@deepseek", "qwen3:4b@custom",
-    ]
+    assert record["selected_candidate"] == "deepseek-v4-flash@deepseek"
+    assert record["decision"]["eligible"] == ["deepseek-v4-flash@deepseek"]
     assert record["decision"]["required_floor"] == "T4"
-    assert record["decision"]["selection_reason"] == "lowest_known_economic_cost"
+    assert record["decision"]["selection_reason"] == "sole_eligible_candidate"
     assert record["authoritative"] is False
     assert record["execution_affected"] is False
+    # aux-only 候选的显式排除记录（可审计）
+    aux_excl = [
+        e for e in record["decision"]["excluded"]
+        if e["candidate"] == "qwen3:4b@custom"
+    ]
+    assert aux_excl and aux_excl[0]["reason"] == "AUXILIARY_ONLY"
     # actual execution authority 不变：恰一次 hermes 调用、三位置参数形态
     assert len(received) == 1
     assert received[0][0] == "hermes"

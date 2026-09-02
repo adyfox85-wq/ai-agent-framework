@@ -1,13 +1,18 @@
 """AAF-v0.5-A3-HERMES-FREE-ROUTING-001-FIX-001 fresh-runner validation driver
-（Run N+1，TASK: AAF-v0.5-A3-HERMES-FREE-ROUTING-001-FIX-001）。
+（Run N+1，TASK: AAF-v0.5-A3-HERMES-FREE-ROUTING-001-FIX-001；N1 期望按
+TASK: AAF-v0.5-A3-HERMES-EXECUTOR-QUALIFICATION-FIX-001 重新同步）。
 
 每个场景用**全新 python 进程**运行真实 runner（tests/fresh_runner_a3_fix001_wrapper.py），
 fake hermes.bat / codebuddy.bat / codex.bat 是真实 child process；hermes chat 的
 env 覆盖证据由 fake CLI 落盘 marker（MODEL=/PROVIDER=/BASE_URL= 行）。
 
-  N1（Risk: LOW + baseline registry）   -> FIX 回归：qwen3 LOCAL_FREE 路径仍真实
-       active route（routing_applied=true，qwen3:4b@custom，guard LOCAL_FREE →
-       ALLOWED_FREE 零授权，fallback_attempted=false，全链 SUCCESS）。
+  N1（Risk: LOW + baseline registry, regression）   -> EXECUTOR-QUALIFICATION-
+       FIX 语义：qwen3:4b@custom（aux-only evidence）**不再**被选中/路由
+       （excluded=AUXILIARY_ONLY）；唯一 main-scope eligible =
+       deepseek-v4-flash@deepseek 但 cost=UNKNOWN 非 FREE → routing_applied=false、
+       configured deepseek-v4-flash@deepseek 保留（guard ALLOWED_AUTHORIZED_PAID
+       + AAF_COST_AUTH 精确授权）、child 零 env 覆盖、fallback_attempted=false、
+       全链 SUCCESS。
   N2（Risk: LOW + FREE_PROMO sole registry, control） -> FIX 核心：selector 选中
        FREE_PROMO 候选（A1 语义不变），A3 cost gate 拒绝 → routing_applied=false、
        routed_model=None、configured deepseek-v4-flash@deepseek 保留（guard
@@ -256,34 +261,43 @@ def _parse_marker(path: Path) -> dict:
 def main() -> int:
     failures = 0
     scenario_record: dict = {
-        "scenario": "N1-low-baseline-routed + N2-low-free-promo-blocked",
+        "scenario": "N1-low-baseline-no-route + N2-low-free-promo-blocked",
         "task_id": "AAF-v0.5-A3-HERMES-FREE-ROUTING-001-FIX-001",
         "purpose": (
-            "AAF-v0.5-A3-HERMES-FREE-ROUTING-001-FIX-001 fresh-runner N+1: a fresh "
-            "runner process executes (N1) a synthetic explicit Risk: LOW task against "
-            "the unchanged A1 baseline registry — active routing still really routes "
-            "to qwen3:4b@custom (LOCAL_FREE + QUALIFIED + T4): routing_applied=true, "
-            "guard ALLOWED_FREE/LOCAL_FREE, child sees qwen3:4b/custom/local endpoint, "
-            "fallback_attempted=false, zero auth claim, full chain SUCCESS; and (N2) "
+            "AAF-v0.5-A3-HERMES-FREE-ROUTING-001-FIX-001 fresh-runner N+1 (N1 "
+            "expectations re-synced by TASK: AAF-v0.5-A3-HERMES-EXECUTOR-"
+            "QUALIFICATION-FIX-001): a fresh runner process executes (N1) a "
+            "synthetic explicit Risk: LOW task against the unchanged A1 baseline "
+            "registry — active routing NO LONGER routes to qwen3:4b@custom "
+            "(aux-only qualification evidence, excluded AUXILIARY_ONLY; the real "
+            "Hermes main-chat invocation `hermes -m qwen3:4b --provider custom` "
+            "returns HTTP 400): routing_applied=false, selected="
+            "deepseek-v4-flash@deepseek but cost UNKNOWN not FREE -> SELECTED_NOT_FREE, "
+            "configured deepseek-v4-flash@deepseek preserved (guard "
+            "ALLOWED_AUTHORIZED_PAID via exact AAF_COST_AUTH), zero env overrides "
+            "in the child, fallback_attempted=false, full chain SUCCESS; and (N2) "
             "the same explicit Risk: LOW task against a test-only registry whose sole "
-            "eligible candidate is FREE_PROMO + QUALIFIED + T4 — the A2 selector still "
-            "selects it (A1 FREE_OF_COST_CLASSES semantics unchanged), but the A3 "
-            "active-routing cost gate (strictly FREE/LOCAL_FREE) rejects it: "
-            "routing_applied=false, routed_model=None, configured "
-            "deepseek-v4-flash@deepseek preserved (guard ALLOWED_AUTHORIZED_PAID via "
-            "exact AAF_COST_AUTH), zero env overrides in the child, "
-            "fallback_attempted=false, REPORT/lifecycle SUCCESS."
+            "eligible candidate is FREE_PROMO + QUALIFIED + T4 (scope=main fixture) — "
+            "the A2 selector still selects it (A1 FREE_OF_COST_CLASSES semantics "
+            "unchanged), but the A3 active-routing cost gate (strictly "
+            "FREE/LOCAL_FREE) rejects it: routing_applied=false, routed_model=None, "
+            "configured deepseek-v4-flash@deepseek preserved (guard "
+            "ALLOWED_AUTHORIZED_PAID via exact AAF_COST_AUTH), zero env overrides "
+            "in the child, fallback_attempted=false, REPORT/lifecycle SUCCESS."
         ),
         "scenarios": {},
     }
     try:
-        # ---------- N1: Risk: LOW + baseline → active route to qwen3:4b@custom ----------
-        n1_dir = EVIDENCE_ROOT / "N1-low-baseline-routed"
+        # ---------- N1: Risk: LOW + baseline → 不路由（aux-only 排除，configured 保留） ----------
+        n1_dir = EVIDENCE_ROOT / "N1-low-baseline-no-route"
         n1 = _run_scenario(
             n1_dir,
             _task(N1_TASK_ID, "LOW",
-                  "验证 FIX-001 回归：LOW 任务应仍真实路由到 qwen3:4b@custom。"),
-            extra_env={},
+                  "验证 EXECUTOR-QUALIFICATION-FIX 回归：LOW 任务不得再路由到 "
+                  "qwen3:4b@custom（aux-only evidence），configured model 保留。"),
+            extra_env={
+                cg.ENV_AUTH: f"{N1_TASK_ID}|hermes|deepseek-v4-flash|deepseek",
+            },
         )
         out1 = n1["out"]
         run1 = _read_json(out1 / "run.json") or {}
@@ -291,6 +305,10 @@ def main() -> int:
         guard1 = _read_json(out1 / "cost_guard.json") or {}
         shadow1 = _read_json(out1 / "shadow_observation.json") or {}
         marker1 = _parse_marker(n1["marker_hermes"])
+        aux_excl1 = [
+            e for e in (active1.get("excluded") or [])
+            if e.get("candidate") == "qwen3:4b@custom"
+        ]
         record1 = {
             "exit_code": n1["exit_code"],
             "run_status": run1.get("status"),
@@ -303,6 +321,9 @@ def main() -> int:
                 "authoritative": active1.get("authoritative"),
                 "reason": active1.get("reason"),
                 "configured_model": active1.get("configured_model"),
+                "qwen3_excluded_reason": (
+                    aux_excl1[0].get("reason") if aux_excl1 else None
+                ),
             },
             "guard": {
                 "decision": guard1.get("decision"),
@@ -319,31 +340,34 @@ def main() -> int:
                 "authoritative": shadow1.get("authoritative"),
                 "execution_affected": shadow1.get("execution_affected"),
                 "actual_vs_shadow": shadow1.get("actual_vs_shadow"),
+                "selected_candidate": shadow1.get("selected_candidate"),
             },
         }
-        scenario_record["scenarios"]["N1-low-baseline-routed"] = record1
+        scenario_record["scenarios"]["N1-low-baseline-no-route"] = record1
         ok1 = (
             n1["exit_code"] == 0
             and run1.get("status") == "SUCCESS"
-            and active1.get("routing_applied") is True
-            and active1.get("selected") == "qwen3:4b@custom"
-            and active1.get("routed_model") == "qwen3:4b"
-            and active1.get("routed_provider") == "custom"
+            and active1.get("routing_applied") is False
+            and active1.get("selected") == "deepseek-v4-flash@deepseek"
+            and active1.get("routed_model") is None
             and active1.get("fallback_attempted") is False
             and active1.get("authoritative") is True
-            and guard1.get("decision") == cg.DECISION_ALLOWED_FREE
-            and guard1.get("cost_class") == cg.COST_LOCAL_FREE
-            and guard1.get("model") == "qwen3:4b"
-            and guard1.get("provider") == "custom"
-            and marker1.get("model_flag") == "qwen3:4b"
-            and marker1.get("provider_flag") == "custom"
-            and marker1.get("base_url") == "http://127.0.0.1:11434/v1"
+            and (active1.get("reason") or "").startswith(ar.REASON_SELECTED_NOT_FREE)
+            and aux_excl1 and aux_excl1[0].get("reason") == "AUXILIARY_ONLY"
+            and active1.get("configured_model") == "deepseek-v4-flash"
+            and active1.get("configured_provider") == "deepseek"
+            and guard1.get("decision") == cg.DECISION_ALLOWED_AUTHORIZED_PAID
+            and guard1.get("model") == "deepseek-v4-flash"
+            and guard1.get("provider") == "deepseek"
+            and marker1.get("model_flag") is None  # 无覆盖：configured model 原样
+            and marker1.get("provider_flag") is None
+            and marker1.get("base_url") is None
             and shadow1.get("authoritative") is False
             and shadow1.get("execution_affected") is False
-            and shadow1.get("actual_vs_shadow") == "SAME"
-            and not (out1 / cg.CONSUMPTION_FILENAME).exists()  # ALLOWED_FREE 零 claim
+            and shadow1.get("selected_candidate") == "deepseek-v4-flash@deepseek"
+            and (out1 / cg.CONSUMPTION_FILENAME).exists()  # paid 授权确实被消费
         )
-        print(f"[N1] LOW baseline routed -> {'PASS' if ok1 else 'FAIL'}")
+        print(f"[N1] LOW baseline no-route (configured preserved) -> {'PASS' if ok1 else 'FAIL'}")
         if not ok1:
             failures += 1
 

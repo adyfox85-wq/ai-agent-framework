@@ -430,6 +430,7 @@ def main() -> int:
             n2a_dir,
             _task(N2A_TASK_ID, "LOW",
                   "LOW 回归：真实 economic facts 下经济过滤后只剩 1 个可信候选 → WorkBuddy 保持 CodeBuddy Auto（无 --model），LOW 行为零变化。"),
+            hermes_auth=True,
         )
         out2a = n2a["out"]
         run2a = _read_json(out2a / "run.json") or {}
@@ -471,6 +472,7 @@ def main() -> int:
             _task(N2B_TASK_ID, "LOW",
                   "LOW 回归（routed 分支）：受控两可信 fixture → routing_applied=true / winner=hy4-preview / 真实 invocation 恰好一个 --model。"),
             extra_env={"AAF_TEST_ECON_FACTS_MODE": "two_trustworthy"},
+            hermes_auth=True,
         )
         out2b = n2b["out"]
         run2b = _read_json(out2b / "run.json") or {}

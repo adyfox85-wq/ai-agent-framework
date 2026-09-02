@@ -50,7 +50,25 @@ Shadow selection 语义边界（与 TASK: AAF-v0.5-A2-SHADOW-ROUTING-001 一致�
 - NOT_QUALIFIED：qualification.status == not_qualified。
 - QUALIFICATION_UNKNOWN：qualification.status == unknown（**绝不静默
   变成 qualified**）。
+- AUXILIARY_ONLY（executor 角色；TASK: AAF-v0.5-A3-HERMES-EXECUTOR-
+  QUALIFICATION-FIX-001）：候选 usable（capability + QUALIFIED）但
+  qualification.scope == auxiliary——evidence 只覆盖 auxiliary /
+  端点级上下文（vision/compression/title/web_extract/summarization 槽位、
+  本地 OpenAI-compatible 端点直连等），**绝不构成主 executor 资格**
+  （真实 Hermes main-chat invocation `hermes ... -m qwen3:4b
+  --provider custom` = HTTP 400 实证）。
+- MAIN_INVOCATION_UNPROVEN（executor 角色）：候选 usable 但
+  qualification.scope == unknown——evidence 未声明 / 未覆盖真实主调用路径；
+  fail closed：未证明主调用能力的候选绝不当作 executor 可执行。
 - UNSUPPORTED：registry 数据契约在消费时不成立（值不是 RegistryEntry）。
+
+Executor 主调用资格规则（Requirement：executor qualification 必须由覆盖该
+agent 真实主调用路径的 evidence 支持）：executor 角色的候选除通过
+capability + qualification 双闸（is_usable_candidate）外，还必须
+qualification.scope == main（A1 词汇；默认 unknown fail closed）。本规则
+只作用于 executor 角色——它是唯一会被 active routing 真实选择/改变执行的
+角色；validator / reviewer 的 hypothetical 选择不受影响。复用同一 A1
+qualification 契约，不创建第二套资格系统。
 
 FREE 只可能是成本属性；**FREE 绝不产生 qualification**（Requirement 13）：
 候选必须 qualification.status == QUALIFIED 才可进入经济选择
@@ -77,6 +95,8 @@ from .model_registry import (
     LOCALITY_LOCAL,
     LOCALITY_REMOTE,
     LOCALITY_UNKNOWN,
+    QUAL_SCOPE_AUXILIARY,
+    QUAL_SCOPE_MAIN,
     QUAL_STATUS_NOT_QUALIFIED,
     RegistryEntry,
     is_usable_candidate,
@@ -108,12 +128,16 @@ EXCL_ROLE_NOT_APPLICABLE = "ROLE_NOT_APPLICABLE"
 EXCL_CAPABILITY_INSUFFICIENT = "CAPABILITY_INSUFFICIENT"
 EXCL_NOT_QUALIFIED = "NOT_QUALIFIED"
 EXCL_QUALIFICATION_UNKNOWN = "QUALIFICATION_UNKNOWN"
+EXCL_AUXILIARY_ONLY = "AUXILIARY_ONLY"
+EXCL_MAIN_INVOCATION_UNPROVEN = "MAIN_INVOCATION_UNPROVEN"
 EXCL_UNSUPPORTED = "UNSUPPORTED"
 EXCLUSION_REASONS = (
     EXCL_ROLE_NOT_APPLICABLE,
     EXCL_CAPABILITY_INSUFFICIENT,
     EXCL_NOT_QUALIFIED,
     EXCL_QUALIFICATION_UNKNOWN,
+    EXCL_AUXILIARY_ONLY,
+    EXCL_MAIN_INVOCATION_UNPROVEN,
     EXCL_UNSUPPORTED,
 )
 
@@ -199,7 +223,7 @@ class ShadowDecision:
 
 # ---------------------------------------------------------------------------
 # 过滤管线（Requirement 6：A 适用性 → B 能力充分性 → C qualification →
-# D 经济偏好 → E 确定性 tie-break）
+# C2 executor 主调用 scope（executor 角色）→ D 经济偏好 → E 确定性 tie-break）
 # ---------------------------------------------------------------------------
 
 
@@ -301,6 +325,22 @@ def select_shadow_candidate(
                 ExclusionRecord(key, _exclude_reason_for_unqualified(entry))
             )
             continue
+        # C2. executor 主调用资格（TASK: AAF-v0.5-A3-HERMES-EXECUTOR-
+        #     QUALIFICATION-FIX-001）：executor 角色（唯一会被 active routing
+        #     真实选择/改变执行的角色）除 capability + qualification 双闸外，
+        #     还必须 qualification.scope == main——evidence 必须覆盖该 agent 的
+        #     真实主调用路径（Hermes = main-chat invocation）。auxiliary-only /
+        #     端点级 / 未声明主调用 scope 的 evidence 绝不构成主 executor 资格
+        #     （fail closed：unknown ≠ main；绝不静默提升）。validator /
+        #     reviewer 角色（hypothetical only）不经此闸。
+        if role == ROLE_EXECUTOR:
+            scope = entry.qualification.scope
+            if scope == QUAL_SCOPE_AUXILIARY:
+                excluded.append(ExclusionRecord(key, EXCL_AUXILIARY_ONLY))
+                continue
+            if scope != QUAL_SCOPE_MAIN:
+                excluded.append(ExclusionRecord(key, EXCL_MAIN_INVOCATION_UNPROVEN))
+                continue
         eligible.append(key)
 
     if not eligible:

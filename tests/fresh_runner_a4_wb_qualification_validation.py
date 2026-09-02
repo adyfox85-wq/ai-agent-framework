@@ -271,7 +271,11 @@ def main() -> int:
         n1 = _run_scenario(
             n1_dir,
             _task(N1_TASK_ID, "LOW", "验证 qualification 后 framework 正常运行（FIX-001：真实 facts 只有 1 个可信候选 → WorkBuddy stage 保持 CodeBuddy Auto，无 --model）。"),
-            extra_env={},
+            # Hermes stage：EXECUTOR-QUALIFICATION-FIX 起 LOW 真实 facts 不再路由
+            # qwen3（aux-only 排除）→ configured deepseek 保留 → 精确授权走 A0。
+            extra_env={
+                cg.ENV_AUTH: f"{N1_TASK_ID}|hermes|deepseek-v4-flash|deepseek",
+            },
         )
         out1 = n1["out"]
         run1 = _read_json(out1 / "run.json") or {}

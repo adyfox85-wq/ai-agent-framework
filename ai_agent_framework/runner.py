@@ -31,6 +31,7 @@ from . import project_boundary
 from . import active_routing as active_routing_mod
 from . import model_registry as model_registry_mod
 from .risk_contract import ROLE_EXECUTOR, ROLE_VALIDATOR
+from . import fallback_runtime as fallback_runtime_mod
 from . import shadow_observation as shadow_obs_mod
 from . import task_lifecycle
 from . import workbuddy_routing as workbuddy_routing_mod
@@ -573,6 +574,17 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     }
                     if wb_record['routing_applied']:
                         wb_routing_env_saved = workbuddy_routing_mod.apply_workbuddy_model_env(wb_record)
+                # v0.5 A5（TASK: AAF-v0.5-A5-FREE-FALLBACK-RUNTIME-001）：Hermes
+                # executor stage 的**原始 invocation 真实失败后**（本 try/except
+                # 捕获到 invocation 异常），至多一次 automatic FREE/LOCAL_FREE
+                # model-level fallback（decision authority =
+                # fallback_contract.decide_fallback；Requirement-3 cost gate 复用
+                # A3 成本闸词汇；candidate admission 复用 A0 Paid Guard）。
+                # A3 初始 active-routing 行为零修改（fallback 绝不与 initial
+                # model selection 混淆）；Risk 缺失 → 无法按 contract 决策 →
+                # 不评估（保持原失败语义）。audit artifact = fallback_runtime.json。
+                # A5 层内部任何异常都不掩盖原始 stage 失败（记录到 stderr）。
+                fb_exc = None
                 try:
                     if agent == 'hermes':
                         # v0.5 A0 Paid Guard（fail-closed，TASK: AAF-v0.5-A0-PAID-GUARD-001）：
@@ -601,7 +613,41 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     else:
                         result_text = run_agent(agent, prompt, workspace)
                 except Exception as exc:
+                    fb_exc = exc
                     result_text = f'FRAMEWORK_ERROR\n{type(exc).__name__}: {exc}'
+                # v0.5 A5（续）：真实原始 invocation 失败（异常）后才评估 fallback；
+                # guard 前置阻断（无异常、COST_APPROVAL_REQUIRED 文本）不是模型执行
+                # 失败 → 无 fallback 上下文（A0 authority 持有），不评估。
+                fallback_runtime_ref = None
+                fallback_overlay_saved = None
+                if agent == 'hermes' and fb_exc is not None:
+                    try:
+                        fb_risk = parse_task_fields(task).get('Risk') or None
+                        if fb_risk is not None:
+                            fb_outcome = fallback_runtime_mod.run_fallback_after_failure(
+                                task_id=task_id,
+                                risk_class=fb_risk,
+                                risk_source=shadow_obs_mod.TASK_RISK_SOURCE,
+                                stage_agent=agent,
+                                role=ROLE_EXECUTOR,
+                                registry=model_registry_mod.baseline_registry(),
+                                output_dir=output_dir,
+                                prompt=prompt,
+                                workspace=workspace,
+                                invoke=run_agent,
+                                failure_exc=fb_exc,
+                            )
+                            if fb_outcome is not None:
+                                if fb_outcome.get('result_text') is not None:
+                                    result_text = fb_outcome['result_text']
+                                fallback_runtime_ref = fb_outcome.get('artifact_ref')
+                                fallback_overlay_saved = fb_outcome.get('overlay_saved') or None
+                    except Exception as a5_exc:
+                        # A5 层内部失败不得掩盖原始 stage 失败（也不得导致第二模型）
+                        print(
+                            f'[a5-fallback] layer error: {type(a5_exc).__name__}: {a5_exc}',
+                            file=sys.stderr,
+                        )
                 # TASK-011：WorkBuddy stage attempt telemetry（machine artifact；
                 # supporting evidence——canonical 结果仍只有 <agent>_result.md/json）。
                 wb_retry_meta = None
@@ -666,6 +712,11 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                                 'authority': str(output_dir / shadow_obs_mod.ARTIFACT_FILENAME),
                                 'entry': agent,
                             }
+                # v0.5 A5：fallback candidate env 覆盖还原（同样在 observation
+                # 之后——observation 必须如实看到 final actual invocation model；
+                # 还原顺序 = 设置的逆序：先 fallback overlay，再 A3 routing）。
+                if fallback_overlay_saved is not None:
+                    active_routing_mod.restore_routing_env(fallback_overlay_saved)
                 # v0.5 A3：routing env 覆盖还原（在 model observation / shadow
                 # observation 之后——它们必须如实看到实际 invocation model）。
                 if routing_env_saved is not None:
@@ -710,6 +761,11 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     # hypothetical shadow decision 与 authoritative active decision
                     # 在 stage result 中明确区分）。
                     stage['active_routing_ref'] = dict(active_routing_ref)
+                if fallback_runtime_ref:
+                    # v0.5 A5-001：authoritative A5 fallback runtime audit 引用
+                    # （详细记录在 fallback_runtime.json——仅当 Hermes stage 原始
+                    # invocation 失败并触发 A5 评估时存在）。
+                    stage['fallback_runtime_ref'] = dict(fallback_runtime_ref)
                 if wb_active_routing_ref:
                     # v0.5 A4-001：WorkBuddy authoritative active-routing authority
                     # 引用（详细决策在 workbuddy_active_routing.json；与 A3 Hermes

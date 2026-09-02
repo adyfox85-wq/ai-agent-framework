@@ -8,6 +8,12 @@ TASK: AAF-v0.5-A5-FALLBACK-CONTRACT-001（Requirement 8 全矩阵）：
 - audit schema required fields（Req 5）
 - foundation：fallback_attempted / fallback_used 恒 False、无第二模型执行
 
+FIX-001（AAF-v0.5-A5-FALLBACK-CONTRACT-001-FIX-001，第 9 节）：Codex
+REQUEST_CHANGE blocking probes 回归——failure_class ↔ decision 完整双向
+矩阵（paid/blocked 类被篡改为 fallback_not_eligible → reject；trigger 类只
+能 eligible/not-eligible；not-eligible reason 与预算/候选状态一致）+ authority
+必须精确等于生成器契约值（missing/altered/unexpected → reject）。
+
 本文件只 import 被测模块 fallback_contract（+ A1 构造 fixture 所需
 RegistryEntry / RuntimeQualification）；不触碰任何 runner / 路由执行路径。
 """
@@ -620,3 +626,223 @@ def test_decision_record_is_order_independent(registry_qualified):
     b = _decide(failure_class=fc.FAILURE_INVOCATION, registry=swapped)
     assert a["fallback_candidates"] == b["fallback_candidates"]
     assert a["decision"] == b["decision"]
+
+
+# ---------------------------------------------------------------------------
+# 9. FIX-001 regression：failure_class ↔ decision 双向矩阵 + authority 校验
+#    （Codex REQUEST_CHANGE blocking probes：paid/blocked 类被篡改为
+#    fallback_not_eligible 仍被接受；authority 被替换为任意值仍被接受）
+# ---------------------------------------------------------------------------
+
+
+def _forge(record: dict, *, decision: str) -> dict:
+    """把一份合法 record 改写为另一个 decision token 并同步派生字段，
+    使篡改后的记录尽量"自洽"（模拟攻击者只留一处矛盾的情况）。
+    """
+    forged = dict(record)
+    forged["decision"] = decision
+    forged["fallback_eligible"] = decision == fc.DECISION_FALLBACK_ELIGIBLE
+    forged["paid_escalation_required"] = (
+        decision == fc.DECISION_PAID_ESCALATION_REQUIRED
+    )
+    if decision == fc.DECISION_FALLBACK_ELIGIBLE:
+        forged["decision_reason"] = None
+    else:
+        forged["decision_reason"] = (
+            f"{fc.REASON_NON_FALLBACK_CONTEXT}: forged-but-self-consistent"
+        )
+    return forged
+
+
+def test_paid_class_mutated_to_fallback_not_eligible_rejected(
+    registry_qualified,
+):
+    # Codex probe：paid record 被篡改为 decision=fallback_not_eligible +
+    # paid_escalation_required=False —— 仍"自洽"，但把 paid escalation 事实
+    # 降级为普通 no-fallback（破坏 Paid Guard 审计语义）→ 必须 reject
+    record = _decide(
+        failure_class=fc.FAILURE_PAID_ESCALATION_REQUIRED,
+        registry=registry_qualified,
+    )
+    assert record["decision"] == fc.DECISION_PAID_ESCALATION_REQUIRED
+    record["decision"] = fc.DECISION_FALLBACK_NOT_ELIGIBLE
+    record["paid_escalation_required"] = False
+    with pytest.raises(ValueError):
+        fc.validate_fallback_record(record)
+
+
+@pytest.mark.parametrize(
+    "failure_class", sorted(fc.BLOCKED_CLASSES)
+)
+def test_blocked_class_mutated_to_fallback_not_eligible_rejected(
+    failure_class, registry_qualified
+):
+    # Codex probe：blocked（fail-closed）record 被篡改为 fallback_not_eligible
+    # ——把 fail-closed 事实降级为普通 no-fallback → 必须 reject
+    record = _decide(failure_class=failure_class, registry=registry_qualified)
+    assert record["decision"] == fc.DECISION_BLOCKED_FAIL_CLOSED
+    record["decision"] = fc.DECISION_FALLBACK_NOT_ELIGIBLE
+    with pytest.raises(ValueError):
+        fc.validate_fallback_record(record)
+
+
+def test_altered_authority_rejected(registry_qualified):
+    # Codex probe：authority 替换为任意"平行系统"标识 → 必须 reject
+    record = _decide(
+        failure_class=fc.FAILURE_INVOCATION, registry=registry_qualified
+    )
+    record["authority"] = "untrusted.parallel.system"
+    with pytest.raises(ValueError):
+        fc.validate_fallback_record(record)
+
+
+def test_missing_authority_rejected(registry_qualified):
+    # authority 字段缺失 → 必须 reject（schema required-field fail closed）
+    record = _decide(
+        failure_class=fc.FAILURE_INVOCATION, registry=registry_qualified
+    )
+    del record["authority"]
+    with pytest.raises(ValueError):
+        fc.validate_fallback_record(record)
+
+
+def test_non_string_authority_rejected(registry_qualified):
+    # authority 被替换为非字符串值 → 必须 reject
+    record = _decide(
+        failure_class=fc.FAILURE_INVOCATION, registry=registry_qualified
+    )
+    record["authority"] = 12345
+    with pytest.raises(ValueError):
+        fc.validate_fallback_record(record)
+
+
+def test_generated_authority_is_the_single_contract_constant(
+    registry_qualified,
+):
+    # 生成器写入的 authority == 校验器强制比对的同一契约常量（单一权威来源，
+    # 不创建第二套 authority 系统；校验器对该常量做全等匹配）
+    record = _decide(
+        failure_class=fc.FAILURE_INVOCATION, registry=registry_qualified
+    )
+    assert record["authority"] == fc._AUTHORITY
+    assert record["authoritative"] is True
+    fc.validate_fallback_record(record)
+
+
+# 完整双向矩阵的非法组合（Codex：paid ⇔ paid_escalation_required、blocked ⇔
+# blocked_fail_closed、trigger-capable 只能 eligible/not-eligible）——
+# 对每个 failure_class 枚举所有不被允许的 decision token
+_DISALLOWED_CLASS_DECISION = (
+    [
+        (cls, decision)
+        for cls in fc.PAID_ESCALATION_CLASSES
+        for decision in fc.DECISIONS
+        if decision != fc.DECISION_PAID_ESCALATION_REQUIRED
+    ]
+    + [
+        (cls, decision)
+        for cls in fc.BLOCKED_CLASSES
+        for decision in fc.DECISIONS
+        if decision != fc.DECISION_BLOCKED_FAIL_CLOSED
+    ]
+    + [
+        (cls, decision)
+        for cls in fc.TRIGGER_CAPABLE_CLASSES
+        for decision in fc.DECISIONS
+        if decision
+        not in (
+            fc.DECISION_FALLBACK_ELIGIBLE,
+            fc.DECISION_FALLBACK_NOT_ELIGIBLE,
+        )
+    ]
+)
+
+
+@pytest.mark.parametrize(
+    "failure_class,decision", _DISALLOWED_CLASS_DECISION
+)
+def test_validate_rejects_contradictory_class_decision_combinations(
+    failure_class, decision, registry_qualified
+):
+    # 任何矛盾组合（class 分区不允许的 decision）→ fail closed
+    record = _decide(failure_class=failure_class, registry=registry_qualified)
+    forged = _forge(record, decision=decision)
+    with pytest.raises(ValueError):
+        fc.validate_fallback_record(forged)
+
+
+# 每个受支持的 decision class 的合法 record 仍必须通过（valid matrix intact）
+_VALID_DECISION_SCENARIOS = (
+    (fc.DECISION_FALLBACK_ELIGIBLE, fc.FAILURE_INVOCATION, "qualified"),
+    (fc.DECISION_FALLBACK_NOT_ELIGIBLE, fc.FAILURE_UNAVAILABLE, "empty"),
+    (
+        fc.DECISION_PAID_ESCALATION_REQUIRED,
+        fc.FAILURE_PAID_ESCALATION_REQUIRED,
+        "qualified",
+    ),
+    (
+        fc.DECISION_BLOCKED_FAIL_CLOSED,
+        fc.FAILURE_FRAMEWORK_INPUT_CONFIG,
+        "qualified",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "decision,failure_class,registry_kind", _VALID_DECISION_SCENARIOS
+)
+def test_valid_record_still_accepted_for_every_decision_class(
+    decision, failure_class, registry_kind, registry_qualified
+):
+    registry = registry_qualified if registry_kind == "qualified" else {}
+    record = _decide(failure_class=failure_class, registry=registry)
+    assert record["decision"] == decision
+    fc.validate_fallback_record(record)  # 合法矩阵不受新校验影响
+
+
+def test_not_eligible_reason_token_must_match_budget_state():
+    # trigger-capable not-eligible：预算未耗尽（used==0）+ 无候选，reason 被
+    # 篡改为 BUDGET_EXHAUSTED → 与状态矛盾 → reject
+    record = _decide(failure_class=fc.FAILURE_INVOCATION, registry={})
+    assert record["decision"] == fc.DECISION_FALLBACK_NOT_ELIGIBLE
+    assert record["automatic_fallback_count_used"] == 0
+    record["decision_reason"] = (
+        f"{fc.REASON_BUDGET_EXHAUSTED}: forged reason"
+    )
+    with pytest.raises(ValueError):
+        fc.validate_fallback_record(record)
+
+
+def test_budget_exhausted_reason_must_be_budget_exhausted(registry_qualified):
+    # 预算已耗尽（used==1）的 not-eligible：reason 必须 BUDGET_EXHAUSTED，
+    # 篡改为 NO_QUALIFIED_CANDIDATE → reject
+    record = _decide(
+        failure_class=fc.FAILURE_INVOCATION,
+        registry=registry_qualified,
+        automatic_fallback_count_used=1,
+    )
+    assert record["decision"] == fc.DECISION_FALLBACK_NOT_ELIGIBLE
+    assert record["automatic_fallback_count_used"] == 1
+    record["decision_reason"] = (
+        f"{fc.REASON_NO_QUALIFIED_CANDIDATE}: forged reason"
+    )
+    with pytest.raises(ValueError):
+        fc.validate_fallback_record(record)
+
+
+def test_not_eligible_with_qualified_candidates_and_free_budget_rejected(
+    registry_qualified,
+):
+    # 有空闲预算 + 合格 other-model 候选却标 not-eligible（eligible 被篡改为
+    # not-eligible）→ 与候选/预算状态矛盾 → reject
+    record = _decide(
+        failure_class=fc.FAILURE_INVOCATION, registry=registry_qualified
+    )
+    assert record["decision"] == fc.DECISION_FALLBACK_ELIGIBLE
+    record["decision"] = fc.DECISION_FALLBACK_NOT_ELIGIBLE
+    record["fallback_eligible"] = False
+    record["decision_reason"] = (
+        f"{fc.REASON_NO_QUALIFIED_CANDIDATE}: forged reason"
+    )
+    with pytest.raises(ValueError):
+        fc.validate_fallback_record(record)

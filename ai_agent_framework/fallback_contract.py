@@ -193,6 +193,45 @@ DECISIONS = (
     DECISION_BLOCKED_FAIL_CLOSED,
 )
 
+
+def allowed_decisions_for_class(failure_class: str) -> tuple[str, ...]:
+    """failure_class 分区 → 允许的 decision token（failure_class ↔ decision
+    双向契约的权威分区函数——validator 据此完整校验矩阵）。
+
+    分区与 ``decide_fallback`` 决策矩阵使用同一 taxonomy 源
+    （PAID_ESCALATION_CLASSES / BLOCKED_CLASSES / TRIGGER_CAPABLE_CLASSES）：
+    - paid-escalation class → 仅 ``paid_escalation_required``
+    - blocked class → 仅 ``blocked_fail_closed``
+    - trigger-capable class → ``fallback_eligible`` | ``fallback_not_eligible``
+      （按既有候选 / one-fallback 预算规则二选一）
+    """
+    if failure_class in PAID_ESCALATION_CLASSES:
+        return (DECISION_PAID_ESCALATION_REQUIRED,)
+    if failure_class in BLOCKED_CLASSES:
+        return (DECISION_BLOCKED_FAIL_CLOSED,)
+    if failure_class in TRIGGER_CAPABLE_CLASSES:
+        return (DECISION_FALLBACK_ELIGIBLE, DECISION_FALLBACK_NOT_ELIGIBLE)
+    raise ValueError(f"failure class not partitioned: {failure_class!r}")
+
+
+def _validate_class_decision_contract(failure_class: str, decision: str) -> None:
+    """完整双向 failure_class ↔ decision 契约校验（FIX-001）。
+
+    单向约束不足以防篡改：把合法 paid/blocked record 的 decision 改写为
+    ``fallback_not_eligible``（并同步 flag）后仍可"自洽"通过单向检查——那会把
+    paid escalation / fail-closed 事实降级为普通 no-fallback，破坏审计语义。
+    这里按 class 分区反向强制 decision 唯一允许集：矛盾组合一律 ValueError
+    （fail closed；不存在"被篡改但自洽"的合法中间态）。
+    """
+    allowed = allowed_decisions_for_class(failure_class)
+    if decision not in allowed:
+        raise ValueError(
+            "failure_class <-> decision contract violation: failure_class "
+            f"{failure_class!r} only permits decision(s) {allowed}, got "
+            f"{decision!r} - contradictory/tampered audit record fails closed"
+        )
+
+
 # ---------------------------------------------------------------------------
 # One-fallback rule（REQUIRED_BEFORE_A5_CLOSE #2/#3）
 # ---------------------------------------------------------------------------
@@ -573,7 +612,12 @@ def validate_fallback_record(record: dict) -> None:
     任一违例 → ValueError（不返回部分有效状态）。foundation 不变量：
     attempted/used 必须 False（本单元无执行权威——任何 True 都是违规）；
     budget 必须 == MAX_AUTOMATIC_FALLBACKS_PER_STAGE；final actual ==
-    original；decision 与 flags/candidates/failure_class 互洽。
+    original；decision 与 flags/candidates/failure_class 互洽。FIX-001：
+    failure_class ↔ decision 为完整双向契约（class 分区强制 decision 唯一
+    允许集——paid/blocked 类被篡改为 fallback_not_eligible 等矛盾组合一律
+    fail closed；not-eligible 的 reason 必须与预算/候选状态一致）；authority
+    必须精确等于生成器写入的 _AUTHORITY 契约值（missing/altered/unexpected
+    → fail closed，不创建第二套 authority 系统）。
     """
     if not isinstance(record, dict):
         raise ValueError(
@@ -597,6 +641,16 @@ def validate_fallback_record(record: dict) -> None:
         )
     if record["authoritative"] is not True:
         raise ValueError("authoritative must be true")
+    # 权威来源字段必须精确等于生成器写入的契约 authority 值（FIX-001：
+    # missing/altered/unexpected authority → fail closed；同一 _AUTHORITY
+    # 常量 = 单一权威来源，不创建第二套 authority 系统）
+    if record["authority"] != _AUTHORITY:
+        raise ValueError(
+            "authority must exactly match the authoritative A5 fallback "
+            "contract value emitted by the generator (this module's "
+            "single authoritative source; missing/altered/unexpected "
+            "authority fails closed - no second authority system)"
+        )
 
     failure_class = record["failure_class"]
     if failure_class not in FAILURE_CLASSES:
@@ -677,29 +731,15 @@ def validate_fallback_record(record: dict) -> None:
         raise ValueError(
             "paid_escalation_required flag inconsistent with decision"
         )
-    if decision_token == DECISION_PAID_ESCALATION_REQUIRED:
-        if failure_class not in PAID_ESCALATION_CLASSES:
-            raise ValueError(
-                "paid_escalation_required decision requires failure_class "
-                "in PAID_ESCALATION_CLASSES"
-            )
-    if decision_token == DECISION_BLOCKED_FAIL_CLOSED:
-        if failure_class not in BLOCKED_CLASSES:
-            raise ValueError(
-                "blocked_fail_closed decision requires failure_class in "
-                "BLOCKED_CLASSES"
-            )
-    if decision_token == DECISION_FALLBACK_ELIGIBLE:
-        if failure_class not in TRIGGER_CAPABLE_CLASSES:
-            raise ValueError(
-                "fallback_eligible decision requires a trigger-capable "
-                "failure class"
-            )
-        if used != 0:
-            raise ValueError(
-                "fallback_eligible decision impossible with an exhausted "
-                "one-fallback budget"
-            )
+    # failure_class ↔ decision 完整双向契约（FIX-001）：paid / blocked 类被
+    # 篡改为 fallback_not_eligible 等"自洽但矛盾"组合必须 fail closed——
+    # allowed_decisions_for_class 从 class 分区反向强制 decision 唯一允许集。
+    _validate_class_decision_contract(failure_class, decision_token)
+    if decision_token == DECISION_FALLBACK_ELIGIBLE and used != 0:
+        raise ValueError(
+            "fallback_eligible decision impossible with an exhausted "
+            "one-fallback budget"
+        )
     if decision_token in (
         DECISION_FALLBACK_NOT_ELIGIBLE,
         DECISION_PAID_ESCALATION_REQUIRED,
@@ -748,6 +788,40 @@ def validate_fallback_record(record: dict) -> None:
             "fallback_candidate must be None unless exactly one qualified "
             "candidate exists (no selection authority in this foundation unit)"
         )
+
+    # trigger-capable fallback_not_eligible：decision_reason 必须与预算 / 候选
+    # 状态一致（FIX-001；Codex 要求 not-eligible 的原因与预算/候选状态一致）：
+    # - used == budget（=1，已耗尽）→ 只能 REASON_BUDGET_EXHAUSTED
+    #   （候选可有可无：耗尽即拒，与候选存在性无关）
+    # - used == 0（未耗尽）→ 候选必须为空（有合格 other-model 候选 + 空闲预算
+    #   就只能 fallback_eligible），reason 只能是 NO_QUALIFIED_CANDIDATE /
+    #   ONLY_SAME_MODEL（同模型恢复 = retry 层）
+    if decision_token == DECISION_FALLBACK_NOT_ELIGIBLE:
+        reason = record["decision_reason"]
+        if used >= MAX_AUTOMATIC_FALLBACKS_PER_STAGE:
+            if not reason.startswith(REASON_BUDGET_EXHAUSTED):
+                raise ValueError(
+                    "fallback_not_eligible with an exhausted one-fallback "
+                    f"budget must carry reason token "
+                    f"{REASON_BUDGET_EXHAUSTED!r}, got {reason!r}"
+                )
+        else:
+            if candidates:
+                raise ValueError(
+                    "fallback_not_eligible with an unexhausted budget "
+                    "requires an empty fallback_candidates list (a qualified "
+                    "other-model candidate with budget available must yield "
+                    "fallback_eligible); contradictory record fails closed"
+                )
+            if not (
+                reason.startswith(REASON_NO_QUALIFIED_CANDIDATE)
+                or reason.startswith(REASON_ONLY_SAME_MODEL)
+            ):
+                raise ValueError(
+                    "fallback_not_eligible with no qualified candidate must "
+                    f"carry reason token {REASON_NO_QUALIFIED_CANDIDATE!r} or "
+                    f"{REASON_ONLY_SAME_MODEL!r}, got {reason!r}"
+                )
 
     # no-silent-fallback evidence：非空显式证据
     evidence = record["no_silent_fallback_evidence"]

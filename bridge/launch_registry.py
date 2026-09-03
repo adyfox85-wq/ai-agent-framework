@@ -67,10 +67,10 @@ def registry_root() -> Path:
     """Bridge 私有 state root 的 launches 目录（§6B.11）。
 
     - 默认 ``~/.aaf-bridge/launches``（与 config.json / last_run.json 同根）
-    - 环境变量 ``AAF_BRIDGE_DIR`` 可覆盖根目录（测试 / 迁移 / 诊断用）
+    - 环境变量 ``AAF_BRIDGE_DIR`` 可覆盖根目录（测试 / 迁移 / 诊断用）——
+      统一经 config.state_root() 解析，与 last_run.json 的隔离语义一致
     """
-    base = Path(os.environ.get("AAF_BRIDGE_DIR") or cfg_mod.CONFIG_DIR)
-    return base / "launches"
+    return cfg_mod.state_root() / "launches"
 
 
 def new_launch_id() -> str:

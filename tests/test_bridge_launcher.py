@@ -188,8 +188,8 @@ def test_failed_exit_marks_failed(make_launcher, tmp_path):
 # ---------- Last info 持久化 ----------
 
 def test_last_info_persisted(make_launcher, tmp_path, monkeypatch):
-    import bridge.config as cfg_mod
-    monkeypatch.setattr(cfg_mod, "CONFIG_DIR", tmp_path / "cfg")
+    # last_run 落盘位置 = Bridge state root（AAF_BRIDGE_DIR 隔离；见 conftest）
+    monkeypatch.setenv("AAF_BRIDGE_DIR", str(tmp_path / "cfg"))
     l = make_launcher(exit_code=0)
     out = tmp_path / "out"
     out.mkdir(parents=True)
@@ -201,13 +201,12 @@ def test_last_info_persisted(make_launcher, tmp_path, monkeypatch):
     assert saved.task_id == "AAF-T1"
     assert saved.result == RESULT_FINISHED
     assert saved.report_path == str(out / "REPORT.md")
-    # 磁盘文件存在
+    # 磁盘文件存在（在隔离的 state root 内，不在真实用户 state）
     assert (tmp_path / "cfg" / "last_run.json").exists()
 
 
 def test_load_last_missing_returns_none(make_launcher, tmp_path, monkeypatch):
-    import bridge.config as cfg_mod
-    monkeypatch.setattr(cfg_mod, "CONFIG_DIR", tmp_path / "nope")
+    monkeypatch.setenv("AAF_BRIDGE_DIR", str(tmp_path / "nope"))
     l = make_launcher(exit_code=0)
     assert l.load_last() is None
 

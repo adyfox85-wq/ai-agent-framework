@@ -40,7 +40,9 @@ REPORT_NOT_FOUND = "REPORT_NOT_FOUND"
 # ---------- last_run / REPORT ----------
 
 def last_run_path() -> Path:
-    return cfg_mod.CONFIG_DIR / "last_run.json"
+    """last_run.json 路径（与 launcher._persist_last 同一 Bridge state root；
+    AAF_BRIDGE_DIR 覆盖，测试隔离语义统一——见 config.state_root）。"""
+    return cfg_mod.state_root() / "last_run.json"
 
 
 def load_last_run() -> RunInfo | None:

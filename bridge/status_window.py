@@ -94,12 +94,15 @@ STATUS_LABELS = {
 
 # Bridge 侧收尾分类 → 中文（task.json 缺失时的兜底展示；不是 lifecycle 终态裁决）
 # CANCELLED：launcher 读取 canonical terminal 后跟随的 Bridge 侧分类（§6A.5）
+# RECOVERY_NEEDED：restart 恢复遇到 recorded runner 失效且无 terminal proof 的
+# 孤儿任务 → 显式不确定态（绝不渲染成「执行失败」；见 launcher.RESULT_RECOVERY_NEEDED）
 LAUNCHER_RESULT_LABELS = {
     "FINISHED": "已完成",
     "FAILED": "执行失败",
     "REPORT_NOT_FOUND": "未找到报告",
     "FAILED_TO_START": "启动失败",
     "CANCELLED": "已取消",
+    "RECOVERY_NEEDED": "状态无法确认，需人工核查",
 }
 
 # ---------------------------------------------------------------------------
@@ -495,8 +498,14 @@ def _as_path(value) -> Path | None:
 
 
 def _load_last_run_file():
-    """直接读 last_run.json（无 launcher 上下文时的兜底；缺失/损坏 → None）。"""
-    p = cfg_mod.CONFIG_DIR / "last_run.json"
+    """直接读 last_run.json（无 launcher 上下文时的兜底；缺失/损坏 → None）。
+
+    路径与 launcher._persist_last 一致解析到 Bridge state root
+    （AAF_BRIDGE_DIR 覆盖；测试隔离语义统一——见 config.state_root）。
+    last_run 只是 terminal-history/fallback 镜像，绝不覆盖 valid recovered
+    active task（resolve_current_task 优先级 1 保证）。
+    """
+    p = cfg_mod.state_root() / "last_run.json"
     if not p.exists():
         return None
     try:
@@ -529,8 +538,13 @@ def _output_dir_for_last(last) -> Path | None:
 def resolve_current_task(launcher=None, last=None) -> TaskRef | None:
     """当前任务解析（确定性优先级）：
 
-    1. 当前 launcher RUNNING 任务（内存事实，最优先）
-    2. 最近 last_run 任务（launcher.last / last_run.json）
+    1. 当前 launcher RUNNING 任务（内存事实，最优先）——**重启恢复后 launcher
+       state=RUNNING + current=正式任务**（launcher.recover_launches），状态窗口
+       经本路径直接绑定恢复的正式任务，不被 last_run / stale active 文件干扰
+    2. 最近 last_run 任务（launcher.last / launcher.load_last() / last_run.json）
+       ——只作 terminal-history/fallback 镜像（requirement 8：不覆盖 valid
+       recovered active task；recover_launches 已在无 live 任务时把 newest
+       完成/孤儿状态刷进 last_run）
     3. 无 → None（空状态，不扫描 .aaf 猜测）
     """
     if launcher is not None:

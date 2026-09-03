@@ -4,7 +4,6 @@ import subprocess
 from pathlib import Path
 import pytest
 
-from bridge import config as cfg_mod
 from bridge import handoff
 from bridge.handoff import (
     HANDOFF_BEGIN,
@@ -56,7 +55,8 @@ def _set_upstream(repo, remote_ref):
 # ---------- last_run / REPORT ----------
 
 def test_load_last_run_ok(tmp_path, monkeypatch):
-    monkeypatch.setattr(cfg_mod, "CONFIG_DIR", tmp_path)
+    # last_run 读路径 = Bridge state root（AAF_BRIDGE_DIR 隔离；见 conftest）
+    monkeypatch.setenv("AAF_BRIDGE_DIR", str(tmp_path))
     (tmp_path / "last_run.json").write_text(
         json.dumps({"task_id": "AAF-T1", "task_path": "T.md", "report_path": "R.md",
                     "exit_code": 0, "result": RESULT_FINISHED}),
@@ -69,12 +69,12 @@ def test_load_last_run_ok(tmp_path, monkeypatch):
 
 
 def test_load_last_run_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(cfg_mod, "CONFIG_DIR", tmp_path / "nope")
+    monkeypatch.setenv("AAF_BRIDGE_DIR", str(tmp_path / "nope"))
     assert load_last_run() is None
 
 
 def test_load_last_run_corrupt(tmp_path, monkeypatch):
-    monkeypatch.setattr(cfg_mod, "CONFIG_DIR", tmp_path)
+    monkeypatch.setenv("AAF_BRIDGE_DIR", str(tmp_path))
     (tmp_path / "last_run.json").write_text("{bad json", encoding="utf-8")
     assert load_last_run() is None
 

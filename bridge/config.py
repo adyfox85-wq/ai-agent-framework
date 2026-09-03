@@ -11,6 +11,17 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".aaf-bridge"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
+
+def state_root() -> Path:
+    """Bridge 私有 state root（last_run.json 与 launches/ 同根；§6B.11）。
+
+    - 默认 ``~/.aaf-bridge``（config.json / last_run.json / launches/ 同根）
+    - 环境变量 ``AAF_BRIDGE_DIR`` 覆盖根目录（测试 / 迁移 / 诊断用）——与
+      launch registry 的隔离语义一致：测试 / E2E 经 AAF_BRIDGE_DIR 指向临时根，
+      绝不把 last_run.json 等测试身份写进真实用户 Bridge 状态。
+    """
+    return Path(os.environ.get("AAF_BRIDGE_DIR") or CONFIG_DIR)
+
 DEFAULT_CONFIG = {
     "hotkey": "ctrl+alt+a",
     "current_project": "",

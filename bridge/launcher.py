@@ -62,6 +62,21 @@ RESULT_FAILED_TO_START = "FAILED_TO_START"
 # Phase E（TASK-005-A 最小兼容，设计 §6A.5）：canonical terminal = CANCELLED 时
 # wait thread 跟随 Core outcome 的 Bridge 侧分类；exit code 只是 evidence，不是判定。
 RESULT_CANCELLED = "CANCELLED"
+# State-Recovery（AAF-RUNTIME-UX-BRIDGE-STATE-RECOVERY-001）：restart 恢复遇到
+# 「recorded runner 已失效 + 无 terminal proof」的孤儿任务 → 显式不确定态。
+# **绝不**把无法验证的孤儿渲染成 FAILED（last_run/registry 只作镜像，非 canonical）。
+RESULT_RECOVERY_NEEDED = "RECOVERY_NEEDED"
+
+# 恢复监视轮询间隔（秒）：recover_launches 恢复的 RUNNING launch 由 watcher 线程
+# 轮询进程/canonical，进程退出或 canonical 出现后按 _wait_and_finish 同款规则收尾。
+RECOVERY_WATCH_INTERVAL = 2.0
+
+# recover_launches 对每个 ACTIVE launch 的处理结果分类（诊断 + 可测的处置记录）
+_DISPOSITION_RESTORED_RUNNING = "RESTORED_RUNNING"
+_DISPOSITION_TERMINAL_RECOVERED = "TERMINAL_RECOVERED"
+_DISPOSITION_RECOVERY_NEEDED = "RECOVERY_NEEDED"
+_DISPOSITION_FORCE_EVIDENCE_FINALIZED = "FORCE_EVIDENCE_FINALIZED"
+_DISPOSITION_UNCERTAIN_KEPT = "UNCERTAIN_KEPT"
 
 # force cancel 相关（TASK-005-B；设计 §6A.11 阈值配置化，默认 30s）
 FORCE_CANCEL_SOFT_TIMEOUT_DEFAULT = 30.0
@@ -142,8 +157,15 @@ class FrameworkLauncher:
         # 不要求 instance_id 相同）
         self.launcher_instance_id = reg_mod.new_launch_id()
         self._registry_dir = registry_dir  # 测试注入；默认 registry_root()
+        # last_run 落盘根在**构造时**绑定一次（与 registry_dir 同一契约）：收尾
+        # wait thread / watcher 是 daemon 线程，可能晚于其创建者作用域（测试的
+        # AAF_BRIDGE_DIR env 在 teardown 恢复）——构造时捕获保证 _persist_last
+        # 永远落在同一隔离根，绝不因 env 复原而写进真实用户 Bridge state。
+        self._state_root = cfg_mod.state_root()
         self._active_launch: dict[str, str] = {}  # task_id → launch_id（内存活跃映射）
         self.recovered_ownership: dict[str, ownership_mod.OwnershipVerdict] = {}  # restart 认证结果（只读诊断）
+        # restart 恢复处置记录：launch_id → 处置分类（_DISPOSITION_*；诊断 + 可测）
+        self.recovered_disposition: dict[str, str] = {}
 
     # ---------- 路径 ----------
 
@@ -416,6 +438,66 @@ class FrameworkLauncher:
 
     # ---------- 等待与收尾（TASK-005-B：canonical-aware，§6B.22） ----------
 
+    # ---------- 收尾共享逻辑（wait thread / 恢复 watcher 同款） ----------
+
+    @staticmethod
+    def result_from_canonical(canonical: dict, output_dir: Path) -> tuple[str, str | None]:
+        """canonical terminal → (Bridge 侧分类 result, report_path)。
+
+        与 _wait_and_finish 的 canonical 映射同一规则（§6B.22）：CANCELLED →
+        CANCELLED；SUCCESS/WAITING → FINISHED（REPORT 缺失 → REPORT_NOT_FOUND）；
+        FAILED → FAILED。launcher 永不直接写 task.json 终态——这里只镜像。
+        """
+        status = canonical.get("status")
+        report = FrameworkLauncher.report_path_for(output_dir)
+        if status == "CANCELLED":
+            return RESULT_CANCELLED, (str(report) if report.exists() else None)
+        if status in ("SUCCESS", "WAITING"):
+            return (RESULT_FINISHED if report.exists() else RESULT_REPORT_NOT_FOUND), (
+                str(report) if report.exists() else None
+            )
+        if status == "FAILED":
+            return RESULT_FAILED, None
+        # 非终态（异常边界）不应出现——调用方保证 canonical 为终态
+        return RESULT_RECOVERY_NEEDED, None
+
+    def _finish_run(
+        self, *, task_id: str, task_path: str | None, output_dir: Path, launch_id: str,
+        exit_code: int | None, result: str, report_path: str | None,
+        canonical: dict | None = None, output: str = "",
+    ) -> None:
+        """一次运行收尾的统一内存状态转换（wait thread 与恢复 watcher 共用）。
+
+        - self.last = 结果镜像（canonical 跟随语义与 _wait_and_finish 一致）
+        - self.current / _active_launch 清空；state → FINISHED（释放并发保护）
+        - _persist_last 落盘（last_run 只作完成态镜像/历史，非权威）
+        - on_finished 回调（Bridge 主线程经事件队列处理；输出为空串表示
+          恢复路径无进程输出可收集）
+        - registry → EXITED 由调用方在进入本方法前完成（wait thread /
+          watcher 各自负责自己的 launch）
+        """
+        self.last = RunInfo(
+            task_id=task_id,
+            task_path=task_path or "",
+            report_path=report_path,
+            exit_code=exit_code,
+            result=result,
+            output_dir=str(output_dir),
+            launch_id=launch_id,
+            terminal_generation=(
+                canonical.get("terminal_generation") if canonical is not None else None
+            ),
+        )
+        self.current = None  # 收尾完成：不再有“当前运行中”任务
+        self._active_launch.pop(task_id, None)
+        self._persist_last()
+        self.state = FINISHED
+        if self.on_finished is not None:
+            try:
+                self.on_finished(self.last, output)
+            except Exception:
+                pass
+
     def _wait_and_finish(
         self, proc: subprocess.Popen, task_path: Path, workspace: str, output_dir: Path, task_id: str,
         launch_id: str,
@@ -517,27 +599,11 @@ class FrameworkLauncher:
             except reg_mod.RegistryError:
                 pass
 
-        self.last = RunInfo(
-            task_id=task_id,
-            task_path=str(task_path),
-            report_path=report_path,
-            exit_code=exit_code,
-            result=result,
-            output_dir=str(output_dir),
-            launch_id=launch_id,
-            terminal_generation=(
-                canonical.get("terminal_generation") if canonical is not None else None
-            ),
+        self._finish_run(
+            task_id=task_id, task_path=str(task_path), output_dir=output_dir,
+            launch_id=launch_id, exit_code=exit_code, result=result,
+            report_path=report_path, canonical=canonical, output=output,
         )
-        self.current = None  # 收尾完成：不再有“当前运行中”任务
-        self._active_launch.pop(task_id, None)
-        self._persist_last()
-        self.state = FINISHED
-        if self.on_finished is not None:
-            try:
-                self.on_finished(self.last, output)
-            except Exception:
-                pass
 
     @staticmethod
     def _poll_canonical(output_dir: Path, wait: float) -> dict | None:
@@ -587,7 +653,15 @@ class FrameworkLauncher:
     # ---------- 状态保存（供 V03-000-C） ----------
 
     def _last_run_path(self) -> Path:
-        return cfg_mod.CONFIG_DIR / "last_run.json"
+        """last_run.json 落盘路径（构造时绑定的 Bridge state root + 文件名）。
+
+        一致性契约：写（_persist_last）与读（load_last / status_window /
+        handoff）必须解析到同一个 root；测试 / E2E 经 AAF_BRIDGE_DIR 指向
+        临时根，杜绝把 F-I-RUN 等测试身份写进真实用户 Bridge 状态。
+        构造时捕获（而非每次调用读 env）保证 daemon 收尾线程在其创建者 env
+        作用域结束后仍写同一隔离根。
+        """
+        return self._state_root / "last_run.json"
 
     def _persist_last(self) -> None:
         if self.last is None:
@@ -897,19 +971,48 @@ class FrameworkLauncher:
         )
 
     def recover_launches(self, registry_dir: Path | None = None) -> dict:
-        """Launcher / Tray restart 后重新认证（§6B.13 / TASK req 12/35）。
+        """Launcher / Tray restart 后重新认证与状态恢复（§6B.13 / TASK req 12/35）。
 
-        - 扫描 registry 活跃条目（PREPARED / RUNNING）→ 三方验证
-          （registry + control + live process；launcher_instance_id 不要求相同——§6B.16）
-        - 全部一致 → REAUTHENTICATED（记入 self._active_launch → force capability 可用）
-        - 任一失败 → UNCERTAIN（拒绝 force kill；只读记录，不自动改终态）
-        - 特殊：registry 活跃 + 进程已消失 + 无终态 + **本 launch 自己的 force
-          evidence 已存在**（Bridge 曾在 verified termination 后、finalizer 前崩溃）
-          → 调 Core finalizer（幂等）收敛 CANCELLED——只针对本协议创建的 launch，
-          **不扫描旧历史 task 自动改终态**（RW-020 保持 OPEN）
+        State-Recovery（AAF-RUNTIME-UX-BRIDGE-STATE-RECOVERY-001）：restart 后
+        状态窗口必须能重新绑定真实 running / finished 正式任务——权威来源是
+        persistent launch registry（launch 身份）+ control.json（runner / cancel /
+        superseded）+ task artifacts（route / stage / terminal），**不是** stale
+        active task 文件，也**不是** last_run.json 兜底镜像。
+
+        对每个 ACTIVE（PREPARED / RUNNING）launch 做三方验证并分类处置：
+        - 全部一致 → REAUTHENTICATED：
+          * 记入 self._active_launch（force capability 可用）
+          * **恢复 launcher 状态**：state=RUNNING + current=RunInfo（task_id /
+            launch_id / runner 身份来自 registry/control 持久权威）——状态窗口
+            经 resolve_current_task 的 RUNNING→current 路径直接绑定正式任务
+          * 启动 recovered watcher 线程：轮询 canonical / 进程存活，任务自然
+            结束或进程消失后按 _wait_and_finish 同款规则收尾（registry EXITED +
+            last_run 镜像 + state=FINISHED），保证并发保护不永久占用
+        - canonical terminal 已存在（任务已完成；registry 仍是 ACTIVE = 旧实例
+          崩溃遗留）→ registry EXITED（exit_result=TERMINAL；**不动 canonical**），
+          并把 newest 完成态镜像进 last_run（terminal-history 视角，requirement 8）
+        - STALE：recorded runner 已失效（进程消失 / PID recycle）+ 任务非终态：
+          * 本 launch 自己的 force evidence 已存在（Bridge 在 verified termination
+            后、finalizer 前崩溃）→ 调 Core finalizer（幂等）收敛 CANCELLED——
+            只针对本协议创建的 launch，不扫描旧历史 task 自动改终态（RW-020）
+          * 无 evidence → registry EXITED（exit_result=RECOVERY_NEEDED）+ 显式
+            mirror last_run（result=RECOVERY_NEEDED）——**绝不**伪造 RUNNING
+            或 FAILED（requirement 5/9）
+        - UNCERTAIN（control 缺失/损坏等，无法证明 dead 也无法证明 live）→
+          registry 保持 ACTIVE 不动（不得自动 EXITED——进程可能仍存活），
+          只记录 verdict 供诊断（fail closed）
+        - PREPARED 且无 runner_pid（launch 尚未完成身份记录）→ 不自动处置
+          （可能正在启动中；保守保留，避免误伤 live runner 的 registry 记录）
+
+        last_run 镜像规则（requirement 8）：恢复出任何 RUNNING 正式任务时**不**
+        改写 last_run——valid recovered active task 优先于任何 last_run 内容；
+        只有无 live launch 恢复时才把 newest 完成/孤儿镜像刷进 last_run。
         """
         root = Path(registry_dir) if registry_dir else (self._registry_dir or reg_mod.registry_root())
         result: dict[str, ownership_mod.OwnershipVerdict] = {}
+        self.recovered_disposition = {}
+        restored: tuple[dict, str, Path, str] | None = None  # (entry, tid, out_dir, ws)
+        mirror_last: tuple[dict, str, str, str] | None = None  # (entry, tid, result, created_at)
         for entry in reg_mod.list_launches(root=root):
             if entry.get("state") not in reg_mod.ACTIVE_STATES:
                 continue
@@ -924,8 +1027,28 @@ class FrameworkLauncher:
                 self._sync_registry_identity(lid, out_dir)
             verdict = ownership_mod.reauthenticate_launch(task_id=tid, launch_id=lid, registry_dir=root)
             result[lid] = verdict
+            checks = verdict.checks or {}
+            ws = str(entry.get("workspace") or "")
+            created_at = str(entry.get("created_at") or "")
             if verdict.ok():
+                # live 正式 runner 恢复（newest 胜出；list 按 created_at 升序 → 覆盖式取最新）
                 self._active_launch[tid] = lid
+                self.recovered_disposition[lid] = _DISPOSITION_RESTORED_RUNNING
+                restored = (entry, tid, out_dir, ws)
+                continue
+            canonical = self._read_canonical_terminal(out_dir) if str(out_dir) else None
+            if canonical is not None and canonical.get("status"):
+                # 任务已有 canonical terminal：registry 只是旧实例崩溃遗留的 ACTIVE
+                # 镜像 → EXITED（不动 canonical；terminal 状态由 task.json 权威呈现）
+                try:
+                    reg_mod.mark_exited(
+                        lid, exit_result="TERMINAL",
+                        note="startup recovery: canonical terminal detected", root=root,
+                    )
+                except reg_mod.RegistryError:
+                    pass
+                self.recovered_disposition[lid] = _DISPOSITION_TERMINAL_RECOVERED
+                mirror_last = self._newer_mirror(mirror_last, (entry, tid, canonical.get("status") or "", created_at))
                 continue
             # 本协议 launch 的 verified force termination 残留（Bridge 中途崩溃）：
             # evidence 存在 + 原进程已消失 + 任务尚无终态 → Core finalizer 幂等收敛。
@@ -933,17 +1056,267 @@ class FrameworkLauncher:
             # 关键事实（durable bridge evidence）并逐项一致——若 Bridge 在 evidence
             # 写入后、registry 更新前崩溃，registry 缺 force 字段 → finalizer fail
             # closed（零 canonical 写，任务保持非终态，安全失败）
-            if verdict.result == ownership_mod.STALE and verdict.checks.get("process_exists") is False \
-                    and verdict.checks.get("task_not_terminal") is True:
+            dead_or_recycled = (
+                verdict.result == ownership_mod.STALE
+                and checks.get("task_not_terminal") is True
+                and entry.get("runner_pid") is not None
+                and (checks.get("process_exists") is False or checks.get("creation_time_match") is False)
+            )
+            if dead_or_recycled:
                 ev_path = reg_mod.force_evidence_path_for(lid, root)
                 if ev_path.exists():
-                    out_dir = Path(str(entry.get("output_dir") or ""))
-                    ws = str(entry.get("workspace") or "")
                     if str(out_dir) and ws:
                         self._invoke_force_recovery(tid, ws, out_dir, ev_path)
                         try:
                             reg_mod.mark_exited(lid, exit_result="RECOVERED", note="force evidence recovery", root=root)
                         except reg_mod.RegistryError:
                             pass
+                        self.recovered_disposition[lid] = _DISPOSITION_FORCE_EVIDENCE_FINALIZED
+                else:
+                    # recorded runner 失效 + 无 terminal proof → 显式不确定态
+                    # （孤儿；**不**伪造 RUNNING / FAILED）
+                    try:
+                        reg_mod.mark_exited(
+                            lid, exit_result=RESULT_RECOVERY_NEEDED,
+                            note="startup recovery: recorded runner no longer valid, no terminal artifacts",
+                            root=root,
+                        )
+                    except reg_mod.RegistryError:
+                        pass
+                    self.recovered_disposition[lid] = _DISPOSITION_RECOVERY_NEEDED
+                    mirror_last = self._newer_mirror(
+                        mirror_last, (entry, tid, RESULT_RECOVERY_NEEDED, created_at)
+                    )
+                continue
+            self.recovered_disposition[lid] = _DISPOSITION_UNCERTAIN_KEPT
         self.recovered_ownership = result
+
+        if restored is not None:
+            # 恢复 launcher 状态：state=RUNNING + current task identity
+            # （task_id / launch_id / runner 身份保持 registry 记录；requirement 2）
+            entry, tid, out_dir, ws = restored
+            lid = str(entry.get("launch_id") or "")
+            task_path = None
+            if ws and tid:
+                candidate = Path(ws) / ".aaf" / "tasks" / "active" / f"{tid}.md"
+                task_path = candidate if candidate.exists() else None
+            self.state = RUNNING
+            self.current = RunInfo(
+                task_id=tid,
+                task_path=str(task_path) if task_path else "",
+                report_path=None,
+                exit_code=None,
+                result="RUNNING",
+                output_dir=str(out_dir) if str(out_dir) else None,
+                launch_id=lid,
+            )
+            if str(out_dir) and ws:
+                self._watch_recovered_launch(
+                    task_id=tid, workspace=ws, output_dir=out_dir, launch_id=lid,
+                    task_path=task_path, root=root,
+                )
+        elif mirror_last is not None:
+            # 无 live 正式任务可恢复：把 newest 完成/孤儿镜像刷进 last_run
+            # （terminal-history 视角；requirement 8：last_run 不覆盖 recovered active）
+            self._mirror_last_from_recovery(mirror_last, root)
         return result
+
+    @staticmethod
+    def _newer_mirror(
+        current: tuple[dict, str, str, str] | None,
+        candidate: tuple[dict, str, str, str],
+    ) -> tuple[dict, str, str, str]:
+        """镜像候选选择：created_at 更新者胜出（同秒平局保持既有候选）。"""
+        if current is None:
+            return candidate
+        if str(candidate[3]) > str(current[3]):
+            return candidate
+        return current
+
+    def _mirror_last_from_recovery(self, mirror: tuple[dict, str, str, str], root: Path) -> None:
+        """recover 阶段把 newest terminal/orphan launch 镜像进 last_run。
+
+        canonical terminal 任务 → 按 canonical 映射 Bridge 侧 result（与
+        _wait_and_finish 同款）；孤儿（RECOVERY_NEEDED）→ 显式不确定 result。
+        这是 last_run 的本分（terminal-history/fallback 镜像），绝不替代 task.json。
+        """
+        entry, tid, terminal, _created_at = mirror
+        lid = str(entry.get("launch_id") or "")
+        out_dir = Path(str(entry.get("output_dir") or ""))
+        canonical = self._read_canonical_terminal(out_dir) if str(out_dir) else None
+        if canonical is not None and canonical.get("status"):
+            result, report_path = self.result_from_canonical(canonical, out_dir)
+            self.last = RunInfo(
+                task_id=tid,
+                task_path="",
+                report_path=report_path,
+                exit_code=None,
+                result=result,
+                output_dir=str(out_dir) if str(out_dir) else None,
+                launch_id=lid,
+                terminal_generation=canonical.get("terminal_generation"),
+            )
+        else:
+            self.last = RunInfo(
+                task_id=tid,
+                task_path="",
+                report_path=None,
+                exit_code=None,
+                result=terminal,
+                output_dir=str(out_dir) if str(out_dir) else None,
+                launch_id=lid,
+            )
+        self._persist_last()
+
+    # ---------- State-Recovery：recovered RUNNING launch 监视收尾 ----------
+
+    def _watch_recovered_launch(
+        self, *, task_id: str, workspace: str, output_dir: Path, launch_id: str,
+        task_path: Path | None, root: Path,
+    ) -> None:
+        """为 restart 恢复的 RUNNING launch 启动 watcher（daemon）。
+
+        重启前实例的 wait thread 已随旧进程消失——恢复的 RUNNING launch 没有
+        现成收尾者：本 watcher 轮询 canonical terminal 与 recorded runner 进程，
+        任务自然结束 / 被终止 / 进程消失后按 _wait_and_finish 同款规则收尾
+        （registry EXITED + last_run 镜像 + state=FINISHED），避免：
+        - registry / launcher state 永久 RUNNING（并发保护被僵尸占用）
+        - last_run 永不刷新（GUI 停在旧/泄漏记录上）
+        """
+        thread = threading.Thread(
+            target=self._watch_recovered_loop,
+            args=(task_id, workspace, output_dir, launch_id, task_path, root),
+            daemon=True,
+            name="aaf-bridge-recovered-watch",
+        )
+        thread.start()
+
+    def _watch_recovered_loop(
+        self, task_id: str, workspace: str, output_dir: Path, launch_id: str,
+        task_path: Path | None, root: Path,
+    ) -> None:
+        """watcher 主体（见 _watch_recovered_launch 说明）。"""
+        out_dir = Path(output_dir)
+        while True:
+            try:
+                # 另一权威（wait thread / force 路径 / supersede）已收敛
+                entry, err = reg_mod.read_registry(launch_id, root=root)
+                if err or entry is None or entry.get("state") not in reg_mod.ACTIVE_STATES:
+                    # 其他 authority 已把 registry 收敛到 EXITED/SUPERSEDED：
+                    # 本 launcher 仍需释放内存 RUNNING 状态（并发保护不僵尸占用），
+                    # 并尽力跟随已提交的 terminal 镜像（幂等；canonical 为准）。
+                    self._release_recovered_state(task_id, launch_id, out_dir, entry)
+                    return
+                # canonical terminal 出现 → 镜像收尾（与 wait thread 相同规则）
+                canonical = self._read_canonical_terminal(out_dir)
+                if canonical is not None and canonical.get("status"):
+                    if not self._derived_consistent(out_dir, canonical):
+                        self._invoke_reconcile(task_id, workspace, out_dir)
+                        canonical = self._read_canonical_terminal(out_dir) or canonical
+                    result, report_path = self.result_from_canonical(canonical, out_dir)
+                    try:
+                        reg_mod.mark_exited(
+                            launch_id, exit_result=result,
+                            note="recovered watch: canonical terminal", root=root,
+                        )
+                    except reg_mod.RegistryError:
+                        pass
+                    self._finish_run(
+                        task_id=task_id, task_path=str(task_path) if task_path else "",
+                        output_dir=out_dir, launch_id=launch_id, exit_code=None,
+                        result=result, report_path=report_path, canonical=canonical,
+                    )
+                    return
+                # recorded runner 仍存活且身份一致 → 继续观察
+                verdict = ownership_mod.verify_runner_ownership(
+                    task_id=task_id, launch_id=launch_id, registry_dir=root,
+                )
+                if verdict.ok():
+                    time.sleep(RECOVERY_WATCH_INTERVAL)
+                    continue
+                checks = verdict.checks or {}
+                if checks.get("task_not_terminal") is False:
+                    # canonical 刚提交（下一轮顶部读取）→ 等一轮
+                    time.sleep(RECOVERY_WATCH_INTERVAL)
+                    continue
+                if checks.get("process_exists") is False or checks.get("creation_time_match") is False:
+                    # recorded runner 失效且无 terminal proof：
+                    # 先吸收 force 恢复窗口（verified termination 后 finalizer 提交
+                    # CANCELLED 的时序；与 wait thread force 分支一致）
+                    result = RESULT_RECOVERY_NEEDED
+                    report_path = None
+                    canonical_res = None
+                    control, cerr = control_mod.read_control(out_dir)
+                    if not cerr and control is not None and control.get("force_terminate_requested") is True:
+                        canonical_res = self._poll_canonical(out_dir, FORCE_CANONICAL_POLL_WAIT)
+                        if canonical_res is not None and canonical_res.get("status") == "CANCELLED":
+                            result, report_path = self.result_from_canonical(canonical_res, out_dir)
+                    try:
+                        reg_mod.mark_exited(
+                            launch_id, exit_result=result,
+                            note="recovered watch: runner gone, no terminal artifacts", root=root,
+                        )
+                    except reg_mod.RegistryError:
+                        pass
+                    self._finish_run(
+                        task_id=task_id, task_path=str(task_path) if task_path else "",
+                        output_dir=out_dir, launch_id=launch_id, exit_code=None,
+                        result=result, report_path=report_path, canonical=canonical_res,
+                    )
+                    return
+                # UNCERTAIN（control 损坏等瞬时/持久不一致）：不自动处置——
+                # 不能证明 dead 也不伪造 RUNNING/FAILED；继续观察
+                time.sleep(RECOVERY_WATCH_INTERVAL)
+            except Exception:
+                # watcher 异常绝不崩溃线程；短暂退避后继续（registry 损坏时可能
+                # 反复异常——有界退避避免 tight loop）
+                try:
+                    time.sleep(RECOVERY_WATCH_INTERVAL)
+                except Exception:
+                    return
+
+    def _release_recovered_state(
+        self, task_id: str, launch_id: str, out_dir: Path, entry: dict | None,
+    ) -> None:
+        """另一 authority 已收敛 registry 时，释放本 launcher 的恢复状态。
+
+        - state/current 释放（RUNNING → FINISHED；并发保护不僵尸占用）
+        - 尽力跟随 terminal 镜像：canonical 已提交 → 按 canonical 映射；
+          无 canonical 但 registry 携带 exit_result → 直接沿用（EXITED 镜像），
+          绝不把未知状态伪造为 FAILED
+        """
+        canonical = self._read_canonical_terminal(out_dir) if str(out_dir) else None
+        if canonical is None and str(out_dir):
+            # force 终止流程进行中（finalizer 尚未提交 CANCELLED）：吸收
+            # canonical 提交窗口（与 wait thread force 分支同一轮询语义）
+            control, cerr = control_mod.read_control(out_dir)
+            if not cerr and control is not None and control.get("force_terminate_requested") is True:
+                canonical = self._poll_canonical(out_dir, FORCE_CANONICAL_POLL_WAIT)
+        result: str | None = None
+        report_path: str | None = None
+        if canonical is not None and canonical.get("status"):
+            result, report_path = self.result_from_canonical(canonical, out_dir)
+        elif entry is not None:
+            exit_result = entry.get("exit_result")
+            if exit_result in (
+                RESULT_FINISHED, RESULT_FAILED, RESULT_REPORT_NOT_FOUND,
+                RESULT_FAILED_TO_START, RESULT_CANCELLED, RESULT_RECOVERY_NEEDED,
+            ):
+                result = exit_result
+        if result is not None:
+            self.last = RunInfo(
+                task_id=task_id,
+                task_path="",
+                report_path=report_path,
+                exit_code=None,
+                result=result,
+                output_dir=str(out_dir) if str(out_dir) else None,
+                launch_id=launch_id,
+                terminal_generation=(
+                    canonical.get("terminal_generation") if canonical is not None else None
+                ),
+            )
+            self._persist_last()
+        self.current = None
+        self._active_launch.pop(task_id, None)
+        self.state = FINISHED

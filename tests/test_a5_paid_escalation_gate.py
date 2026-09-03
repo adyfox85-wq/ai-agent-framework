@@ -274,6 +274,95 @@ def test_interpret_contradictory_flags_fail_closed():
     assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
 
 
+def test_interpret_contradictory_paid_flags_normalized_fail_closed():
+    """FIX-001（Codex blocker 形状 1）：ALLOWED_AUTHORIZED_PAID + flags 不齐
+    （含 matched=True）→ FAIL_CLOSED。normalized flags 恒 False——matched=True
+    绝不进入 FAIL_CLOSED record；in-scope 的 ALLOWED_AUTHORIZED_PAID token 不
+    进 normalized guard_decision（与 FAIL_CLOSED 互斥）；raw 矛盾证据完整保留
+    于 source_guard_record（Requirement 2/4/5/6）。"""
+    raw = _guard_record(decision=cg.DECISION_ALLOWED_AUTHORIZED_PAID,
+                        present=True, matched=True, consumed=False)
+    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api")
+    assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
+    assert "contradictory" in interp["gate_reason"]
+    assert interp["authorization_present"] is False
+    assert interp["authorization_matched"] is False
+    assert interp["authorization_consumed"] is False
+    assert interp["guard_decision"] is None  # in-scope authorized token → 不 echo
+    assert interp["guard_model"] == "zzz-paid"  # scope echo 保留（type-safe）
+    assert interp["source_guard_record"] == raw
+    # raw 矛盾可观察：source 中 decision token 与 matched=True 原样保留
+    assert (
+        interp["source_guard_record"]["decision"]
+        == cg.DECISION_ALLOWED_AUTHORIZED_PAID
+    )
+    assert interp["source_guard_record"]["authorization_matched"] is True
+
+
+def test_interpret_blocked_matched_normalized_fail_closed():
+    """FIX-001（Codex blocker 形状 2）：BLOCKED_COST_APPROVAL + matched=True →
+    FAIL_CLOSED；normalized matched/present/consumed 恒 False；guard token
+    BLOCKED 保留（非 authorized token，不隐含本候选已授权）；raw 矛盾保留于
+    source（Requirement 3/4/5/6）。"""
+    raw = _guard_record(decision=cg.DECISION_BLOCKED_COST_APPROVAL,
+                        present=True, matched=True, consumed=False)
+    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api")
+    assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
+    assert interp["authorization_present"] is False
+    assert interp["authorization_matched"] is False
+    assert interp["authorization_consumed"] is False
+    assert interp["guard_decision"] == cg.DECISION_BLOCKED_COST_APPROVAL
+    assert interp["source_guard_record"] == raw
+    assert interp["source_guard_record"]["authorization_matched"] is True
+
+
+def test_interpret_unknown_token_normalized_guard_none_source_preserved():
+    """FIX-001：未知 decision token → FAIL_CLOSED；normalized guard_decision
+    None（未知 token 不进 whitelist 字段——validator 拒绝非 A0 token）；raw
+    token 完整保留于 source_guard_record。"""
+    raw = _guard_record(decision="SOMETHING_ELSE")
+    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api")
+    assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
+    assert "SOMETHING_ELSE" in interp["gate_reason"]
+    assert interp["authorization_matched"] is False
+    assert interp["guard_decision"] is None
+    assert interp["source_guard_record"] == raw
+    assert interp["source_guard_record"]["decision"] == "SOMETHING_ELSE"
+
+
+def test_interpret_authorized_invalid_scope_evidence_fail_closed():
+    """FIX-001：ALLOWED_AUTHORIZED_PAID + flags 全 True 但 required_scope 畸形
+    （None / 非 str）→ FAIL_CLOSED（exact-scope 授权证据无法记录——绝不凭残缺
+    scope 授权；Requirement 3/5/6）。normalized required_scope=None（畸形值不进
+    record），raw 值保留于 source。"""
+    for bad_scope in (None, 42):
+        raw = _guard_record()
+        raw["required_scope"] = bad_scope
+        interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api")
+        assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
+        assert "required_scope" in interp["gate_reason"]
+        assert interp["authorization_matched"] is False
+        assert interp["guard_decision"] is None
+        assert interp["required_scope"] is None
+        assert interp["source_guard_record"] == raw
+        assert interp["source_guard_record"]["required_scope"] == bad_scope
+
+
+def test_interpret_scope_mismatch_keeps_token_and_source():
+    """FIX-001：scope integrity FAIL_CLOSED 保持既有行为——out-of-scope 的
+    ALLOWED_AUTHORIZED_PAID token 仍 echo（不隐含本候选授权，validator 接受），
+    同时 raw 证据进入 source_guard_record。"""
+    raw = _guard_record(model="someone-else", provider="other-api")
+    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api")
+    assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
+    assert "scope integrity" in interp["gate_reason"]
+    assert interp["authorization_matched"] is False
+    assert interp["guard_decision"] == cg.DECISION_ALLOWED_AUTHORIZED_PAID
+    assert interp["guard_model"] == "someone-else"
+    assert interp["source_guard_record"] == raw
+    assert interp["source_guard_record"]["authorization_matched"] is True
+
+
 # ===========================================================================
 # 2. live runtime 编排矩阵（Requirement 10）
 # ===========================================================================
@@ -411,7 +500,7 @@ def test_guard_evaluation_failure_fail_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(cg, "evaluate", broken_evaluate)
     reg = _registry(_local_entry("aaa-orig"), _entry("zzz-paid"))
     calls = {}
-    outcome, _out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path)
+    outcome, out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path)
     assert calls["calls"] == 0
     assert outcome["attempted"] is False
     rec = _gate(outcome)
@@ -420,6 +509,13 @@ def test_guard_evaluation_failure_fail_closed(tmp_path, monkeypatch):
     assert rec["guard_decision"] is None
     assert "raised" in rec["gate_reason"] or "unknown" in rec["gate_reason"]
     fpg.validate_paid_escalation_gate_record(rec)
+    # FIX-001：求值失败无 raw record → source=None；artifact 仍落盘 + 复验
+    assert rec["source_guard_record"] is None
+    assert (out_dir / fpg.ARTIFACT_FILENAME).exists()
+    loaded = fpg.load_paid_gate(out_dir)
+    assert loaded is not None
+    assert loaded["source_guard_record"] is None
+    fpg.validate_paid_escalation_gate_record(loaded)
 
 
 def test_malformed_guard_record_fail_closed(tmp_path, monkeypatch):
@@ -430,12 +526,168 @@ def test_malformed_guard_record_fail_closed(tmp_path, monkeypatch):
                         lambda task_id, stage, state_dir=None: {})
     reg = _registry(_local_entry("aaa-orig"), _entry("zzz-paid"))
     calls = {}
-    outcome, _out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path)
+    outcome, out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path)
     assert calls["calls"] == 0
     rec = _gate(outcome)
     assert rec["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
     assert "malformed" in rec["gate_reason"]
     fpg.validate_paid_escalation_gate_record(rec)
+    # FIX-001：malformed source 证据保真（{} 原样保留）+ 权威 artifact 落盘
+    assert rec["source_guard_record"] == {}
+    assert (out_dir / fpg.ARTIFACT_FILENAME).exists()
+    loaded = fpg.load_paid_gate(out_dir)
+    assert loaded is not None
+    assert loaded["source_guard_record"] == {}
+    fpg.validate_paid_escalation_gate_record(loaded)
+
+
+def _contradictory_guard(
+    decision: str,
+    *,
+    present=False,
+    matched=False,
+    consumed=False,
+    required_scope: str | None = "SCOPE_DEFAULT",
+) -> dict:
+    """FIX-001 fixture：对 zzz-paid@remote-api 候选 in-scope 的矛盾/malformed
+    A0 guard record（raw 证据可自相矛盾——interpret_guard 必须 fail closed 且
+    组装出 validator-valid、可持久化的 authoritative audit）。"""
+    if required_scope == "SCOPE_DEFAULT":
+        required_scope = cg.scope_string(
+            _TASK_ID, "hermes", "zzz-paid", "remote-api"
+        )
+    return {
+        "decision": decision,
+        "model": "zzz-paid",
+        "provider": "remote-api",
+        "authorization_present": present,
+        "authorization_matched": matched,
+        "authorization_consumed": consumed,
+        "cost_class": cg.COST_PAID_OR_UNKNOWN,
+        "required_scope": required_scope,
+        "notes": ["raw contradictory A0 evidence (FIX-001 fixture)"],
+    }
+
+
+@pytest.mark.parametrize(
+    "guard_record",
+    [
+        _contradictory_guard(cg.DECISION_ALLOWED_AUTHORIZED_PAID,
+                             present=True, matched=False, consumed=False),
+        _contradictory_guard(cg.DECISION_ALLOWED_AUTHORIZED_PAID,
+                             present=True, matched=True, consumed=False),
+        _contradictory_guard(cg.DECISION_BLOCKED_COST_APPROVAL,
+                             present=True, matched=True, consumed=False),
+        _contradictory_guard("SOMETHING_ELSE"),
+        _contradictory_guard(cg.DECISION_ALLOWED_AUTHORIZED_PAID,
+                             present=True, matched=True, consumed=True,
+                             required_scope=None),
+        {},
+    ],
+    ids=[
+        "allowed-authorized-incomplete-flags",
+        "allowed-authorized-matched-true-not-consumed",
+        "blocked-cost-approval-matched-true",
+        "unknown-decision-token",
+        "authorized-invalid-required-scope",
+        "missing-required-keys",
+    ],
+)
+def test_contradictory_a0_record_fail_closed_audit_persisted(
+    tmp_path, monkeypatch, guard_record
+):
+    """FIX-001（Requirement 8 全矩阵，Codex blocker 收口）：malformed /
+    contradictory / unknown A0 authorization record 经真实 runtime 编排 →
+    gate FAIL_CLOSED + authoritative audit validator-valid + artifact 落盘 +
+    raw 矛盾证据在 source_guard_record 可观察 + fallback_attempted/used 恒
+    False + 零 paid invocation（此前这些形状组装出的 record 自相矛盾、
+    validator 拒绝、paid_escalation_gate.json 不落盘——runtime 只 surface
+    paid_gate_error，Requirement 7 违例）。"""
+    monkeypatch.setattr(cg, "resolve_effective_hermes", _REAL_RESOLVE)
+    _pin_original(monkeypatch)
+    monkeypatch.setattr(cg, "evaluate",
+                        lambda task_id, stage, state_dir=None: guard_record)
+    reg = _registry(_local_entry("aaa-orig"), _entry("zzz-paid"))
+    calls = {}
+    outcome, out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path)
+    assert calls["calls"] == 0  # 零 paid invocation
+    assert outcome["attempted"] is False
+    assert outcome["used"] is False
+    rec = _gate(outcome)  # 无 paid_gate_error——组装成功
+    assert rec["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
+    # normalized flags 与 FAIL_CLOSED 自洽（Requirement 5）：raw 矛盾 flags 不进入
+    assert rec["authorization_present"] is False
+    assert rec["authorization_matched"] is False
+    assert rec["authorization_consumed"] is False
+    # normalized guard_decision 只可能是 A0 token 或 None（绝不携带未知/矛盾 token）
+    assert rec["guard_decision"] in (
+        None,
+        cg.DECISION_ALLOWED_FREE,
+        cg.DECISION_ALLOWED_AUTHORIZED_PAID,
+        cg.DECISION_BLOCKED_COST_APPROVAL,
+    )
+    assert rec["fallback_attempted"] is False
+    assert rec["fallback_used"] is False
+    assert rec["paid_escalation_required"] is True
+    fpg.validate_paid_escalation_gate_record(rec)
+    # authoritative artifact 已持久化 + reload 复验（Requirement 3/7）
+    assert (out_dir / fpg.ARTIFACT_FILENAME).exists()
+    loaded = fpg.load_paid_gate(out_dir)
+    assert loaded is not None
+    fpg.validate_paid_escalation_gate_record(loaded)
+    assert loaded["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
+    # raw 矛盾证据可观察（Requirement 4/6）：source 快照 = A0 原样（含矛盾 flags）
+    assert loaded["source_guard_record"] == guard_record
+    # no-silent-paid-execution evidence
+    ev = " ".join(loaded["no_silent_paid_evidence"])
+    assert "no silent paid execution" in ev
+
+
+def test_contradictory_scope_evidence_unknown_token_fail_closed_persisted(
+    tmp_path, monkeypatch
+):
+    """FIX-001（Requirement 8「contradictory model/provider 或 scope evidence」）：
+    guard record 声称对**其他 model/provider** 的授权且 decision token 未知 →
+    FAIL_CLOSED + validator-valid + 落盘 + raw 证据可观察（未知 token 只存在于
+    source；normalized guard_decision 保持 None）+ 零 invocation。"""
+    monkeypatch.setattr(cg, "resolve_effective_hermes", _REAL_RESOLVE)
+    _pin_original(monkeypatch)
+    wrong_scope = cg.scope_string(
+        _TASK_ID, "hermes", "someone-else", "other-api"
+    )
+    guard_record = {
+        "decision": "SOMETHING_ELSE",
+        "model": "someone-else",
+        "provider": "other-api",
+        "authorization_present": True,
+        "authorization_matched": True,
+        "authorization_consumed": True,
+        "cost_class": cg.COST_PAID_OR_UNKNOWN,
+        "required_scope": wrong_scope,
+        "notes": ["claims authorization for someone-else@other-api"],
+    }
+    monkeypatch.setattr(cg, "evaluate",
+                        lambda task_id, stage, state_dir=None: guard_record)
+    reg = _registry(_local_entry("aaa-orig"), _entry("zzz-paid"))
+    calls = {}
+    outcome, out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path)
+    assert calls["calls"] == 0
+    assert outcome["attempted"] is False
+    rec = _gate(outcome)
+    assert rec["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
+    assert "scope integrity" in rec["gate_reason"]
+    assert rec["authorization_matched"] is False
+    assert rec["guard_decision"] is None
+    assert rec["guard_model"] == "someone-else"  # type-safe scope echo
+    assert rec["fallback_attempted"] is False
+    assert rec["fallback_used"] is False
+    fpg.validate_paid_escalation_gate_record(rec)
+    loaded = fpg.load_paid_gate(out_dir)
+    assert loaded is not None
+    fpg.validate_paid_escalation_gate_record(loaded)
+    assert loaded["source_guard_record"] == guard_record
+    assert loaded["source_guard_record"]["decision"] == "SOMETHING_ELSE"
+    assert loaded["source_guard_record"]["authorization_matched"] is True
 
 
 def test_guard_resolved_other_model_fail_closed(tmp_path, monkeypatch):
@@ -664,6 +916,13 @@ def test_guard_authorized_for_other_model_fail_closed_record(tmp_path, monkeypat
     assert rec["guard_decision"] == cg.DECISION_ALLOWED_AUTHORIZED_PAID
     assert rec["guard_model"] == "someone-else"
     fpg.validate_paid_escalation_gate_record(rec)
+    # FIX-001：raw 证据（含 matched=True）只存在于 source_guard_record——
+    # normalized matched 恒 False，record 自洽 + 持久化
+    assert (
+        rec["source_guard_record"]["decision"]
+        == cg.DECISION_ALLOWED_AUTHORIZED_PAID
+    )
+    assert rec["source_guard_record"]["authorization_matched"] is True
     loaded = fpg.load_paid_gate(out_dir)
     assert loaded is not None
     fpg.validate_paid_escalation_gate_record(loaded)
@@ -762,6 +1021,58 @@ def test_gate_validator_rejects_final_switch_and_tamper(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         fpg.validate_paid_escalation_gate_record(
             dict(rec, failure_class=fc.FAILURE_FRAMEWORK_INPUT_CONFIG)
+        )
+
+
+def test_gate_validator_rejects_source_guard_record_invariants(
+    tmp_path, monkeypatch
+):
+    """FIX-001：source_guard_record 必须 dict/None 且 JSON 可序列化（raw 证据
+    形状绝不允许使 authoritative audit 无法持久化，Requirement 3/6/7）。"""
+    rec = _blocked_record(tmp_path, monkeypatch)
+    assert isinstance(rec["source_guard_record"], dict)
+    with pytest.raises(ValueError):
+        fpg.validate_paid_escalation_gate_record(
+            dict(rec, source_guard_record=[])
+        )
+    with pytest.raises(ValueError):
+        fpg.validate_paid_escalation_gate_record(
+            dict(rec, source_guard_record={"bad": {1, 2}})
+        )
+    # 移除 source 字段 = missing required field → 拒
+    stripped = dict(rec)
+    stripped.pop("source_guard_record")
+    with pytest.raises(ValueError):
+        fpg.validate_paid_escalation_gate_record(stripped)
+
+
+def test_gate_validator_still_rejects_contradictory_fail_closed_shapes(
+    tmp_path, monkeypatch
+):
+    """FIX-001 防御纵深：即使有人手造内部矛盾的 FAIL_CLOSED record（Codex
+    blocker 形状——FAIL_CLOSED + matched=True / FAIL_CLOSED + in-scope
+    ALLOWED_AUTHORIZED_PAID），validator 仍拒绝——normalized 自洽性不变量
+    （Requirement 5）保持。interpret_guard 修复后这些形状不再被产出；validator
+    依然把它们挡在持久化之前。"""
+    # FAIL_CLOSED + matched=True（BLOCKED record 基础上翻转）
+    rec = _blocked_record(tmp_path, monkeypatch)
+    with pytest.raises(ValueError):
+        fpg.validate_paid_escalation_gate_record(
+            dict(rec, gate_decision=fpg.GATE_DECISION_FAIL_CLOSED,
+                 authorization_matched=True)
+        )
+    # FAIL_CLOSED + in-scope ALLOWED_AUTHORIZED_PAID token（exact-scope
+    # authorized 必须映射 AUTHORIZED——除非 flags/scope 真，否则拒）
+    with pytest.raises(ValueError):
+        fpg.validate_paid_escalation_gate_record(
+            dict(rec, gate_decision=fpg.GATE_DECISION_FAIL_CLOSED,
+                 guard_decision=cg.DECISION_ALLOWED_AUTHORIZED_PAID)
+        )
+    # FAIL_CLOSED + 未知 guard token
+    with pytest.raises(ValueError):
+        fpg.validate_paid_escalation_gate_record(
+            dict(rec, gate_decision=fpg.GATE_DECISION_FAIL_CLOSED,
+                 guard_decision="SOMETHING_ELSE")
         )
 
 

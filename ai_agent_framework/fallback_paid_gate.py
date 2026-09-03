@@ -56,7 +56,12 @@ original model/provider、failure class/trigger、为什么 FREE fallback 不可
 proposed paid candidate model/provider、paid_escalation_required、
 authorization_present / matched / consumed、guard decision（A0 token）、
 gate decision（AUTHORIZED / BLOCKED / FAIL_CLOSED）、attempted/used 恒 False、
-final actual == original、explicit no-silent-paid-execution evidence——
+final actual == original、explicit no-silent-paid-execution evidence、
+``source_guard_record``（raw/source A0 record 保真快照——Requirement 2/6：
+malformed/contradictory/unknown A0 证据完整可观察，但 raw 字段绝不覆盖
+normalized authoritative 语义；FAIL_CLOSED 的 normalized flags 恒 False、
+in-scope ALLOWED_AUTHORIZED_PAID token 不进入 normalized guard_decision——
+audit record 永远内部自洽、validator-valid、可持久化，Requirement 3/5/7）——
 字段与语义见 _REQUIRED_KEYS 与 ``validate_paid_escalation_gate_record``。
 """
 
@@ -121,6 +126,14 @@ _GUARD_REQUIRED_KEYS = (
     "required_scope",
 )
 
+# A0 Paid Guard decision tokens（validator whitelist + FAIL_CLOSED echo 共用；
+# 未知 token 永不进入 normalized guard_decision 字段）
+_A0_GUARD_DECISIONS = (
+    cg.DECISION_ALLOWED_FREE,
+    cg.DECISION_ALLOWED_AUTHORIZED_PAID,
+    cg.DECISION_BLOCKED_COST_APPROVAL,
+)
+
 # ---------------------------------------------------------------------------
 # Audit schema（Requirement 5 全部字段；validate fail-closed）
 # ---------------------------------------------------------------------------
@@ -158,6 +171,7 @@ _REQUIRED_KEYS = (
     "guard_cost_class",
     "guard_model",
     "guard_provider",
+    "source_guard_record",
     "required_scope",
     "gate_decision",
     "gate_reason",
@@ -187,16 +201,78 @@ def _split_key(key: str) -> tuple[str, str | None]:
     return key, None
 
 
+def _safe_str_list(value: object) -> list[str]:
+    """只保留 str 元素。A0 notes 的畸形项（非 list / 非 str）不进入 audit
+    record —— validator 的 ``notes`` 不变量要求全 str；原始内容仍完整保留在
+    ``source_guard_record``，不因 echo 使 authoritative record 非法。"""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _echo_optional_str(value: object) -> str | None:
+    """normalized echo：只接受非空 str（validator 类型不变量）。其余值
+    （None / 空串 / 非 str）→ None；原始值保留在 ``source_guard_record``。"""
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+def _fail_closed_fields(
+    guard_record: dict,
+    candidate_model: str,
+    candidate_provider: str | None,
+) -> dict:
+    """parsed A0 record 的 FAIL_CLOSED normalized guard 字段（Requirement 2/4/5）。
+
+    - authorization_* 恒 False —— raw A0 flags 绝不覆盖 normalized fail-closed
+      语义（matched=True 与 FAIL_CLOSED 互斥，validator 拒绝自相矛盾的 record）；
+    - ``guard_decision`` 只在 token ∈ A0 whitelist **且**不隐含「本候选已被
+      授权」时 echo：in-scope 的 ``ALLOWED_AUTHORIZED_PAID`` 与 FAIL_CLOSED 互斥
+      （validator 不变量：exact-scope authorized ⟹ AUTHORIZED），故 → None；
+      raw token 原文完整保留在 ``source_guard_record``；
+    - guard_model/provider/cost_class/required_scope 只做类型安全 echo（畸形值
+      → None，原文在 source），保证组装出的 authoritative record 永远
+      validator-valid、可持久化。
+    """
+    guard_model = guard_record["model"]
+    guard_provider = guard_record["provider"]
+    in_scope = (
+        guard_model == candidate_model and guard_provider == candidate_provider
+    )
+    decision = guard_record["decision"]
+    token: str | None = None
+    if isinstance(decision, str) and decision in _A0_GUARD_DECISIONS:
+        if not (in_scope and decision == cg.DECISION_ALLOWED_AUTHORIZED_PAID):
+            token = decision
+    return {
+        "authorization_present": False,
+        "authorization_matched": False,
+        "authorization_consumed": False,
+        "guard_decision": token,
+        "guard_cost_class": _echo_optional_str(guard_record["cost_class"]),
+        "guard_model": _echo_optional_str(guard_model),
+        "guard_provider": _echo_optional_str(guard_provider),
+        "required_scope": _echo_optional_str(guard_record["required_scope"]),
+        "notes": [],
+    }
+
+
 # ---------------------------------------------------------------------------
 # A0 guard record → Cost Gate 解释（纯函数；确定性；fail closed）
 # ---------------------------------------------------------------------------
 
 
-def fail_closed_interpretation(reason: str) -> dict:
+def fail_closed_interpretation(
+    reason: str,
+    source_guard_record: dict | None = None,
+) -> dict:
     """guard 求值未发生/失败时的 FAIL_CLOSED 解释（guard 字段全 None）。
 
     ``reason`` 必须是非空显式证据（guard 抛异常 / env overlay 失败等——
     malformed/unknown authorization state → fail closed，Requirement 3）。
+    ``source_guard_record``：求值失败前得到的 raw A0 record 快照（可为 None；
+    非 dict 一律 None——raw 原文只在 dict 形状下保真，Requirement 6）。
     """
     return {
         "gate_decision": GATE_DECISION_FAIL_CLOSED,
@@ -210,6 +286,31 @@ def fail_closed_interpretation(reason: str) -> dict:
         "guard_provider": None,
         "required_scope": None,
         "notes": [reason],
+        "source_guard_record": source_guard_record,
+    }
+
+
+def _parsed_fail_closed(
+    reason: str,
+    guard_record: dict,
+    candidate_model: str,
+    candidate_provider: str | None,
+    source_guard_record: dict,
+) -> dict:
+    """parsed（必需字段齐全）但语义矛盾/未知的 A0 record → FAIL_CLOSED
+    normalized 解释（Requirement 3/5）：gate_decision=FAIL_CLOSED、授权 flags
+    恒 False、guard 字段经 ``_fail_closed_fields`` 类型安全 echo、raw A0
+    证据完整保留于 ``source_guard_record``（Requirement 2/4/6 —— raw
+    矛盾证据可观察，但绝不覆盖 normalized 字段）。"""
+    fields = _fail_closed_fields(
+        guard_record, candidate_model, candidate_provider
+    )
+    return {
+        "gate_decision": GATE_DECISION_FAIL_CLOSED,
+        "gate_reason": reason,
+        **fields,
+        "notes": [reason] + _safe_str_list(guard_record.get("notes")),
+        "source_guard_record": source_guard_record,
     }
 
 
@@ -222,16 +323,24 @@ def interpret_guard(
 
     返回 dict：{gate_decision, gate_reason, authorization_present,
     authorization_matched, authorization_consumed, guard_decision,
-    guard_cost_class, guard_model, guard_provider, required_scope, notes}。
+    guard_cost_class, guard_model, guard_provider, required_scope, notes,
+    source_guard_record}。**normalized 字段与 raw/source 证据分层**：AUTHORIZED /
+    BLOCKED / FAIL_CLOSED 字段是自洽的 authoritative 语义；原始 A0 record 的
+    保真快照（含可自相矛盾的 raw flags / token / scope）独立存放在
+    ``source_guard_record``，任何 FAIL_CLOSED 路径都绝不把 raw 授权 flags /
+    in-scope 的 ALLOWED_AUTHORIZED_PAID token 回写到 normalized 字段
+    （否则组装出的 authoritative audit record 自相矛盾、validator 拒绝、
+    无法持久化——Requirement 2/3/4/7）。
 
     映射（Requirement 3）：
     - guard record 缺失 / malformed（缺必需字段 / 非 dict）→ FAIL_CLOSED；
     - guard 解析的 effective model/provider != candidate model/provider →
       FAIL_CLOSED（scope integrity：A0 求值的不是本 candidate，授权状态无法
       归属——绝不凭错误 scope 的 record 放行/记录，Requirement 4 零削弱）；
-    - ``ALLOWED_AUTHORIZED_PAID``（且 A0 三个 authorization flags 全 True）→
-      AUTHORIZED（exact task-scoped authorization；A0 已在其准入边界按既有
-      一次性语义 claim——本层如实转述 consumed 状态）；
+    - ``ALLOWED_AUTHORIZED_PAID``（且 A0 三个 authorization flags 全 True +
+      required_scope 为非空 str）→ AUTHORIZED（exact task-scoped
+      authorization；A0 已在其准入边界按既有一次性语义 claim——本层如实
+      转述 consumed 状态）；flags 不齐 / required_scope 畸形 → FAIL_CLOSED；
     - ``BLOCKED_COST_APPROVAL`` → BLOCKED（absent / mismatch /
       replay-rejected；flags + guard notes 给出原因）；matched=True 的 BLOCKED
       record = malformed → FAIL_CLOSED；
@@ -239,6 +348,12 @@ def interpret_guard(
       解析为 FREE = 冲突成本视图——不授 paid 资格、不静默放行）；
     - 其他未知 decision token → FAIL_CLOSED。
     """
+    # ---- raw/source A0 evidence（Requirement 2/6：保真快照，允许自相矛盾；
+    #      永不覆盖下方 normalized 字段）----
+    source_guard_record = (
+        guard_record if isinstance(guard_record, dict) else None
+    )
+
     missing = (
         []
         if isinstance(guard_record, dict)
@@ -253,8 +368,9 @@ def interpret_guard(
             "determined; fail closed (no paid escalation state assigned, no "
             "paid model invoked)"
         )
-        interp = fail_closed_interpretation(reason)
-        return interp
+        return fail_closed_interpretation(
+            reason, source_guard_record=source_guard_record
+        )
 
     guard_model = guard_record["model"]
     guard_provider = guard_record["provider"]
@@ -268,16 +384,9 @@ def interpret_guard(
             "stage/model/provider matching; no paid escalation state "
             "assigned, no paid model invoked)"
         )
-        interp = fail_closed_interpretation(reason)
-        interp["guard_decision"] = guard_record["decision"]
-        interp["guard_cost_class"] = guard_record["cost_class"]
-        interp["guard_model"] = guard_model
-        interp["guard_provider"] = guard_provider
-        # 授权 flags 不转述为 True：A0 求值对象不是本 candidate —— 任何授权
-        # 状态都无法归属到本候选（fail closed；validate 不变量
-        # matched=true ⟹ AUTHORIZED 保持自洽）
-        interp["required_scope"] = guard_record["required_scope"]
-        return interp
+        return _parsed_fail_closed(
+            reason, guard_record, model, provider, source_guard_record
+        )
 
     present = guard_record["authorization_present"]
     matched = guard_record["authorization_matched"]
@@ -288,19 +397,9 @@ def interpret_guard(
             "consumed must be bools — fail closed (unknown authorization "
             "state; no paid model invoked)"
         )
-        return fail_closed_interpretation(reason)
-
-    base = {
-        "authorization_present": present,
-        "authorization_matched": matched,
-        "authorization_consumed": consumed,
-        "guard_decision": guard_record["decision"],
-        "guard_cost_class": guard_record["cost_class"],
-        "guard_model": guard_model,
-        "guard_provider": guard_provider,
-        "required_scope": guard_record["required_scope"],
-        "notes": list(guard_record.get("notes") or []),
-    }
+        return fail_closed_interpretation(
+            reason, source_guard_record=source_guard_record
+        )
 
     decision = guard_record["decision"]
     if decision == cg.DECISION_ALLOWED_AUTHORIZED_PAID:
@@ -313,22 +412,43 @@ def interpret_guard(
                 "malformed authorization state; fail closed (no paid model "
                 "invoked)"
             )
-            interp = fail_closed_interpretation(reason)
-            interp.update(base)
-            return interp
+            return _parsed_fail_closed(
+                reason, guard_record, model, provider, source_guard_record
+            )
+        scope = guard_record["required_scope"]
+        if not (isinstance(scope, str) and scope.strip()):
+            reason = (
+                "malformed A0 Paid Guard record: decision "
+                "ALLOWED_AUTHORIZED_PAID with authorization_present/matched/"
+                "consumed all true requires a non-empty string required_scope "
+                f"(exact task/stage/model/provider scope evidence), got "
+                f"{scope!r} — exact-scope authorization cannot be recorded; "
+                "fail closed (no paid model invoked)"
+            )
+            return _parsed_fail_closed(
+                reason, guard_record, model, provider, source_guard_record
+            )
         return {
-            **base,
             "gate_decision": GATE_DECISION_AUTHORIZED,
             "gate_reason": (
                 "exact task-scoped AAF_COST_AUTH authorization present and "
                 "atomically claimed at the A0 Paid Guard admission boundary "
-                f"(decision={decision!r}, required_scope="
-                f"{guard_record['required_scope']!r}) — gate decision "
-                "AUTHORIZED records ready-for-paid-invocation ELIGIBILITY "
-                "for a future paid invocation task only; NO paid model was "
-                "or will be invoked by this Cost Gate (fallback_attempted/"
-                "used stay false)"
+                f"(decision={decision!r}, required_scope={scope!r}) — gate "
+                "decision AUTHORIZED records ready-for-paid-invocation "
+                "ELIGIBILITY for a future paid invocation task only; NO paid "
+                "model was or will be invoked by this Cost Gate "
+                "(fallback_attempted/used stay false)"
             ),
+            "authorization_present": present,
+            "authorization_matched": matched,
+            "authorization_consumed": consumed,
+            "guard_decision": decision,
+            "guard_cost_class": _echo_optional_str(guard_record["cost_class"]),
+            "guard_model": guard_model,
+            "guard_provider": guard_provider,
+            "required_scope": scope,
+            "notes": _safe_str_list(guard_record.get("notes")),
+            "source_guard_record": source_guard_record,
         }
     if decision == cg.DECISION_BLOCKED_COST_APPROVAL:
         if matched is True:
@@ -339,9 +459,9 @@ def interpret_guard(
                 "boundary and yields ALLOWED_AUTHORIZED_PAID) — malformed "
                 "authorization state; fail closed (no paid model invoked)"
             )
-            interp = fail_closed_interpretation(reason)
-            interp.update(base)
-            return interp
+            return _parsed_fail_closed(
+                reason, guard_record, model, provider, source_guard_record
+            )
         if consumed is True:
             block_reason = (
                 "paid escalation required but the exact task-scoped "
@@ -365,14 +485,25 @@ def interpret_guard(
                 "paid escalation required but the present AAF_COST_AUTH "
                 "authorization does not exactly match the proposed paid "
                 "candidate's task/stage/model scope (required_scope="
-                f"{guard_record['required_scope']!r}) — BLOCKED (fail "
-                "closed; no paid model invoked; no weakening of exact "
-                "scope matching)"
+                f"{_echo_optional_str(guard_record['required_scope'])!r}) — "
+                "BLOCKED (fail closed; no paid model invoked; no weakening "
+                "of exact scope matching)"
             )
         return {
-            **base,
             "gate_decision": GATE_DECISION_BLOCKED,
             "gate_reason": block_reason,
+            "authorization_present": present,
+            "authorization_matched": matched,
+            "authorization_consumed": consumed,
+            "guard_decision": decision,
+            "guard_cost_class": _echo_optional_str(guard_record["cost_class"]),
+            "guard_model": guard_model,
+            "guard_provider": guard_provider,
+            "required_scope": _echo_optional_str(
+                guard_record["required_scope"]
+            ),
+            "notes": _safe_str_list(guard_record.get("notes")),
+            "source_guard_record": source_guard_record,
         }
     if decision == cg.DECISION_ALLOWED_FREE:
         reason = (
@@ -384,16 +515,16 @@ def interpret_guard(
             "escalation; fail closed (no paid escalation state assigned, "
             "no paid model invoked)"
         )
-        interp = fail_closed_interpretation(reason)
-        interp.update(base)
-        return interp
+        return _parsed_fail_closed(
+            reason, guard_record, model, provider, source_guard_record
+        )
     reason = (
         f"unknown A0 Paid Guard decision token {decision!r} — malformed/"
         "unknown authorization state; fail closed (no paid model invoked)"
     )
-    interp = fail_closed_interpretation(reason)
-    interp.update(base)
-    return interp
+    return _parsed_fail_closed(
+        reason, guard_record, model, provider, source_guard_record
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -425,8 +556,11 @@ def assemble_paid_gate_record(
 
     组装后立即经 ``validate_paid_escalation_gate_record`` fail-closed 校验。
     ``interpretation`` 来自 ``interpret_guard`` / ``fail_closed_interpretation``
-    （A0 record 的权威解释）；audit 字段如实转述 A0 的 authorization flags 与
-    guard decision，不加工、不伪装。
+    （A0 record 的权威解释）；normalized audit 字段自洽地转述 A0 语义
+    （AUTHORIZED / BLOCKED 如实转述 authorization flags 与 guard decision；
+    FAIL_CLOSED 恒为 fail-closed normalized 语义——raw 矛盾 flags/token 不进
+    normalized 字段），raw A0 record 原文完整存入 ``source_guard_record``
+    （Requirement 2/4/6：raw 证据可观察且永不使 authoritative record 矛盾）。
     """
     paid_candidate_model, paid_candidate_provider = _split_key(paid_candidate)
     paid_escalation_required = True  # 本 artifact 只产生于 paid-escalation 上下文
@@ -515,6 +649,7 @@ def assemble_paid_gate_record(
         "guard_cost_class": interpretation["guard_cost_class"],
         "guard_model": interpretation["guard_model"],
         "guard_provider": interpretation["guard_provider"],
+        "source_guard_record": interpretation["source_guard_record"],
         "required_scope": interpretation["required_scope"],
         "gate_decision": interpretation["gate_decision"],
         "gate_reason": interpretation["gate_reason"],
@@ -551,7 +686,11 @@ def validate_paid_escalation_gate_record(record: dict) -> None:
       ALLOWED_AUTHORIZED_PAID + exact candidate scope + 三 flags True；
       matched=True ⟹ AUTHORIZED；BLOCKED ⟹ A0 BLOCKED_COST_APPROVAL）；
     - candidates 一致性（paid ⊆ contract；paid_candidate ∈ paid；
-      model/provider == key 拆分）。
+      model/provider == key 拆分）；
+    - ``source_guard_record``（raw/source A0 record 保真快照）必须为
+      dict/None 且 JSON 可序列化——raw 证据允许与 normalized 语义矛盾
+      （那正是 FAIL_CLOSED 的可审计证据），但绝不允许因 raw 形状而使
+      authoritative audit 无法持久化。
     """
     if not isinstance(record, dict):
         raise ValueError(f"record must be a dict, got {type(record).__name__}")
@@ -622,12 +761,10 @@ def validate_paid_escalation_gate_record(record: dict) -> None:
             raise ValueError(f"{flag} must be a bool")
 
     guard_decision = record["guard_decision"]
-    a0_tokens = (
-        cg.DECISION_ALLOWED_FREE,
-        cg.DECISION_ALLOWED_AUTHORIZED_PAID,
-        cg.DECISION_BLOCKED_COST_APPROVAL,
-    )
-    if guard_decision is not None and guard_decision not in a0_tokens:
+    if (
+        guard_decision is not None
+        and guard_decision not in _A0_GUARD_DECISIONS
+    ):
         raise ValueError(
             f"guard_decision must be an A0 Paid Guard token or None, "
             f"got {guard_decision!r}"
@@ -641,6 +778,26 @@ def validate_paid_escalation_gate_record(record: dict) -> None:
         isinstance(guard_cost_class, str) and guard_cost_class.strip()
     ):
         raise ValueError("guard_cost_class must be a non-empty string or None")
+
+    # --- raw/source A0 evidence（Requirement 2/4/6：raw 快照独立于 normalized
+    #      字段——允许与 normalized 语义矛盾（那正是 FAIL_CLOSED 的可审计证据），
+    #      但必须 dict/None 且 JSON 可序列化：authoritative record 绝不能因
+    #      source 证据形状而无法持久化，Requirement 3/7）---
+    source = record["source_guard_record"]
+    if source is not None and not isinstance(source, dict):
+        raise ValueError(
+            "source_guard_record must be a dict or null (raw/source A0 "
+            f"evidence snapshot), got {type(source).__name__}"
+        )
+    if source is not None:
+        try:
+            json.dumps(source, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "source_guard_record must be JSON-serializable so the "
+                "authoritative audit always persists even when the raw A0 "
+                f"evidence is contradictory: {exc}"
+            ) from exc
 
     # --- 零执行不变量（Requirement 6/8） ---
     if record["fallback_attempted"] is not False:

@@ -18,6 +18,15 @@ handshake → canonical RUNNING → sleep(AAF_RECOVER_SLEEP) → SUCCESS 全套�
               REPORT 路径）；再真实启动第二个 bounded 任务 → 正常完成 +
               REPORT/run.json 生成（执行/报告生成无回归）
 
+FIX-001（EXITED→last_run crash-window closure；N4/N5 独立隔离根 cw-bridge）：
+  N4 crashwin    真实 bounded 任务（SRV-FRESH-001）自然完成 → registry EXITED
+              + canonical SUCCESS → 模拟「mark_exited 后、_persist_last 前
+              Bridge 崩溃」：last_run 回退为更早 SRV-FRESH-OLD 的旧呈现
+  N5 crashreopen 新进程 recover_launches → 从权威 artifacts 重建 victim
+              terminal（同 task_id/launch_id、FINISHED、REPORT）；无 rerun
+              （canonical generation 不变 / 无 ACTIVE / launch 数不变）；旧
+              last_run 不覆盖恢复结果；再真实启动新任务（执行无回归）
+
 验证要点（对应 TASK requirement 13 清单）：
 - launch a real bounded test task                          N1
 - while task is live, restart/reopen Bridge                N1→N2（真实新进程）
@@ -26,10 +35,14 @@ handshake → canonical RUNNING → sleep(AAF_RECOVER_SLEEP) → SUCCESS 全套�
 - task can continue to terminal state                      N2
 - reopening after terminal state shows correct terminal
   task/result                                              N3
+- EXITED crash-window（registry EXITED + last_run 丢失）→
+  restart 从既有任务 artifacts 恢复同一 terminal identity   N4→N5（真实新进程）
+- crash-window 恢复无 rerun / 无重复 runner                 N5
+- older last_run 不能覆盖恢复的 terminal task              N5
 - no F-I-RUN/test-state leakage：全部 stage 在隔离
   AAF_BRIDGE_DIR 根运行；driver 前后对比真实 ~/.aaf-bridge
   （last_run.json 内容 + launches/ 文件数）零变化          driver
-- no regression to task execution/report generation        N3
+- no regression to task execution/report generation        N3/N5
 
 用法：python tests/fresh_runner_state_recovery_validation.py
 退出码 = 失败场景数（0 = 全部通过）。运行时证据写入
@@ -58,9 +71,9 @@ REAL_STATE_DIR = Path.home() / ".aaf-bridge"
 REAL_LAST_RUN = REAL_STATE_DIR / "last_run.json"
 REAL_LAUNCHES_DIR = REAL_STATE_DIR / "launches"
 
-STAGES = ("launch", "restart", "reopen")
+STAGES = ("launch", "restart", "reopen", "crashwin", "crashreopen")
 
-TEST_IDS = ("SRV-FRESH-001", "SRV-FRESH-002", "F-I-RUN")
+TEST_IDS = ("SRV-FRESH-001", "SRV-FRESH-002", "SRV-FRESH-003", "SRV-FRESH-OLD", "F-I-RUN")
 
 
 def _real_snapshot() -> tuple[bytes | None, int]:

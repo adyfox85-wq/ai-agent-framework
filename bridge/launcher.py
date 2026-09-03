@@ -77,6 +77,14 @@ _DISPOSITION_TERMINAL_RECOVERED = "TERMINAL_RECOVERED"
 _DISPOSITION_RECOVERY_NEEDED = "RECOVERY_NEEDED"
 _DISPOSITION_FORCE_EVIDENCE_FINALIZED = "FORCE_EVIDENCE_FINALIZED"
 _DISPOSITION_UNCERTAIN_KEPT = "UNCERTAIN_KEPT"
+# FIX-001（EXITED crash-window closure）：registry 已 EXITED + last_run 未呈现
+# 的 newest launch 处置分类：
+# - EXITED_TERMINAL_RECOVERED：canonical terminal + launch/task 关系可验证 →
+#   last_run 按 canonical 重建（FINISHED/FAILED/CANCELLED）
+# - EXITED_RECOVERY_NEEDED：无 canonical proof / 关系不可验证 → 显式不确定
+#   （绝不把 registry EXITED 单独当作 FINISHED）
+_DISPOSITION_EXITED_TERMINAL_RECOVERED = "EXITED_TERMINAL_RECOVERED"
+_DISPOSITION_EXITED_RECOVERY_NEEDED = "EXITED_RECOVERY_NEEDED"
 
 # force cancel 相关（TASK-005-B；设计 §6A.11 阈值配置化，默认 30s）
 FORCE_CANCEL_SOFT_TIMEOUT_DEFAULT = 30.0
@@ -1007,6 +1015,16 @@ class FrameworkLauncher:
         last_run 镜像规则（requirement 8）：恢复出任何 RUNNING 正式任务时**不**
         改写 last_run——valid recovered active task 优先于任何 last_run 内容；
         只有无 live launch 恢复时才把 newest 完成/孤儿镜像刷进 last_run。
+
+        FIX-001（EXITED→last_run crash-window closure；requirement 3-7/10-12）：
+        无 ACTIVE 处置（restored/mirror_last 均无）时，补查 EXITED registry——
+        wait thread 的收尾顺序是 mark_exited(registry=EXITED) 先于
+        _finish_run/_persist_last(last_run)；两者之间崩溃 → registry 已 EXITED
+        但 last_run 未呈现该 launch（terminal 呈现丢失）。此时从既有任务
+        artifacts（task.json canonical + control.json 交叉验证 launch/task
+        关系）重建 newest EXITED launch 的 last_run 镜像；registry EXITED
+        单独**不足**以推断 FINISHED（requirement 4/5：无 proof → 显式
+        RECOVERY_NEEDED；stale 历史 EXITED 不覆盖更新状态——只取 newest）。
         """
         root = Path(registry_dir) if registry_dir else (self._registry_dir or reg_mod.registry_root())
         result: dict[str, ownership_mod.OwnershipVerdict] = {}
@@ -1119,6 +1137,14 @@ class FrameworkLauncher:
             # 无 live 正式任务可恢复：把 newest 完成/孤儿镜像刷进 last_run
             # （terminal-history 视角；requirement 8：last_run 不覆盖 recovered active）
             self._mirror_last_from_recovery(mirror_last, root)
+        else:
+            # FIX-001（EXITED→last_run crash-window closure）：无任何 ACTIVE
+            # launch 被恢复/镜像时，若 newest EXITED launch 未被 last_run 呈现
+            # （wait thread 已 mark_exited、_finish_run 落盘前崩溃的窗口签名），
+            # 从既有任务 artifacts 重建 terminal 呈现。ACTIVE 收敛条目必然比
+            # 既有 EXITED 更新（单实例顺序执行），因此本 pass 只在无 ACTIVE
+            # 处置时运行——recovered RUNNING 永远优先（requirement 6）。
+            self._recover_exited_crash_window(root)
         return result
 
     @staticmethod
@@ -1167,6 +1193,140 @@ class FrameworkLauncher:
                 launch_id=lid,
             )
         self._persist_last()
+
+    def _recover_exited_crash_window(self, root: Path) -> None:
+        """FIX-001: EXITED→last_run crash-window closure（registry EXITED + last_run 丢失）。
+
+        Crash window（Codex blocker）：runner 产出 canonical terminal → wait
+        thread 先 mark_exited()（registry=EXITED 已持久化）→ Bridge 在
+        _finish_run()/_persist_last() 写 last_run 前崩溃 → restart 时该 launch
+        已 EXITED，旧逻辑只扫 ACTIVE → 跳过 → terminal task 身份/状态永远无法
+        重建。本 pass 从既有任务/runtime artifacts 恢复（requirement 2-5/7）：
+
+        候选选择（requirement 7）：
+        - 只取 **newest EXITED** launch（created_at/exited_at 权威排序）；
+          旧历史 EXITED（= 已被更新正式状态取代的 stale 历史）一律不回溯，
+          绝不盲目选任意/旧 registry 条目
+        - last_run（launcher.last / load_last）已呈现该 launch（launch_id 相同
+          = 干净收尾已落盘）→ no-op（无 crash window）
+        - 未被呈现的 newest EXITED = crash-window 受害者 → 重建
+
+        重建（requirement 3/4/5）：
+        - canonical terminal proof 只来自既有任务 authority：task.json
+          canonical（_read_canonical_terminal）+ control.json 交叉验证
+          launch/task 关系（registry.launch_id == control.launch_id 且
+          registry.task_id == control.task_id == canonical.task_id）
+        - proof 有效 → result_from_canonical 同款映射（SUCCESS/WAITING →
+          FINISHED 或 REPORT_NOT_FOUND；FAILED → FAILED；CANCELLED →
+          CANCELLED）镜像进 last_run（terminal FINISHED 呈现/历史重建）
+        - 无 proof / 关系不可验证 → last_run = RECOVERY_NEEDED（显式不确定，
+          requirement 5：EXITED 单独不足为 FINISHED）；registry exit_result 仅
+          当现值误导性声称完成/终态时收敛为 RECOVERY_NEEDED（其余 evidence
+          字段与已显式不确定的值如 FAILED_TO_START 一律保留）
+        - 绝不 rerun / 绝不创建 runner / 绝不启动 watcher / 绝不改 canonical
+          / 绝不把 EXITED 恢复成 RUNNING（state 保持 IDLE——任务已终态或
+          显式不确定，并发保护不占用）
+        """
+        exited = reg_mod.list_launches(state=reg_mod.REGISTRY_STATE_EXITED, root=root)
+        if not exited:
+            return
+        # 已呈现（干净收尾落盘 / 本 call 更早路径已镜像）→ 无 crash window
+        presented_id = None
+        presented = self.last or self.load_last()
+        if presented is not None:
+            presented_id = getattr(presented, "launch_id", None)
+        # 权威排序（created_at → exited_at → launch_id）取最新；首个未呈现的
+        # EXITED = crash-window 受害者。已呈现的最新人及其之后（更旧）的条目
+        # 一律不回溯（stale 历史不得覆盖更新正式状态；requirement 7）。
+        ordered = sorted(
+            exited,
+            key=lambda e: (
+                str(e.get("created_at") or ""),
+                str(e.get("exited_at") or ""),
+                str(e.get("launch_id") or ""),
+            ),
+            reverse=True,
+        )
+        candidate: dict | None = None
+        if ordered and ordered[0].get("launch_id") != presented_id:
+            candidate = ordered[0]
+        if candidate is None:
+            return
+        newest = candidate
+        lid = newest.get("launch_id")
+        tid = newest.get("task_id")
+        if not lid or not tid:
+            return
+        out_dir = Path(str(newest.get("output_dir") or ""))
+        out_str = str(out_dir) if str(out_dir) else None
+        ws = str(newest.get("workspace") or "")
+        canonical = self._read_canonical_terminal(out_dir) if out_str else None
+        ctrl = None
+        if out_str:
+            ctrl, _ = control_mod.read_control(out_dir)
+        # registry ↔ control ↔ task.json 三方 launch/task 关系验证
+        relation_ok = (
+            ctrl is not None
+            and ctrl.get("launch_id") == lid
+            and str(ctrl.get("task_id") or "") == tid
+        )
+        valid_proof = (
+            canonical is not None
+            and bool(canonical.get("status"))
+            and str(canonical.get("task_id") or "") == tid
+            and relation_ok
+        )
+        if valid_proof:
+            result, report_path = self.result_from_canonical(canonical, out_dir)
+            self.last = RunInfo(
+                task_id=tid,
+                task_path="",
+                report_path=report_path,
+                exit_code=None,
+                result=result,
+                output_dir=out_str,
+                launch_id=lid,
+                terminal_generation=canonical.get("terminal_generation"),
+            )
+            self._persist_last()
+            self.recovered_disposition[lid] = _DISPOSITION_EXITED_TERMINAL_RECOVERED
+            return
+        # EXITED 无 canonical proof（或关系不可验证）→ 显式不确定（requirement 5）：
+        # 绝不把 registry EXITED 单独当作 FINISHED。仅当 registry exit_result
+        # 目前**误导性地声称完成/终态**（FINISHED/FAILED/CANCELLED 等镜像值）时
+        # 收敛为 RECOVERY_NEEDED；已是显式不确定（FAILED_TO_START /
+        # RECOVERY_NEEDED）则保留原 evidence 不动（force_* / exited_at 一律保留）。
+        misleading = (
+            RESULT_FINISHED, RESULT_FAILED, RESULT_REPORT_NOT_FOUND,
+            RESULT_CANCELLED, "TERMINAL", "FORCE_TERMINATED",
+        )
+        if str(newest.get("exit_result") or "") in misleading:
+            try:
+                reg_mod.update_registry(
+                    lid,
+                    {
+                        "exit_result": RESULT_RECOVERY_NEEDED,
+                        "exit_note": (
+                            "startup recovery: newest EXITED launch lacks verifiable "
+                            "canonical terminal proof — not treated as FINISHED "
+                            "(EXITED-to-last_run crash-window candidate)"
+                        ),
+                    },
+                    root=root,
+                )
+            except reg_mod.RegistryError:
+                pass
+        self.last = RunInfo(
+            task_id=tid,
+            task_path="",
+            report_path=None,
+            exit_code=None,
+            result=RESULT_RECOVERY_NEEDED,
+            output_dir=out_str,
+            launch_id=lid,
+        )
+        self._persist_last()
+        self.recovered_disposition[lid] = _DISPOSITION_EXITED_RECOVERY_NEEDED
 
     # ---------- State-Recovery：recovered RUNNING launch 监视收尾 ----------
 

@@ -16,6 +16,19 @@
             恢复 terminal 视图（resolve + collect_status）→ 再真实启动一个新
             bounded 任务（执行/报告生成无回归）→ 证据 JSON → 退出
 
+FIX-001（EXITED→last_run crash-window closure；独立隔离根 ev/cw-bridge）：
+  crashwin     实例 4：两个真实 bounded 任务顺序完成——SRV-FRESH-OLD 干净
+                收尾（last_run=L_old）→ SRV-FRESH-001 自然完成（registry
+                EXITED + canonical SUCCESS 全套）→ **模拟崩溃**：last_run
+                回退为 L_old 旧呈现（= mark_exited 后、_persist_last 前崩溃
+                的可观察磁盘状态等价）→ 证据 JSON → 退出
+  crashreopen  实例 5（零内存）：recover_launches → EXITED crash-window 恢复：
+                last_run 从权威 artifacts 重建为 SRV-FRESH-001 的 terminal
+                identity（launch_id 一致 / FINISHED / REPORT）→ 无 rerun
+                （canonical generation 不变、无 ACTIVE launch、launch 数不变）
+                → 旧 last_run（SRV-FRESH-OLD）不得覆盖恢复结果 → 再真实启动
+                新 bounded 任务（执行/报告无回归）→ 证据 JSON → 退出
+
 用法（由 fresh_runner_state_recovery_validation.py 驱动）：
   python tests/fresh_runner_state_recovery_wrapper.py <stage> <evidence_dir>
 
@@ -78,6 +91,15 @@ def _wait_until(fn, timeout: float, interval: float = 0.2) -> bool:
 
 def _reg_dir(ev: Path) -> Path:
     return ev / "aaf-bridge" / "launches"
+
+
+def _cw_bridge_root(ev: Path) -> Path:
+    """FIX-001 crash-window stages 的独立隔离根（不依赖其他 stage 的 registry）。"""
+    return ev / "cw-bridge"
+
+
+def _cw_reg_dir(ev: Path) -> Path:
+    return _cw_bridge_root(ev) / "launches"
 
 
 def _make_launcher(ev: Path) -> FrameworkLauncher:
@@ -271,9 +293,171 @@ def stage_reopen(ev: Path) -> int:
     return 0
 
 
+def _wait_launcher_finished(launcher: FrameworkLauncher, tid: str, timeout: float = 60.0) -> bool:
+    """等待 wait thread 自然收尾（state=FINISHED + registry EXITED）。"""
+    return _wait_until(lambda: launcher.state == "FINISHED", timeout=timeout)
+
+
+def stage_crashwin(ev: Path) -> int:
+    """FIX-001 stage 4：构造 EXITED→last_run crash-window 可观察状态。
+
+    真实 bounded 任务（dummy_recover_runner）自然完成 → wait thread 已
+    mark_exited（registry=EXITED）→ 模拟「Bridge 在 _persist_last 写
+    last_run 前崩溃」：把 last_run 回退为**更早** launch（SRV-FRESH-OLD）
+    的旧呈现（崩溃点的磁盘状态 = newest EXITED launch 未被 last_run 呈现）。
+    """
+    cw_root = _cw_bridge_root(ev)
+    # AAF_BRIDGE_DIR 必须在本进程内先于 launcher 构造指向隔离根（构造时绑定
+    # _state_root / registry 解析；绝不触碰真实 ~/.aaf-bridge）
+    os.environ["AAF_BRIDGE_DIR"] = str(cw_root)
+    ws = ev / "cw-ws"
+    ws.mkdir(parents=True, exist_ok=True)
+
+    # 任务 1：SRV-FRESH-OLD 干净收尾（last_run = L_old）
+    os.environ["AAF_RECOVER_SLEEP"] = "1"
+    old_tid = "SRV-FRESH-OLD"
+    old_file = task_io.save_task(_task_text(ws, old_tid), str(ws), old_tid)
+    launcher = FrameworkLauncher(run_py=RECOVER_RUNNER, registry_dir=_cw_reg_dir(ev))
+    old_out = launcher.default_output_dir(str(ws), old_tid)
+    if not launcher.launch(old_file, str(ws), old_out, old_tid):
+        return _fail("crashwin: OLD 任务 launch 失败")
+    old_lid = launcher._active_launch[old_tid]
+    if not _wait_launcher_finished(launcher, old_tid):
+        return _fail("crashwin: OLD 任务未收尾")
+    if launcher.last is None or launcher.last.result != RESULT_FINISHED:
+        return _fail(f"crashwin: OLD 任务结果异常: {getattr(launcher.last, 'result', None)}")
+    last_run_file = cw_root / "last_run.json"
+    if not last_run_file.exists():
+        return _fail("crashwin: OLD 收尾后 last_run.json 缺失")
+    stale_payload = last_run_file.read_bytes()  # L_old 呈现（崩溃后残留的旧 last_run）
+
+    # 任务 2：SRV-FRESH-001 自然完成 → registry EXITED + canonical SUCCESS 全套
+    os.environ["AAF_RECOVER_SLEEP"] = "2"
+    tid = TASK_ID
+    task_file = task_io.save_task(_task_text(ws, tid), str(ws), tid)
+    launcher2 = FrameworkLauncher(run_py=RECOVER_RUNNER, registry_dir=_cw_reg_dir(ev))
+    out_dir = launcher2.default_output_dir(str(ws), tid)
+    if not launcher2.launch(task_file, str(ws), out_dir, tid):
+        return _fail("crashwin: victim 任务 launch 失败")
+    lid = launcher2._active_launch[tid]
+    if not _wait_launcher_finished(launcher2, tid):
+        return _fail("crashwin: victim 任务未收尾")
+    reg, _ = reg_mod.read_registry(lid, root=_cw_reg_dir(ev))
+    if reg is None or reg.get("state") != reg_mod.REGISTRY_STATE_EXITED:
+        return _fail(f"crashwin: victim registry 未 EXITED: {reg}")
+    status = read_status(out_dir)
+    if (status or {}).get("status") != "SUCCESS":
+        return _fail(f"crashwin: canonical 未 SUCCESS: {status}")
+    generation = (status or {}).get("terminal_generation")
+
+    # 模拟崩溃：last_run 回退为旧呈现（victim 的 terminal 呈现从未落盘）
+    if b"SRV-FRESH-001" in stale_payload:
+        return _fail("crashwin: stale payload 意外包含 victim 身份")
+    last_run_file.write_bytes(stale_payload)
+
+    data = {
+        "stage": "crashwin",
+        "task_id": tid,
+        "launch_id": lid,
+        "old_task_id": old_tid,
+        "old_launch_id": old_lid,
+        "output_dir": str(out_dir),
+        "registry_exited": True,
+        "canonical_status": (status or {}).get("status"),
+        "canonical_generation": generation,
+        "stale_last_run_launch_id": old_lid,
+        "stale_last_run_contains_victim": False,
+    }
+    _evidence(ev, "crashwin", data)
+    print(json.dumps(data, ensure_ascii=False))
+    return 0
+
+
+def stage_crashreopen(ev: Path) -> int:
+    """FIX-001 stage 5：崩溃后重启（零内存）→ EXITED crash-window 恢复验证。"""
+    cw_root = _cw_bridge_root(ev)
+    os.environ["AAF_BRIDGE_DIR"] = str(cw_root)
+    crashwin = json.loads((ev / "stage-crashwin.json").read_text(encoding="utf-8"))
+    tid = crashwin["task_id"]
+    lid = crashwin["launch_id"]
+    old_tid = crashwin["old_task_id"]
+    ws = ev / "cw-ws"
+    out_dir = Path(crashwin["output_dir"])
+
+    launcher_c = FrameworkLauncher(run_py=RECOVER_RUNNER, registry_dir=_cw_reg_dir(ev))
+    launcher_c.recover_launches(_cw_reg_dir(ev))
+
+    # 恢复结果 = 权威 artifacts 重建的 victim terminal（同 launch identity）
+    if launcher_c.state == "RUNNING":
+        return _fail("crashreopen: EXITED victim 被错误恢复成 RUNNING（绝不允许）")
+    last = launcher_c.last
+    if last is None:
+        return _fail("crashreopen: last_run 未重建")
+    checks = {
+        "task_id_recovered": last.task_id == tid,
+        "launch_id_recovered": last.launch_id == lid,
+        "result_finished": last.result == RESULT_FINISHED,
+        "report_recovered": last.report_path == str(out_dir / "REPORT.md"),
+        # 旧 last_run（SRV-FRESH-OLD）不得覆盖恢复的 victim terminal
+        "old_task_not_presented": last.task_id != old_tid,
+    }
+    if not all(checks.values()):
+        return _fail(f"crashreopen: 恢复校验失败: {checks} last={last}")
+
+    # 无 rerun / 无重复 runner：canonical generation 不变、无 ACTIVE launch、
+    # registry launch 数 = crashwin 时点（OLD + victim，未新建）
+    status = read_status(out_dir)
+    gen_now = (status or {}).get("terminal_generation")
+    active_now = [e for e in reg_mod.list_launches(root=_cw_reg_dir(ev))
+                  if e.get("state") in reg_mod.ACTIVE_STATES]
+    all_launches = reg_mod.list_launches(root=_cw_reg_dir(ev))
+    checks["no_rerun_generation"] = gen_now == crashwin["canonical_generation"]
+    checks["no_active_launch"] = len(active_now) == 0
+    checks["no_new_launch"] = len(all_launches) == 2
+    if not all(checks.values()):
+        return _fail(f"crashreopen: 无 rerun/无重复 runner 校验失败: {checks}")
+    # last_run.json 实际内容 = victim launch（不是旧 OLD）
+    persisted = json.loads((cw_root / "last_run.json").read_text(encoding="utf-8"))
+    checks["last_run_content_victim"] = persisted.get("launch_id") == lid
+    checks["last_run_content_not_old"] = persisted.get("task_id") != old_tid
+    if not (checks["last_run_content_victim"] and checks["last_run_content_not_old"]):
+        return _fail(f"crashreopen: last_run.json 内容错误: {persisted}")
+    # 视图绑定恢复的 victim terminal
+    ref = sw.resolve_current_task(launcher_c)
+    if ref is None or ref.task_id != tid:
+        return _fail(f"crashreopen: resolve 未绑定 victim: {ref}")
+
+    # 执行/报告生成无回归：真实启动新 bounded 任务并完成
+    os.environ["AAF_RECOVER_SLEEP"] = "1"
+    tid3 = "SRV-FRESH-003"
+    task_file3 = task_io.save_task(_task_text(ws, tid3), str(ws), tid3)
+    out3 = launcher_c.default_output_dir(str(ws), tid3)
+    if not launcher_c.launch(task_file3, str(ws), out3, tid3):
+        return _fail("crashreopen: 恢复后新任务 launch 失败（执行回归）")
+    if not _wait_launcher_finished(launcher_c, tid3):
+        return _fail("crashreopen: 恢复后新任务未收尾（执行回归）")
+    if launcher_c.last is None or launcher_c.last.task_id != tid3 or launcher_c.last.result != RESULT_FINISHED:
+        return _fail(f"crashreopen: 恢复后新任务结果异常: {getattr(launcher_c.last, 'result', None)}")
+    checks["second_task_ok"] = True
+    data = {
+        "stage": "crashreopen",
+        "task_id": tid,
+        "launch_id": lid,
+        "checks": checks,
+        "last_result": last.result,
+        "last_report": last.report_path,
+        "last_run_launch_id": persisted.get("launch_id"),
+        "second_task_id": tid3,
+        "second_result": launcher_c.last.result,
+    }
+    _evidence(ev, "crashreopen", data)
+    print(json.dumps(data, ensure_ascii=False))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 3:
-        print("usage: python fresh_runner_state_recovery_wrapper.py <launch|restart|reopen> <evidence_dir>")
+        print("usage: python fresh_runner_state_recovery_wrapper.py <stage> <evidence_dir>")
         return 2
     stage = argv[1]
     ev = Path(argv[2]).resolve()
@@ -286,6 +470,10 @@ def main(argv: list[str]) -> int:
         return stage_restart(ev)
     if stage == "reopen":
         return stage_reopen(ev)
+    if stage == "crashwin":
+        return stage_crashwin(ev)
+    if stage == "crashreopen":
+        return stage_crashreopen(ev)
     print(f"unknown stage: {stage}")
     return 2
 

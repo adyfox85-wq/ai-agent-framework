@@ -1560,7 +1560,17 @@ def _run_paid_escalation_gate(
     if guard_error is not None:
         interpretation = fpg.fail_closed_interpretation(guard_error)
     else:
-        interpretation = fpg.interpret_guard(guard_record, paid_model, paid_provider)
+        # FIX-002：interpret_guard 必须知道 expected task/stage scope（与
+        # A0 evaluate 同源的 task_id/stage_agent），以对 required_scope 做
+        # canonical exact-scope 校验（wrong task/stage/model/provider 或
+        # malformed scope → FAIL_CLOSED，绝不 AUTHORIZED）。
+        interpretation = fpg.interpret_guard(
+            guard_record,
+            paid_model,
+            paid_provider,
+            task_id=task_id,
+            stage=stage_agent,
+        )
 
     extra_notes = [
         f"proposed paid candidate {selected!r} was deterministically "

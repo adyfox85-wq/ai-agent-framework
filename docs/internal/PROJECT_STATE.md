@@ -2,7 +2,40 @@
 
 > Project: AI Agent Framework\
 > Current Version: **v0.4（FROZEN / RELEASE READY — 2026-08-29 AAF-v0.4-FREEZE-001 正式冻结；Final Acceptance = PASS（AAF-v0.4-FINAL-ACCEPTANCE-002，Codex APPROVE，Unresolved Issues = None）；accepted implementation baseline = `1d3771fe8220e1b2e21c774840d680ec9f2dce61`；final freeze metadata commit = docs-only 提交（见本文件 §0 顶部与 git tag `v0.4`）；Release Closure Matrix 全项 COMPLETE / CLOSED / IMPLEMENTED / SOLVED / ACCEPTED；Automatic Model Routing 与 Cost Gate = NOT IMPLEMENTED（future scope）；下一开发线 post-v0.4 / v0.5 仅在用户显式启动时开启。以下为 v0.4 开发全程历史记录（IN PROGRESS 时期，保留不删除）：Phase A/B/C/D COMPLETE；Phase E COMPLETE（E-Core / Soft Cancel COMPLETE — 005-A + FIX-001/002/003；E-Ownership / Force Cancel 已交付 — 005-B + 005-B-FIX-001（canonical force authority + successful termination proof，Codex 两个 blocker 已闭合）；005-C Status Window Cancel UX + Real Windows E2E Closure 已交付——实现 + 测试 + 真实 Windows 正负 E2E 全量通过，Phase E 正式标记 COMPLETE；005-C-FIX-001（Cancel Timestamp Timezone Compatibility Fix）已交付——canonical UTC/aware elapsed contract 统一 cancel elapsed 计算，合法 offset-aware（+08:00 / +00:00 / Z）与 legacy naive 均不再因 naive/aware 混算而破坏 Cancel UI / force eligibility，malformed fail closed，Codex 原 timezone blocker 已闭合；route 阶段 WorkBuddy / Codex 独立复核按项目惯例由 route 执行并记录于任务 REPORT，若发现 blocking 则按惯例开 FIX）；Phase F IMPLEMENTATION DELIVERED（AAF-v0.4-TASK-006：Project Switching + Duplicate Task UX 实现 + 72 项新测试（63 单元 + 9 真实 Windows E2E A–I）+ 760 passed；RW-003 / RW-016 / RW-006 按真实交付证据收口 SOLVED；正式 COMPLETE 判定留待 WorkBuddy 独立验证 + Codex 审查后由 Planner 确认，本任务不自行宣布 Phase F COMPLETE）；Phase F FIX-001（Atomic Config Persistence + Real UX Closure）已交付——config.save_config 统一 atomic contract（同目录 tmp + flush/fsync + os.replace，失败清理 tmp 且旧 config 原样保留，无 write_text 旁路）；真实 Bridge UI 交互 harness（真实 Tk 弹窗 + 真实按钮 invoke + 真实剪贴板）覆盖 Known switch 确认/拒绝/Unknown fail-safe/Invalid fail closed/Duplicate running 卡片+无第二 runner/Duplicate terminal 卡片+不覆盖/restart 恢复；顺带修复 duplicate 卡片 [打开 REPORT] 死按钮（Tk 按钮 invoke 不带参数 → 闭包捕获 report_path）；780 passed（760 + 20 新增，零下降）；WorkBuddy 独立验证 + Codex 复审由 route 执行（本任务不自行宣布 COMPLETE））；Model Observability / Discovery Foundation 已交付（AAF-v0.4-TASK-010：只读模型观测 + 发现事实层——model_observation.json 单一 machine authority、每 stage stage_timing、REPORT 紧凑 Model Observation 摘要、30 项定向测试；Automatic Model Routing 未实现，仅登记未来 policy（backlog §5.5 CAP-003））；WorkBuddy Stage Reliability 已交付（AAF-v0.4-TASK-011 + FIX-001 + FIX-002：bounded transient retry / confirmed-dead-before-retry / single absolute stage deadline / Windows tree cleanup authority / safe cleanup reserve / attempt admission / telemetry）；当前状态 = FROZEN（见下方 §0））**\
-> Last Updated: 2026-09-03（AAF-v0.5-A5-PAID-ESCALATION-GATE-001-FIX-001 — **paid
+> Last Updated: 2026-09-03（AAF-v0.5-A5-PAID-ESCALATION-GATE-001-FIX-002 — **exact
+> paid authorization scope 收口（Codex 唯一 blocker 消除；parent =
+> AAF-v0.5-A5-PAID-ESCALATION-GATE-001-FIX-001，commit 4c2ebf9（grandparent =
+> 32c4bbe），新 commit 未 amend 未 push；A5 保持 STARTED，NOT CLOSED /
+> COMPLETE——REQUIRED_BEFORE_A5_CLOSE 9 项不重写；零 paid invocation / 无
+> paid fallback 实现）**：paid escalation Cost Gate 对 ALLOWED_AUTHORIZED_PAID
+> 现在验证 **exact task/stage/model/provider scope**——
+> `interpret_guard(guard_record, model, provider, *, task_id, stage)` 新增
+> expected-scope 上下文（runtime 以与 A0 evaluate 同源的 task_id/stage_agent
+> 调用），A0 record 的 required_scope 必须**精确等于** canonical expected
+> scope（既有 A0 scope authority = `cost_guard.scope_string(task_id, stage,
+> model, provider)`——单一 scope 格式、复用不建第二套）；wrong task / wrong
+> stage / wrong model / wrong provider（required_scope 维度）/ malformed /
+> missing scope → FAIL_CLOSED（scope mismatch，绝不 AUTHORIZED）；FIX-001
+> raw/source 分层保持（raw 矛盾 scope 证据只在 source_guard_record 可观察，
+> normalized 恒自洽：matched False / guard_decision None / wrong scope 类型
+> 安全 echo）；validator 由 record 自身 task_id/stage_agent/paid_candidate_
+> model/provider 重建 canonical scope，AUTHORIZED 必须精确相等——手造
+> out-of-canonical-scope AUTHORIZED record 被独立拒绝（Requirement 8 防御
+> 纵深零削弱）；exact canonical scope 行为零变化（AUTHORIZED 仍零 paid
+> invocation）；改动 = ai_agent_framework/fallback_paid_gate.py（修复单元）+
+> fallback_runtime.py（1 调用点透传 task_id/stage_agent；runner.py /
+> cost_guard.py / fallback_contract.py 零修改）+ tests/
+> test_a5_paid_escalation_gate.py（**52 → 60，+8 项聚焦**；stash 反证 9 项
+> 对未修复代码确定性 FAIL——旧 interpret 把 wrong-task record 判 AUTHORIZED、
+> 旧 validator 接受 out-of-canonical-scope AUTHORIZED）+ fresh-runner fix002
+> 驱动（**P1–P5 5/5** 新进程：wrong task / wrong stage scope → FAIL_CLOSED +
+> artifact 落盘/valid + raw 可观察；real A0 exact auth 与脚本化 canonical
+> exact scope → AUTHORIZED 零 invocation；FREE fallback 行为不变）；canonical
+> 4-file-deselect（RW-029 惯例隔离）**2101 passed / 1 skipped / 38 deselected
+> （0 failed）** = HEAD 4c2ebf9 基线 **2093 + 8 精确零回归** + parent
+> fresh-runner 驱动复跑 FIX-001 5/5 + A5-003 5/5 全绿；report =
+> docs/internal/AAF-v0.5-A5-PAID-ESCALATION-GATE-001-FIX-002-REPORT.md）。此前
+> 更新：2026-09-03（AAF-v0.5-A5-PAID-ESCALATION-GATE-001-FIX-001 — **paid
 > escalation Cost Gate fail-closed 归一化收口（Codex 唯一 blocker 消除；parent =
 > AAF-v0.5-A5-PAID-ESCALATION-GATE-001，commit 32c4bbe，新 commit 未 amend 未
 > push；A5 保持 STARTED，NOT CLOSED / COMPLETE——REQUIRED_BEFORE_A5_CLOSE 9 项
@@ -971,6 +1004,44 @@ A5 Scope Formalization（2026-09-02，AAF-v0.5-A5-SCOPE-FORMALIZATION-001 — do
     不变（AUTHORIZED 仍零 paid invocation）/ F4 FREE fallback 行为不变 / F5
     malformed {} → FAIL_CLOSED + source={}）；实现细节 =
     docs/internal/AAF-v0.5-A5-PAID-ESCALATION-GATE-001-FIX-001-REPORT.md
+  - **A5 实现状态 FIX-002（2026-09-03 AAF-v0.5-A5-PAID-ESCALATION-GATE-001-FIX-002
+    更新；parent commit 4c2ebf9（grandparent 32c4bbe）；新 commit 未 amend 未
+    push）**: Codex 唯一 blocker 收口——paid escalation Cost Gate 对
+    ALLOWED_AUTHORIZED_PAID 现在验证 **exact task/stage/model/provider scope**：
+    `interpret_guard(guard_record, model, provider, *, task_id, stage)` 新增
+    expected-scope 上下文（runtime 以与 A0 `cost_guard.evaluate` 同源的
+    task_id / stage_agent 调用），A0 record 的 `required_scope` 必须**精确
+    等于** canonical expected scope（既有 A0 scope authority =
+    `cost_guard.scope_string(task_id, stage, model, provider)`——单一 scope
+    格式、复用不建第二套，Requirement 2）；wrong task / wrong stage / wrong
+    model / wrong provider（required_scope 维度）/ malformed / missing scope
+    → FAIL_CLOSED（scope mismatch；**绝不 AUTHORIZED**）；FIX-001
+    raw/source 分层保持——raw 矛盾 scope 证据（decision / matched=True /
+    wrong scope 原文）只在 source_guard_record 可观察，normalized 恒自洽
+    （authorization_* 恒 False / guard_decision None / required_scope 类型
+    安全 echo）；validator 由 authoritative record 自身 task_id /
+    stage_agent / paid_candidate_model / provider 重建 canonical scope 并
+    要求 AUTHORIZED 的 required_scope 精确相等——手造 out-of-canonical-scope
+    AUTHORIZED record 被独立拒绝（Requirement 8 防御纵深零削弱）；exact
+    canonical scope 行为零变化（AUTHORIZED 仍零 paid invocation）；改动 =
+    ai_agent_framework/fallback_paid_gate.py（修复单元）+
+    fallback_runtime.py（1 调用点透传 task_id/stage_agent；runner.py /
+    cost_guard.py（scope authority byte-identical）/ fallback_contract.py
+    零修改）+ tests/test_a5_paid_escalation_gate.py（**52 → 60，+8 项 FIX-002
+    聚焦**：wrong task / wrong stage / wrong model-provider / expected-scope-
+    is-gate-context / source 可审计 5 项解释器 + wrong task / wrong stage 2 项
+    live runtime 落盘复验 + validator 手造 AUTHORIZED out-of-canonical-scope
+    4 维拒绝矩阵；stash 反证 9 项对未修复代码确定性 FAIL）+ fresh-runner
+    fix002 驱动 **P1–P5 5/5**（新进程：P1 wrong task scope → FAIL_CLOSED +
+    artifact 落盘/valid + raw wrong-scope 可观察 + 恰 1 次 invocation + 无
+    消费 marker / P2 wrong stage scope → FAIL_CLOSED 同型 / P3 real A0 exact
+    auth → AUTHORIZED 仍零 paid invocation（A0 消费 marker 在）/ P4 FREE
+    fallback 行为不变（恰一次 zzz-fb、无 gate artifact、SUCCESS）/ P5 脚本化
+    canonical exact scope → AUTHORIZED 零 paid invocation）；canonical
+    4-file-deselect（RW-029 惯例隔离）**2101 passed / 1 skipped / 38
+    deselected（0 failed）** = HEAD 4c2ebf9 基线 **2093 + 8 精确零回归**
+    + parent fresh-runner 驱动复跑 FIX-001 5/5 + A5-003 5/5 全绿；实现细节 =
+    docs/internal/AAF-v0.5-A5-PAID-ESCALATION-GATE-001-FIX-002-REPORT.md
   - **Explicitly outside A5（A5 closure 不含以下任何项；本任务不实现、不进入）**:
     - **A6**: health scoring / quarantine / long-term availability tracking /
       automatic requalification / calibration / ongoing observation policy

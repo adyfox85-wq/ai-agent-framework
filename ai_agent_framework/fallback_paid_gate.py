@@ -21,9 +21,13 @@ invocation**：Cost Gate 只记录 AUTHORIZED / ready-for-paid-invocation 资格
 2. authorization 判断**复用** A0 Paid Guard（``cost_guard.evaluate``）在
    candidate 的 env 覆盖下求值——A0 是 effective cost / 授权的权威解析层：
    - A0 ``ALLOWED_AUTHORIZED_PAID`` + A0 解析的 model/provider == candidate
-     （scope 完整性）→ gate ``AUTHORIZED``（exact task-scoped authorization
-     已由 A0 在其准入边界按既有一次性语义 claim；本层如实转述 A0 的
-     authorization_present / matched / consumed 字段）；
+     （model/provider scope 完整性）**+ A0 record 的 required_scope 精确等于
+     canonical expected scope（``cost_guard.scope_string(task_id, stage, model,
+     provider)``——FIX-002：exact task/stage/model/provider scope；任何
+     scope mismatch / malformed scope 证据 → FAIL_CLOSED，绝不 AUTHORIZED）**
+     → gate ``AUTHORIZED``（exact task-scoped authorization 已由 A0 在其准入
+     边界按既有一次性语义 claim；本层如实转述 A0 的 authorization_present /
+     matched / consumed 字段）；
    - A0 ``BLOCKED_COST_APPROVAL`` → gate ``BLOCKED``（absent / mismatched /
      replay-rejected——A0 notes + flags 给出原因）；
    - A0 ``ALLOWED_FREE``（registry 说 paid、A0 权威解析为 free——成本视图
@@ -318,8 +322,19 @@ def interpret_guard(
     guard_record: dict | None,
     model: str,
     provider: str | None,
+    *,
+    task_id: str,
+    stage: str,
 ) -> dict:
     """把 A0 Paid Guard record 解释为 Cost Gate 状态（确定性、fail closed）。
+
+    ``task_id`` / ``stage`` 是本 Cost Gate 的 expected 授权 scope 上下文
+    （= 当前 Hermes executor stage 的 task/stage——与 A0 ``cost_guard.evaluate``
+    求值所用参数同源；runtime 层以同一 task_id/stage_agent 调用本函数）。
+    ``model`` / ``provider`` 是 proposed paid candidate。canonical expected
+    scope = ``cost_guard.scope_string(task_id, stage, model, provider)``
+    （既有 A0 Paid Guard scope 权威——FIX-002 复用同一 scope 格式与 authority，
+    不创建第二套 scope/授权机制）。
 
     返回 dict：{gate_decision, gate_reason, authorization_present,
     authorization_matched, authorization_consumed, guard_decision,
@@ -332,15 +347,20 @@ def interpret_guard(
     （否则组装出的 authoritative audit record 自相矛盾、validator 拒绝、
     无法持久化——Requirement 2/3/4/7）。
 
-    映射（Requirement 3）：
+    映射（Requirement 3/4/5）：
     - guard record 缺失 / malformed（缺必需字段 / 非 dict）→ FAIL_CLOSED；
     - guard 解析的 effective model/provider != candidate model/provider →
       FAIL_CLOSED（scope integrity：A0 求值的不是本 candidate，授权状态无法
       归属——绝不凭错误 scope 的 record 放行/记录，Requirement 4 零削弱）；
-    - ``ALLOWED_AUTHORIZED_PAID``（且 A0 三个 authorization flags 全 True +
-      required_scope 为非空 str）→ AUTHORIZED（exact task-scoped
-      authorization；A0 已在其准入边界按既有一次性语义 claim——本层如实
-      转述 consumed 状态）；flags 不齐 / required_scope 畸形 → FAIL_CLOSED；
+    - ``ALLOWED_AUTHORIZED_PAID``（且 A0 三个 authorization flags 全 True）→
+      **必须**同时满足 required_scope 精确等于 canonical expected scope
+      ``scope_string(task_id, stage, model, provider)`` 才 → AUTHORIZED
+      （exact task/stage/model/provider-scoped authorization；A0 已在其准入
+      边界按既有一次性语义 claim——本层如实转述 consumed 状态）；flags 不齐 /
+      required_scope 畸形（None / 非 str / 空）/ required_scope ≠ canonical
+      expected scope（wrong task / wrong stage / wrong model / wrong provider
+      任一维度的 scope mismatch——FIX-002 Codex blocker）→ FAIL_CLOSED
+      （绝不被授权：scope mismatch 或 malformed evidence 永不映射 AUTHORIZED）；
     - ``BLOCKED_COST_APPROVAL`` → BLOCKED（absent / mismatch /
       replay-rejected；flags + guard notes 给出原因）；matched=True 的 BLOCKED
       record = malformed → FAIL_CLOSED；
@@ -428,16 +448,39 @@ def interpret_guard(
             return _parsed_fail_closed(
                 reason, guard_record, model, provider, source_guard_record
             )
+        # FIX-002（Codex 唯一 blocker）：required_scope 必须**精确等于**
+        # canonical expected scope（既有 A0 scope authority：
+        # cost_guard.scope_string(task_id, stage, model, provider)——单一 scope
+        # 格式，不建第二套）。wrong task / wrong stage / wrong model / wrong
+        # provider 任一维度的 scope mismatch 都是 contradictory evidence →
+        # FAIL_CLOSED，绝不映射 AUTHORIZED（Requirement 4/5）。
+        expected_scope = cg.scope_string(task_id, stage, model, provider)
+        if scope != expected_scope:
+            reason = (
+                "scope mismatch: A0 Paid Guard record required_scope "
+                f"{scope!r} does not exactly equal the canonical expected "
+                f"scope {expected_scope!r} for the current task/stage/model/"
+                f"provider ({task_id!r}/{stage!r}/{model!r}/{provider!r}) — "
+                "an ALLOWED_AUTHORIZED_PAID result claimed for a different "
+                "task/stage/model/provider scope cannot authorize this paid "
+                "escalation; fail closed (exact task/stage/model/provider "
+                "scope matching unmodified; no paid escalation state "
+                "assigned, no paid model invoked)"
+            )
+            return _parsed_fail_closed(
+                reason, guard_record, model, provider, source_guard_record
+            )
         return {
             "gate_decision": GATE_DECISION_AUTHORIZED,
             "gate_reason": (
                 "exact task-scoped AAF_COST_AUTH authorization present and "
                 "atomically claimed at the A0 Paid Guard admission boundary "
-                f"(decision={decision!r}, required_scope={scope!r}) — gate "
-                "decision AUTHORIZED records ready-for-paid-invocation "
-                "ELIGIBILITY for a future paid invocation task only; NO paid "
-                "model was or will be invoked by this Cost Gate "
-                "(fallback_attempted/used stay false)"
+                f"(decision={decision!r}, required_scope={scope!r} exactly "
+                f"equals the canonical expected scope "
+                f"{expected_scope!r}) — gate decision AUTHORIZED records "
+                "ready-for-paid-invocation ELIGIBILITY for a future paid "
+                "invocation task only; NO paid model was or will be invoked "
+                "by this Cost Gate (fallback_attempted/used stay false)"
             ),
             "authorization_present": present,
             "authorization_matched": matched,
@@ -683,8 +726,11 @@ def validate_paid_escalation_gate_record(record: dict) -> None:
     - final_actual == original（无任何模型切换）；
     - gate_decision ∈ {AUTHORIZED, BLOCKED, FAIL_CLOSED} 且与
       guard_decision / authorization flags 互洽（AUTHORIZED ⟺ A0
-      ALLOWED_AUTHORIZED_PAID + exact candidate scope + 三 flags True；
-      matched=True ⟹ AUTHORIZED；BLOCKED ⟹ A0 BLOCKED_COST_APPROVAL）；
+      ALLOWED_AUTHORIZED_PAID + exact task/stage/model/provider candidate
+      scope（guard model/provider == candidate）**+ required_scope 精确等于
+      canonical expected scope（cost_guard.scope_string(task_id, stage_agent,
+      paid_candidate_model, paid_candidate_provider)——FIX-002）** + 三 flags
+      True；matched=True ⟹ AUTHORIZED；BLOCKED ⟹ A0 BLOCKED_COST_APPROVAL）；
     - candidates 一致性（paid ⊆ contract；paid_candidate ∈ paid；
       model/provider == key 拆分）；
     - ``source_guard_record``（raw/source A0 record 保真快照）必须为
@@ -837,6 +883,23 @@ def validate_paid_escalation_gate_record(record: dict) -> None:
         and record["guard_model"] == paid_candidate_model
         and record["guard_provider"] == paid_candidate_provider
     )
+    # FIX-002（Codex 唯一 blocker）：canonical expected scope 由 authoritative
+    # record 自身的 task_id / stage_agent / paid_candidate_model / provider 重建
+    # （既有 A0 scope authority = cost_guard.scope_string——单一 scope 格式，
+    # 不建第二套）。required_scope 必须精确等于它——手造 AUTHORIZED record（或
+    # required_scope 指向其他 task/stage/model/provider 的 record）被 validator
+    # 独立拒绝（Requirement 8），不改写 interpret 层已 FAIL_CLOSED 的语义。
+    _tid = record["task_id"]
+    _stag = record["stage_agent"]
+    if all(
+        isinstance(v, str)
+        for v in (_tid, _stag, paid_candidate_model, paid_candidate_provider)
+    ):
+        expected_scope = cg.scope_string(
+            _tid, _stag, paid_candidate_model, paid_candidate_provider
+        )
+    else:
+        expected_scope = None  # 非 str scope 组件 → 无法重建 canonical → 不满足
     if gate_decision == GATE_DECISION_AUTHORIZED:
         if not (
             guard_scope_ok
@@ -845,14 +908,17 @@ def validate_paid_escalation_gate_record(record: dict) -> None:
             and consumed is True
             and record["guard_model"] is not None
             and record["required_scope"]
+            and expected_scope is not None
+            and record["required_scope"] == expected_scope
         ):
             raise ValueError(
                 "gate_decision=AUTHORIZED requires an exact A0 Paid Guard "
                 "ALLOWED_AUTHORIZED_PAID result for the proposed paid "
-                "candidate's exact model/provider scope with "
-                "authorization_present/matched/consumed all true and a "
-                "non-empty required_scope — contradictory record fails "
-                "closed"
+                "candidate's exact task/stage/model/provider scope with "
+                "required_scope exactly equal to the canonical expected "
+                f"scope {expected_scope!r} and "
+                "authorization_present/matched/consumed all true — "
+                "contradictory or out-of-scope record fails closed"
             )
     elif guard_decision == cg.DECISION_ALLOWED_AUTHORIZED_PAID and guard_scope_ok:
         raise ValueError(

@@ -198,18 +198,23 @@ def _guard_record(
 
 
 def test_interpret_exact_authorized():
-    interp = fpg.interpret_guard(_guard_record(), "zzz-paid", "remote-api")
+    """FIX-002：canonical exact required_scope（task/stage/model/provider 全对）
+    → AUTHORIZED；required_scope 作为精确 scope 证据转述。"""
+    auth = cg.scope_string(_TASK_ID, "hermes", "zzz-paid", "remote-api")
+    interp = fpg.interpret_guard(_guard_record(), "zzz-paid", "remote-api",
+                                 task_id=_TASK_ID, stage="hermes")
     assert interp["gate_decision"] == fpg.GATE_DECISION_AUTHORIZED
     assert interp["authorization_present"] is True
     assert interp["authorization_matched"] is True
     assert interp["authorization_consumed"] is True
     assert interp["guard_decision"] == cg.DECISION_ALLOWED_AUTHORIZED_PAID
+    assert interp["required_scope"] == auth  # canonical exact scope 转述
 
 
 def test_interpret_no_auth_blocked():
     rec = _guard_record(decision=cg.DECISION_BLOCKED_COST_APPROVAL,
                         present=False, matched=False, consumed=False)
-    interp = fpg.interpret_guard(rec, "zzz-paid", "remote-api")
+    interp = fpg.interpret_guard(rec, "zzz-paid", "remote-api", task_id=_TASK_ID, stage="hermes")
     assert interp["gate_decision"] == fpg.GATE_DECISION_BLOCKED
     assert interp["authorization_present"] is False
     assert "no AAF_COST_AUTH" in interp["gate_reason"]
@@ -218,7 +223,7 @@ def test_interpret_no_auth_blocked():
 def test_interpret_mismatched_auth_blocked():
     rec = _guard_record(decision=cg.DECISION_BLOCKED_COST_APPROVAL,
                         present=True, matched=False, consumed=False)
-    interp = fpg.interpret_guard(rec, "zzz-paid", "remote-api")
+    interp = fpg.interpret_guard(rec, "zzz-paid", "remote-api", task_id=_TASK_ID, stage="hermes")
     assert interp["gate_decision"] == fpg.GATE_DECISION_BLOCKED
     assert "does not exactly match" in interp["gate_reason"]
 
@@ -226,7 +231,7 @@ def test_interpret_mismatched_auth_blocked():
 def test_interpret_replay_rejected_blocked():
     rec = _guard_record(decision=cg.DECISION_BLOCKED_COST_APPROVAL,
                         present=True, matched=False, consumed=True)
-    interp = fpg.interpret_guard(rec, "zzz-paid", "remote-api")
+    interp = fpg.interpret_guard(rec, "zzz-paid", "remote-api", task_id=_TASK_ID, stage="hermes")
     assert interp["gate_decision"] == fpg.GATE_DECISION_BLOCKED
     assert "ALREADY CONSUMED" in interp["gate_reason"] or "replay" in interp["gate_reason"]
 
@@ -234,14 +239,14 @@ def test_interpret_replay_rejected_blocked():
 def test_interpret_allow_free_conflict_fail_closed():
     rec = _guard_record(decision=cg.DECISION_ALLOWED_FREE,
                         present=False, matched=False, consumed=False)
-    interp = fpg.interpret_guard(rec, "zzz-paid", "remote-api")
+    interp = fpg.interpret_guard(rec, "zzz-paid", "remote-api", task_id=_TASK_ID, stage="hermes")
     assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
     assert "ALLOWED_FREE" in interp["gate_reason"]
 
 
 def test_interpret_malformed_guard_fail_closed():
     for bad in (None, {}, {"decision": cg.DECISION_ALLOWED_AUTHORIZED_PAID}):
-        interp = fpg.interpret_guard(bad, "zzz-paid", "remote-api")
+        interp = fpg.interpret_guard(bad, "zzz-paid", "remote-api", task_id=_TASK_ID, stage="hermes")
         assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
         assert "malformed" in interp["gate_reason"]
 
@@ -250,14 +255,14 @@ def test_interpret_scope_mismatch_fail_closed():
     """guard 解析的 effective model/provider != candidate → FAIL_CLOSED
     （授权状态无法归属——绝不凭错误 scope 放行/记录；Requirement 4 零削弱）。"""
     rec = _guard_record(model="someone-else", provider="other-api")
-    interp = fpg.interpret_guard(rec, "zzz-paid", "remote-api")
+    interp = fpg.interpret_guard(rec, "zzz-paid", "remote-api", task_id=_TASK_ID, stage="hermes")
     assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
     assert "scope integrity" in interp["gate_reason"]
 
 
 def test_interpret_unknown_guard_decision_fail_closed():
     rec = _guard_record(decision="SOMETHING_ELSE")
-    interp = fpg.interpret_guard(rec, "zzz-paid", "remote-api")
+    interp = fpg.interpret_guard(rec, "zzz-paid", "remote-api", task_id=_TASK_ID, stage="hermes")
     assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
 
 
@@ -266,11 +271,11 @@ def test_interpret_contradictory_flags_fail_closed():
     malformed → FAIL_CLOSED。"""
     rec = _guard_record(decision=cg.DECISION_ALLOWED_AUTHORIZED_PAID,
                         present=True, matched=False, consumed=True)
-    interp = fpg.interpret_guard(rec, "zzz-paid", "remote-api")
+    interp = fpg.interpret_guard(rec, "zzz-paid", "remote-api", task_id=_TASK_ID, stage="hermes")
     assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
     rec = _guard_record(decision=cg.DECISION_BLOCKED_COST_APPROVAL,
                         present=True, matched=True, consumed=False)
-    interp = fpg.interpret_guard(rec, "zzz-paid", "remote-api")
+    interp = fpg.interpret_guard(rec, "zzz-paid", "remote-api", task_id=_TASK_ID, stage="hermes")
     assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
 
 
@@ -282,7 +287,7 @@ def test_interpret_contradictory_paid_flags_normalized_fail_closed():
     于 source_guard_record（Requirement 2/4/5/6）。"""
     raw = _guard_record(decision=cg.DECISION_ALLOWED_AUTHORIZED_PAID,
                         present=True, matched=True, consumed=False)
-    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api")
+    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api", task_id=_TASK_ID, stage="hermes")
     assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
     assert "contradictory" in interp["gate_reason"]
     assert interp["authorization_present"] is False
@@ -306,7 +311,7 @@ def test_interpret_blocked_matched_normalized_fail_closed():
     source（Requirement 3/4/5/6）。"""
     raw = _guard_record(decision=cg.DECISION_BLOCKED_COST_APPROVAL,
                         present=True, matched=True, consumed=False)
-    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api")
+    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api", task_id=_TASK_ID, stage="hermes")
     assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
     assert interp["authorization_present"] is False
     assert interp["authorization_matched"] is False
@@ -321,7 +326,7 @@ def test_interpret_unknown_token_normalized_guard_none_source_preserved():
     None（未知 token 不进 whitelist 字段——validator 拒绝非 A0 token）；raw
     token 完整保留于 source_guard_record。"""
     raw = _guard_record(decision="SOMETHING_ELSE")
-    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api")
+    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api", task_id=_TASK_ID, stage="hermes")
     assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
     assert "SOMETHING_ELSE" in interp["gate_reason"]
     assert interp["authorization_matched"] is False
@@ -335,10 +340,10 @@ def test_interpret_authorized_invalid_scope_evidence_fail_closed():
     （None / 非 str）→ FAIL_CLOSED（exact-scope 授权证据无法记录——绝不凭残缺
     scope 授权；Requirement 3/5/6）。normalized required_scope=None（畸形值不进
     record），raw 值保留于 source。"""
-    for bad_scope in (None, 42):
+    for bad_scope in (None, "", 42):
         raw = _guard_record()
         raw["required_scope"] = bad_scope
-        interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api")
+        interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api", task_id=_TASK_ID, stage="hermes")
         assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
         assert "required_scope" in interp["gate_reason"]
         assert interp["authorization_matched"] is False
@@ -353,7 +358,7 @@ def test_interpret_scope_mismatch_keeps_token_and_source():
     ALLOWED_AUTHORIZED_PAID token 仍 echo（不隐含本候选授权，validator 接受），
     同时 raw 证据进入 source_guard_record。"""
     raw = _guard_record(model="someone-else", provider="other-api")
-    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api")
+    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api", task_id=_TASK_ID, stage="hermes")
     assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
     assert "scope integrity" in interp["gate_reason"]
     assert interp["authorization_matched"] is False
@@ -361,6 +366,114 @@ def test_interpret_scope_mismatch_keeps_token_and_source():
     assert interp["guard_model"] == "someone-else"
     assert interp["source_guard_record"] == raw
     assert interp["source_guard_record"]["authorization_matched"] is True
+
+
+# ===========================================================================
+# 1b. FIX-002（Codex 唯一 blocker）：required_scope 必须精确等于 canonical
+#     expected scope（task/stage/model/provider）——wrong scope / malformed
+#     scope 绝不 AUTHORIZED；raw 矛盾 scope 证据保留于 source
+# ===========================================================================
+
+_OTHER_TASK = "A5PG-OTHER-TASK"
+_OTHER_STAGE = "validator"
+
+
+def _exact_scope_record(
+    task_id: str = _TASK_ID,
+    stage: str = "hermes",
+    model: str = "zzz-paid",
+    provider: str = "remote-api",
+) -> dict:
+    """ALLOWED_AUTHORIZED_PAID + flags 全 True + 给定维度 scope 的 in-scope
+    model/provider raw A0 record（FIX-002 scope-mismatch fixture）。"""
+    return _guard_record(
+        required_scope=cg.scope_string(task_id, stage, model, provider)
+    )
+
+
+def test_interpret_wrong_task_scope_fail_closed():
+    """FIX-002（Requirement 9）：wrong task + correct stage/model/provider →
+    FAIL_CLOSED（record 声称对别的 task 的授权绝不归属本 task）；normalized
+    matched/guard_decision 恒 False/None；wrong scope 原文 type-safe echo；raw
+    证据 source 完整可观察。"""
+    raw = _exact_scope_record(task_id=_OTHER_TASK)
+    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api",
+                                 task_id=_TASK_ID, stage="hermes")
+    assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
+    assert "scope mismatch" in interp["gate_reason"]
+    assert _OTHER_TASK in interp["gate_reason"]
+    assert interp["authorization_present"] is False
+    assert interp["authorization_matched"] is False
+    assert interp["authorization_consumed"] is False
+    assert interp["guard_decision"] is None  # in-scope authorized token 不 echo
+    assert interp["required_scope"] == cg.scope_string(
+        _OTHER_TASK, "hermes", "zzz-paid", "remote-api"
+    )
+    assert interp["source_guard_record"] == raw
+    assert interp["source_guard_record"]["authorization_matched"] is True
+    assert interp["source_guard_record"]["required_scope"] == interp["required_scope"]
+
+
+def test_interpret_correct_task_wrong_stage_fail_closed():
+    """FIX-002（Requirement 9）：correct task + wrong stage → FAIL_CLOSED。"""
+    raw = _exact_scope_record(stage=_OTHER_STAGE)
+    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api",
+                                 task_id=_TASK_ID, stage="hermes")
+    assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
+    assert "scope mismatch" in interp["gate_reason"]
+    assert _OTHER_STAGE in interp["gate_reason"]
+    assert interp["authorization_matched"] is False
+    assert interp["guard_decision"] is None
+    assert interp["required_scope"] == cg.scope_string(
+        _TASK_ID, _OTHER_STAGE, "zzz-paid", "remote-api"
+    )
+    assert interp["source_guard_record"] == raw
+
+
+def test_interpret_required_scope_wrong_model_provider_fail_closed():
+    """FIX-002（Requirement 9）：guard model/provider == candidate（in-scope）
+    但 required_scope 编码了别的 model/provider = contradictory scope evidence
+    → FAIL_CLOSED（scope 字符串是 task/stage/model/provider 的整串证据——与
+    model/provider 字段冲突即不可归属）。"""
+    raw = _exact_scope_record(model="someone-else", provider="other-api")
+    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api",
+                                 task_id=_TASK_ID, stage="hermes")
+    assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
+    assert "scope mismatch" in interp["gate_reason"]
+    assert interp["authorization_matched"] is False
+    assert interp["guard_decision"] is None
+    assert interp["guard_model"] == "zzz-paid"  # in-scope echo 保留
+    assert interp["source_guard_record"] == raw
+
+
+def test_interpret_expected_scope_is_gate_context_authority():
+    """FIX-002：canonical expected scope 来自**当前 gate 上下文**（task_id/stage
+    参数）——scope 为 task A 的 record 在 task B 的 gate 上下文求值 →
+    FAIL_CLOSED（gate 绝不会因为「某 task 曾被授权」而放行另一个 task）。"""
+    raw = _guard_record()  # canonical scope for _TASK_ID/hermes
+    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api",
+                                 task_id=_OTHER_TASK, stage="hermes")
+    assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
+    assert "scope mismatch" in interp["gate_reason"]
+    assert interp["authorization_matched"] is False
+    assert interp["source_guard_record"] == raw
+
+
+def test_interpret_scope_mismatch_source_preserved_auditable():
+    """FIX-002（Requirement 6/9）：scope mismatch FAIL_CLOSED 的 raw/source
+    分离保持——normalized 恒 fail-closed 自洽（matched False / guard_decision
+    None），而 raw record 的 decision=ALLOWED_AUTHORIZED_PAID + matched=True
+    + wrong scope 原文全部保留于 source_guard_record（矛盾证据可审计）。"""
+    raw = _exact_scope_record(task_id=_OTHER_TASK)
+    raw["notes"] = ["raw A0 evidence claiming another task's scope"]
+    interp = fpg.interpret_guard(raw, "zzz-paid", "remote-api",
+                                 task_id=_TASK_ID, stage="hermes")
+    assert interp["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
+    assert interp["source_guard_record"]["decision"] == cg.DECISION_ALLOWED_AUTHORIZED_PAID
+    assert interp["source_guard_record"]["authorization_matched"] is True
+    assert interp["source_guard_record"]["required_scope"] != cg.scope_string(
+        _TASK_ID, "hermes", "zzz-paid", "remote-api"
+    )
 
 
 # ===========================================================================
@@ -928,6 +1041,118 @@ def test_guard_authorized_for_other_model_fail_closed_record(tmp_path, monkeypat
     fpg.validate_paid_escalation_gate_record(loaded)
 
 
+def test_guard_authorized_wrong_task_scope_fail_closed_persisted(
+    tmp_path, monkeypatch
+):
+    """FIX-002（Requirement 9/7 live runtime）：A0 返回 ALLOWED_AUTHORIZED_PAID
+    + flags 全 True + 同 model/provider，但 required_scope 指向**其他 task** →
+    gate FAIL_CLOSED（contradictory scope evidence 绝不归属本 task/绝不
+    AUTHORIZED）；authoritative audit validator-valid + 落盘 reload 复验；raw
+    矛盾证据 source 可观察；normalized matched 恒 False；零 paid invocation；
+    无 A0 消费 marker。"""
+    monkeypatch.setattr(cg, "resolve_effective_hermes", _REAL_RESOLVE)
+    _pin_original(monkeypatch)
+    wrong_scope = cg.scope_string(
+        _OTHER_TASK, "hermes", "zzz-paid", "remote-api"
+    )
+
+    def authorized_wrong_task(task_id, stage, state_dir=None):
+        return {
+            "decision": cg.DECISION_ALLOWED_AUTHORIZED_PAID,
+            "model": "zzz-paid",
+            "provider": "remote-api",
+            "authorization_present": True,
+            "authorization_matched": True,
+            "authorization_consumed": True,
+            "cost_class": cg.COST_PAID_OR_UNKNOWN,
+            "required_scope": wrong_scope,
+            "notes": ["claims exact auth for another task (wrong task scope)"],
+        }
+
+    monkeypatch.setattr(cg, "evaluate", authorized_wrong_task)
+    reg = _registry(_local_entry("aaa-orig"), _entry("zzz-paid"))
+    calls = {}
+    outcome, out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path)
+    assert calls["calls"] == 0  # zero paid invocation
+    assert outcome["attempted"] is False
+    assert outcome["used"] is False
+    rec = _gate(outcome)
+    assert rec["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
+    assert "scope mismatch" in rec["gate_reason"]
+    assert rec["authorization_present"] is False
+    assert rec["authorization_matched"] is False
+    assert rec["authorization_consumed"] is False
+    assert rec["guard_decision"] is None
+    assert rec["required_scope"] == wrong_scope  # type-safe echo 可审计
+    assert rec["fallback_attempted"] is False
+    assert rec["fallback_used"] is False
+    fpg.validate_paid_escalation_gate_record(rec)
+    # authoritative audit persisted + reload 复验 + raw 矛盾证据可观察
+    assert (out_dir / fpg.ARTIFACT_FILENAME).exists()
+    loaded = fpg.load_paid_gate(out_dir)
+    assert loaded is not None
+    fpg.validate_paid_escalation_gate_record(loaded)
+    assert loaded["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
+    assert loaded["source_guard_record"] == authorized_wrong_task(
+        _TASK_ID, "hermes"
+    )
+    assert loaded["source_guard_record"]["authorization_matched"] is True
+    # scripted guard 未 claim → 无 A0 一次性消费 marker
+    assert not (out_dir / cg.CONSUMPTION_FILENAME).exists()
+    # runtime record 零修改语义
+    rt = outcome["audit_record"]
+    assert rt["decision"] == fc.DECISION_FALLBACK_NOT_ELIGIBLE
+    assert rt["fallback_attempted"] is False
+    fr.validate_fallback_runtime_record(rt)
+
+
+def test_guard_authorized_wrong_stage_scope_fail_closed_persisted(
+    tmp_path, monkeypatch
+):
+    """FIX-002（Requirement 9/7 live runtime）：同 task + **wrong stage** scope
+    → FAIL_CLOSED + authoritative audit 落盘/valid + raw 证据可观察 + 零 paid
+    invocation（exact stage scope 零削弱）。"""
+    monkeypatch.setattr(cg, "resolve_effective_hermes", _REAL_RESOLVE)
+    _pin_original(monkeypatch)
+    wrong_scope = cg.scope_string(
+        _TASK_ID, _OTHER_STAGE, "zzz-paid", "remote-api"
+    )
+
+    def authorized_wrong_stage(task_id, stage, state_dir=None):
+        return {
+            "decision": cg.DECISION_ALLOWED_AUTHORIZED_PAID,
+            "model": "zzz-paid",
+            "provider": "remote-api",
+            "authorization_present": True,
+            "authorization_matched": True,
+            "authorization_consumed": True,
+            "cost_class": cg.COST_PAID_OR_UNKNOWN,
+            "required_scope": wrong_scope,
+            "notes": ["claims exact auth for another stage (wrong stage scope)"],
+        }
+
+    monkeypatch.setattr(cg, "evaluate", authorized_wrong_stage)
+    reg = _registry(_local_entry("aaa-orig"), _entry("zzz-paid"))
+    calls = {}
+    outcome, out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path)
+    assert calls["calls"] == 0
+    assert outcome["attempted"] is False
+    rec = _gate(outcome)
+    assert rec["gate_decision"] == fpg.GATE_DECISION_FAIL_CLOSED
+    assert "scope mismatch" in rec["gate_reason"]
+    assert _OTHER_STAGE in rec["gate_reason"]
+    assert rec["authorization_matched"] is False
+    assert rec["guard_decision"] is None
+    assert rec["required_scope"] == wrong_scope
+    fpg.validate_paid_escalation_gate_record(rec)
+    assert (out_dir / fpg.ARTIFACT_FILENAME).exists()
+    loaded = fpg.load_paid_gate(out_dir)
+    assert loaded is not None
+    fpg.validate_paid_escalation_gate_record(loaded)
+    assert loaded["source_guard_record"]["required_scope"] == wrong_scope
+    assert loaded["source_guard_record"]["authorization_matched"] is True
+
+
 # ===========================================================================
 # 3. gate audit validator fail-closed mutation 矩阵
 # ===========================================================================
@@ -1002,6 +1227,48 @@ def test_gate_validator_authorized_consistency(tmp_path, monkeypatch):
         fpg.validate_paid_escalation_gate_record(
             dict(bad, gate_decision=fpg.GATE_DECISION_AUTHORIZED)
         )
+
+
+def test_gate_validator_rejects_authorized_out_of_canonical_scope(
+    tmp_path, monkeypatch
+):
+    """FIX-002（Requirement 8）：validator 独立拒绝手造 AUTHORIZED record——
+    required_scope 不等于 canonical expected scope（task/stage/model/provider
+    任一维度 wrong）→ ValueError（out-of-scope authorization 绝不被当作合法
+    AUTHORIZED 持久化，即使其余字段自洽）。"""
+    rec = _authorized_record(tmp_path, monkeypatch)
+    fpg.validate_paid_escalation_gate_record(rec)
+    canonical = cg.scope_string(_TASK_ID, "hermes", "zzz-paid", "remote-api")
+    assert rec["required_scope"] == canonical
+    forged_scopes = {
+        "wrong-task": cg.scope_string(
+            "A5PG-OTHER", "hermes", "zzz-paid", "remote-api"
+        ),
+        "wrong-stage": cg.scope_string(
+            _TASK_ID, "validator", "zzz-paid", "remote-api"
+        ),
+        "wrong-model": cg.scope_string(
+            _TASK_ID, "hermes", "someone-else", "remote-api"
+        ),
+        "wrong-provider": cg.scope_string(
+            _TASK_ID, "hermes", "zzz-paid", "other-api"
+        ),
+    }
+    for name, scope in forged_scopes.items():
+        with pytest.raises(ValueError):
+            fpg.validate_paid_escalation_gate_record(
+                dict(rec, required_scope=scope)
+            ), name
+    # 同维度手造：task_id 字段被改而 required_scope 未改 → canonical 重建失配
+    with pytest.raises(ValueError):
+        fpg.validate_paid_escalation_gate_record(dict(rec, task_id="A5PG-OTHER"))
+    # 同维度手造：stage_agent 字段被改 → canonical 重建失配
+    with pytest.raises(ValueError):
+        fpg.validate_paid_escalation_gate_record(
+            dict(rec, stage_agent="validator")
+        )
+    # 未篡改的 AUTHORIZED record 仍通过（exact canonical scope 保持有效）
+    fpg.validate_paid_escalation_gate_record(rec)
 
 
 def test_gate_validator_rejects_final_switch_and_tamper(tmp_path, monkeypatch):

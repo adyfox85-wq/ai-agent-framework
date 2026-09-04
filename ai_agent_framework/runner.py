@@ -574,15 +574,22 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     }
                     if wb_record['routing_applied']:
                         wb_routing_env_saved = workbuddy_routing_mod.apply_workbuddy_model_env(wb_record)
-                # v0.5 A5（TASK: AAF-v0.5-A5-FREE-FALLBACK-RUNTIME-001）：Hermes
-                # executor stage 的**原始 invocation 真实失败后**（本 try/except
-                # 捕获到 invocation 异常），至多一次 automatic FREE/LOCAL_FREE
-                # model-level fallback（decision authority =
-                # fallback_contract.decide_fallback；Requirement-3 cost gate 复用
-                # A3 成本闸词汇；candidate admission 复用 A0 Paid Guard）。
+                # v0.5 A5（TASK: AAF-v0.5-A5-FREE-FALLBACK-RUNTIME-001 +
+                # AAF-v0.5-A5-PAID-FALLBACK-RUNTIME-001）：Hermes executor stage
+                # 的**原始 invocation 真实失败后**（本 try/except 捕获到
+                # invocation 异常），至多一次 automatic model-level fallback：
+                # FREE/LOCAL_FREE 候选优先（A5-002；decision authority =
+                # fallback_contract.decide_fallback；Requirement-3 cost gate
+                # 复用 A3 成本闸词汇；candidate admission 复用 A0 Paid Guard）；
+                # 无合格 FREE 候选时 A5-003 Cost Gate 评估（AUTHORIZED /
+                # BLOCKED / FAIL_CLOSED），AUTHORIZED 下执行恰一次 paid
+                # fallback invocation（A5-004——exact A0 scope 一次性授权，
+                # 与 FREE 路径共享同一 one-attempt budget）。audit artifact =
+                # fallback_runtime.json（FREE 层）/ paid_escalation_gate.json
+                # （gate）/ paid_fallback_runtime.json（paid 执行）。
                 # A3 初始 active-routing 行为零修改（fallback 绝不与 initial
                 # model selection 混淆）；Risk 缺失 → 无法按 contract 决策 →
-                # 不评估（保持原失败语义）。audit artifact = fallback_runtime.json。
+                # 不评估（保持原失败语义）。
                 # A5 层内部任何异常都不掩盖原始 stage 失败（记录到 stderr）。
                 fb_exc = None
                 try:
@@ -621,6 +628,7 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 fallback_runtime_ref = None
                 fallback_overlay_saved = None
                 fb_paid_gate_ref = None
+                fb_paid_runtime_ref = None
                 if agent == 'hermes' and fb_exc is not None:
                     try:
                         fb_risk = parse_task_fields(task).get('Risk') or None
@@ -662,6 +670,9 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                                 fallback_runtime_ref = fb_outcome.get('artifact_ref')
                                 fallback_overlay_saved = fb_outcome.get('overlay_saved') or None
                                 fb_paid_gate_ref = fb_outcome.get('paid_gate_artifact_ref') or None
+                                fb_paid_runtime_ref = fb_outcome.get(
+                                    'paid_audit_artifact_ref'
+                                ) or None
                     except Exception as a5_exc:
                         # A5 层内部失败不得掩盖原始 stage 失败（也不得导致第二模型）
                         print(
@@ -790,9 +801,19 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     # v0.5 A5-003：authoritative paid escalation Cost Gate audit
                     # 引用（详细记录在 paid_escalation_gate.json——仅当 Hermes
                     # stage fallback-eligible 失败无 FREE 候选但存在合格 paid
-                    # candidate、Cost Gate 授权评估发生时存在；gate 绝不发起
-                    # paid invocation）。
+                    # candidate、Cost Gate 授权评估发生时存在；gate 单元自身
+                    # 绝不发起 paid invocation——AUTHORIZED gate 下的 paid
+                    # fallback invocation 由 A5 paid fallback runtime 执行并
+                    # 在 paid_fallback_runtime.json 另行审计）。
                     stage['paid_escalation_gate_ref'] = dict(fb_paid_gate_ref)
+                if fb_paid_runtime_ref:
+                    # v0.5 A5-004：authoritative paid fallback runtime audit
+                    # 引用（详细记录在 paid_fallback_runtime.json——仅当
+                    # AUTHORIZED Cost Gate 下恰一次 paid fallback invocation
+                    # 真实发生；attempted/used/final actual 为 paid fallback
+                    # 执行结果；与 fallback_runtime.json（FREE 层）和
+                    # paid_escalation_gate.json（授权评估）明确区分）。
+                    stage['paid_fallback_runtime_ref'] = dict(fb_paid_runtime_ref)
                 if wb_active_routing_ref:
                     # v0.5 A4-001：WorkBuddy authoritative active-routing authority
                     # 引用（详细决策在 workbuddy_active_routing.json；与 A3 Hermes

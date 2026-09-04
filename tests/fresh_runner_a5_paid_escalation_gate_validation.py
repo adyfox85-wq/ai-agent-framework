@@ -19,11 +19,14 @@ invocation model）。wrapper 在 runner 进程结束前打印 ``AAF_ENV_PROBE|.
        恰 1 次 invocation、WAITING、env probe 全 -none-。
   N3（pg_paid_only + AAF_COST_AUTH 精确匹配 zzz-paid scope）:
        exact auth => gate AUTHORIZED（matched/consumed=true、A0 一次性消费
-       marker 存在）但**仍无 paid invocation**：hermes chat 恰 1 次、WAITING
-       （无自动继续）、无 silent paid execution、env probe 全 -none-。
+       marker 存在）→ **恰一次 paid fallback invocation**（A5-004 语义——
+       marker 2 行：aaa-orig@custom + zzz-paid@remote-api）、paid runtime
+       audit attempted/used=true / final=zzz-paid、gate record 层
+       attempted/used 恒 False、全链 SUCCESS、env probe 全 -none-。
   N4（no silent paid execution 综合断言）:
-       N1/N3 marker 不含 zzz-paid@remote-api 行 + gate record
-       no_silent_paid_evidence 非空显式 + fallback_attempted/used 恒 False。
+       N1/N2 marker 不含 zzz-paid@remote-api 行（no auth / mismatched auth
+       → 零 paid invocation）+ gate record no_silent_paid_evidence 非空显式
+       + fallback_attempted/used 恒 False（非 AUTHORIZED gate 场景）。
   N5（pg_free_intact + fail aaa-orig）:
        既有 FREE fallback 行为保持：original 失败 → 恰一次 zzz-fb free
        fallback（marker 2 行）→ used=true / final=zzz-fb、gate artifact 不
@@ -262,6 +265,15 @@ def _runtime_audit(out: Path) -> dict:
     return data
 
 
+def _paid_runtime_audit(out: Path) -> dict:
+    """paid_fallback_runtime.json（A5-004：authorized paid fallback 执行审计）。"""
+    path = out / fr.ARTIFACT_FILENAME_PAID
+    assert path.exists(), f"missing {fr.ARTIFACT_FILENAME_PAID} in {out}"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    fr.validate_paid_fallback_runtime_record(data)
+    return data
+
+
 def _gate_record(out: Path) -> dict | None:
     path = out / fpg.ARTIFACT_FILENAME
     if not path.exists():
@@ -389,15 +401,17 @@ def main() -> int:
     summary.append("N2 mismatched auth: 1 invocation (original only), gate BLOCKED "
                    "(mismatch), WAITING, no chain, env restored")
 
-    # ---- N3：paid candidate + exact auth => AUTHORIZED but STILL no paid
-    #          invocation ----
-    n3_dir = EVIDENCE_ROOT / "N3-exact-auth-authorized-no-invocation"
+    # ---- N3：paid candidate + exact auth => gate AUTHORIZED => EXACTLY ONE
+    #          paid fallback invocation（A5-004 语义翻转：A5-003 原为授权评估
+    #          only / 零 invocation——paid invocation = 本任务 scope）----
+    n3_dir = EVIDENCE_ROOT / "N3-exact-auth-one-paid-invocation"
     n3_task_id = BASE_TASK_ID + "-N3"
     auth3 = cg.scope_string(n3_task_id, "hermes", "zzz-paid", "remote-api")
     r3 = _run_scenario(
         n3_dir,
         _task(n3_task_id, "LOW",
-              "N3: exact auth => gate AUTHORIZED, still no paid invocation."),
+              "N3: exact auth => gate AUTHORIZED, EXACTLY ONE paid fallback "
+              "invocation (A5 paid fallback runtime)."),
         "pg_paid_only",
         {
             "AAF_TEST_FAIL_MODELS": "aaa-orig@custom",
@@ -407,8 +421,11 @@ def main() -> int:
     models3 = _hermes_models(r3["marker_hermes"])
     _check(failures, "N3", r3["proc"].returncode == 0,
            f"runner exit={r3['proc'].returncode}: {r3['proc'].stderr[-800:]}")
-    _check(failures, "N3", len(models3) == 1 and models3[0] == "aaa-orig@custom",
-           f"exact auth must NOT cause a paid invocation, got {models3}")
+    _check(failures, "N3",
+           len(models3) == 2 and models3[0] == "aaa-orig@custom"
+           and models3[1] == "zzz-paid@remote-api",
+           f"exact auth must cause EXACTLY ONE paid fallback invocation "
+           f"(original + paid), got {models3}")
     gate3 = _gate_record(r3["out"])
     _check(failures, "N3", gate3 is not None, "missing paid_escalation_gate.json")
     if gate3 is not None:
@@ -416,21 +433,45 @@ def main() -> int:
                gate3["gate_decision"] == fpg.GATE_DECISION_AUTHORIZED
                and gate3["authorization_present"] is True
                and gate3["authorization_matched"] is True
-               and gate3["authorization_consumed"] is True,
-               f"expected AUTHORIZED/exact, got {gate3['gate_decision']}")
-        _assert_no_paid_execution(failures, "N3", r3, gate3, models3)
+               and gate3["authorization_consumed"] is True
+               and gate3["fallback_attempted"] is False
+               and gate3["fallback_used"] is False,
+               f"expected AUTHORIZED/exact (gate layer attempted/used false), "
+               f"got {gate3['gate_decision']}")
     _check(failures, "N3", (r3["out"] / cg.CONSUMPTION_FILENAME).exists(),
            "A0 exact-scope one-time authorization was not claimed at the "
            "admission boundary (A0 semantics must be intact)")
+    paid3 = _paid_runtime_audit(r3["out"])
+    _check(failures, "N3",
+           paid3["fallback_attempted"] is True and paid3["fallback_used"] is True
+           and paid3["paid_candidate"] == "zzz-paid@remote-api"
+           and paid3["final_actual_model"] == "zzz-paid"
+           and paid3["final_actual_provider"] == "remote-api"
+           and paid3["paid_gate_decision"] == fpg.GATE_DECISION_AUTHORIZED
+           and paid3["paid_required_scope"] == auth3,
+           f"paid fallback runtime audit shape mismatch: "
+           f"{paid3['fallback_attempted']}/{paid3['fallback_used']} "
+           f"candidate={paid3['paid_candidate']}")
     _runtime_audit(r3["out"])
-    _assert_waiting_no_chain(failures, "N3", r3)
-    summary.append("N3 exact auth: 1 invocation (original only — AUTHORIZED does NOT "
-                   "invoke), gate AUTHORIZED/matched/consumed, WAITING, no chain, env restored")
+    run3 = json.loads((r3["out"] / "run.json").read_text(encoding="utf-8"))
+    _check(failures, "N3", run3["status"] == "SUCCESS",
+           f"paid fallback chain must succeed, got {run3['status']}")
+    probe3 = _env_probe(r3["proc"])
+    for var in (cg.ENV_MODEL, cg.ENV_PROVIDER, cg.ENV_BASE_URL):
+        _check(failures, "N3", probe3.get(var) == "-none-",
+               f"env not restored at runner exit: {var}={probe3.get(var)!r}")
+    summary.append("N3 exact auth: original fails -> EXACTLY ONE zzz-paid paid "
+                   "fallback invocation (2 marker lines), gate AUTHORIZED/"
+                   "matched/consumed, paid runtime audit used=true/final=zzz-paid, "
+                   "SUCCESS, env restored")
 
-    # ---- N4：no silent paid execution（N1/N3 marker 证据 + N5 无 gate）----
-    summary.append("N4 no-silent-paid: N1/N3 markers contain no zzz-paid@remote-api "
-                   "line; gate evidence carries no-silent-paid-execution statements; "
-                   "fallback_attempted/used stay false in every gate scenario")
+    # ---- N4：no silent paid execution（N1/N2 marker 证据 + N5 无 gate）----
+    summary.append("N4 no-silent-paid: N1/N2 markers contain no zzz-paid@remote-api "
+                   "line (no auth / mismatched auth invoke zero paid models); "
+                   "N3 executes the paid fallback ONLY under gate AUTHORIZED + "
+                   "A0 exact scope; gate evidence carries no-silent-paid-"
+                   "execution statements; fallback_attempted/used stay false "
+                   "in every non-AUTHORIZED gate scenario")
 
     # ---- N5：既有 FREE fallback 行为保持（free 优先于 paid escalation）----
     n5_dir = EVIDENCE_ROOT / "N5-free-fallback-intact"

@@ -2,7 +2,65 @@
 
 > Project: AI Agent Framework\
 > Current Version: **v0.4（FROZEN / RELEASE READY — 2026-08-29 AAF-v0.4-FREEZE-001 正式冻结；Final Acceptance = PASS（AAF-v0.4-FINAL-ACCEPTANCE-002，Codex APPROVE，Unresolved Issues = None）；accepted implementation baseline = `1d3771fe8220e1b2e21c774840d680ec9f2dce61`；final freeze metadata commit = docs-only 提交（见本文件 §0 顶部与 git tag `v0.4`）；Release Closure Matrix 全项 COMPLETE / CLOSED / IMPLEMENTED / SOLVED / ACCEPTED；Automatic Model Routing 与 Cost Gate = NOT IMPLEMENTED（future scope）；下一开发线 post-v0.4 / v0.5 仅在用户显式启动时开启。以下为 v0.4 开发全程历史记录（IN PROGRESS 时期，保留不删除）：Phase A/B/C/D COMPLETE；Phase E COMPLETE（E-Core / Soft Cancel COMPLETE — 005-A + FIX-001/002/003；E-Ownership / Force Cancel 已交付 — 005-B + 005-B-FIX-001（canonical force authority + successful termination proof，Codex 两个 blocker 已闭合）；005-C Status Window Cancel UX + Real Windows E2E Closure 已交付——实现 + 测试 + 真实 Windows 正负 E2E 全量通过，Phase E 正式标记 COMPLETE；005-C-FIX-001（Cancel Timestamp Timezone Compatibility Fix）已交付——canonical UTC/aware elapsed contract 统一 cancel elapsed 计算，合法 offset-aware（+08:00 / +00:00 / Z）与 legacy naive 均不再因 naive/aware 混算而破坏 Cancel UI / force eligibility，malformed fail closed，Codex 原 timezone blocker 已闭合；route 阶段 WorkBuddy / Codex 独立复核按项目惯例由 route 执行并记录于任务 REPORT，若发现 blocking 则按惯例开 FIX）；Phase F IMPLEMENTATION DELIVERED（AAF-v0.4-TASK-006：Project Switching + Duplicate Task UX 实现 + 72 项新测试（63 单元 + 9 真实 Windows E2E A–I）+ 760 passed；RW-003 / RW-016 / RW-006 按真实交付证据收口 SOLVED；正式 COMPLETE 判定留待 WorkBuddy 独立验证 + Codex 审查后由 Planner 确认，本任务不自行宣布 Phase F COMPLETE）；Phase F FIX-001（Atomic Config Persistence + Real UX Closure）已交付——config.save_config 统一 atomic contract（同目录 tmp + flush/fsync + os.replace，失败清理 tmp 且旧 config 原样保留，无 write_text 旁路）；真实 Bridge UI 交互 harness（真实 Tk 弹窗 + 真实按钮 invoke + 真实剪贴板）覆盖 Known switch 确认/拒绝/Unknown fail-safe/Invalid fail closed/Duplicate running 卡片+无第二 runner/Duplicate terminal 卡片+不覆盖/restart 恢复；顺带修复 duplicate 卡片 [打开 REPORT] 死按钮（Tk 按钮 invoke 不带参数 → 闭包捕获 report_path）；780 passed（760 + 20 新增，零下降）；WorkBuddy 独立验证 + Codex 复审由 route 执行（本任务不自行宣布 COMPLETE））；Model Observability / Discovery Foundation 已交付（AAF-v0.4-TASK-010：只读模型观测 + 发现事实层——model_observation.json 单一 machine authority、每 stage stage_timing、REPORT 紧凑 Model Observation 摘要、30 项定向测试；Automatic Model Routing 未实现，仅登记未来 policy（backlog §5.5 CAP-003））；WorkBuddy Stage Reliability 已交付（AAF-v0.4-TASK-011 + FIX-001 + FIX-002：bounded transient retry / confirmed-dead-before-retry / single absolute stage deadline / Windows tree cleanup authority / safe cleanup reserve / attempt admission / telemetry）；当前状态 = FROZEN（见下方 §0））**\
-> Last Updated: 2026-09-03（AAF-v0.5-A5-PAID-ESCALATION-GATE-001-FIX-002 — **exact
+> Last Updated: 2026-09-05（AAF-v0.5-A5-PAID-FALLBACK-RUNTIME-001 — **一次性
+> authorized paid fallback invocation 交付（A5 保持 STARTED，NOT CLOSED /
+> COMPLETE——REQUIRED_BEFORE_A5_CLOSE 9 项不重写；parent = dd4e6e0，新 commit
+> 未 amend 未 push）**：把 A5-003 AUTHORIZED paid gate 状态接入 live fallback
+> runtime——当 original invocation 以 fallback-eligible failure 失败、无合格
+> FREE/LOCAL_FREE fallback（free gate 空）、contract 层有合格 paid candidate
+> （A1/A2 闸已过、distinct from original、one-attempt budget 未耗 count_used==0）
+> 且 A5 Cost Gate = AUTHORIZED（既有 A0 Paid Guard 在准入边界按一次性语义原子
+> claim exact task/stage/model/provider scope——唯一付费授权 authority，零第二
+> 授权系统）时，runtime 对确定性选中的 paid candidate 执行**恰一次** paid
+> fallback invocation（Requirement 7）：调用前以既有 A0/A5 authorities 复验
+> （gate record 重新 validator + task/stage 归属 + candidate ∈ contract
+> eligible 集 + distinct from original）；invocation 在 candidate env 覆盖下
+> 执行（observation 后由 runner 还原）；成功输出被接受（used=true）仅当权威
+> paid runtime audit（新 artifact `paid_fallback_runtime.json`，
+> decision_kind=paid_fallback_runtime_audit——Req 11 全字段：task/stage/role/
+> risk、original model/provider + failure、FREE unavailable reason、paid
+> candidate、gate decision AUTHORIZED + exact scope + matched/consumed、
+> attempted/used、paid invocation outcome、final actual、no-third-invocation
+> + no-silent-paid evidence、audit_closure_error）组装/校验/持久化成功——audit
+> closure 任何异常 → 输出**不**被接受（attempted=true / used=false /
+> audit_closure_error surface / env 还原 / 无第三模型，Req 10）；paid
+> invocation 失败 → attempted=true / used=false / 原始失败保留 / 无第三模型 /
+> 无第二 paid candidate（Req 9）；gate BLOCKED/FAIL_CLOSED/malformed/missing/
+> stale/mismatch → **零 paid invocation** + fail closed + 权威证据持久化
+> （Req 3）；FREE 与 paid fallback 共享同一 one-attempt budget（free 优先、
+> ALLOWED_AUTHORIZED_PAID 绝不进入 FREE 路径、free 路径/record/validator 零
+> 修改——A5-002 语义保持）；新 validator
+> `validate_paid_fallback_runtime_record` 独立拒绝矛盾/伪造 record（used 无
+> attempted / 无 AUTHORIZED gate 的 paid invocation / out-of-canonical-scope /
+> 缺授权证据 / count_used≠0 / final 不一致 / candidate 矛盾，Req 12）；
+> authorization 消费与既有 A0 一次性 contract 一致（同 execution 目录 marker
+> replay 拒绝 → BLOCKED 零 invocation；跨 task/stage/model/provider 复用 →
+> BLOCKED；零 duplicate consumption / 零 silent carryover / 零第二 token
+> 格式）；改动 = ai_agent_framework/fallback_runtime.py（A5-004 编排 +
+> paid audit schema/validator/持久化；A5-002 FREE 层零修改）+
+> ai_agent_framework/fallback_paid_gate.py（AUTHORITY/evidence 措辞同步——
+> gate 单元仍零执行权威、attempted/used 恒 False、final==original；
+> interpret/validator 语义零修改）+ runner.py（stage 新增
+> `paid_fallback_runtime_ref`；gate ref 注释同步）+ tests/
+> test_a5_paid_fallback_runtime.py（**+24 项聚焦**：exact auth→恰一次 /
+> no-auth / wrong task/stage/model/provider / malformed FAIL_CLOSED / free
+> 优先 / free-attempted-first / paid success/failure / invalid output /
+> audit closure RuntimeError+UnicodeError+validator 异常 / 双失败 / replay
+> 拒绝 / 跨 task 复用拒绝 / gate 篡改复验 / runner SUCCESS+WAITING+closure
+> 失败 / validator forgery 全矩阵——零 paid invocation 场景全部 calls==0 +
+> 无 paid artifact）+ tests/test_a5_paid_escalation_gate.py（3 项 live-runtime
+> 场景随 A5-004 语义翻转：exact auth→恰一次 paid invocation（gate record 层
+> attempted/used 仍恒 False）；BLOCKED/FAIL_CLOSED 零 invocation 语义保持）+
+> tests/test_a5_fallback_runtime.py（FIX-001 拒绝措辞同步 1 断言）+
+> tests/fresh_runner_a5_paid_fallback_wrapper.py + fresh_runner_a5_paid_fallback_
+> validation.py（fresh-runner N+1 **N1–N8 8/8 新进程**：no auth / wrong scope /
+> exact auth→恰一次 paid invocation SUCCESS / paid failure→无第三 / audit
+> closure 失败拒绝输出 / FREE 优先 / 无 silent carryover / no-silent-paid 综合）
+> + 既有 A5-003 fresh-runner 驱动 N3/F3/P3/P5 期望同步（AUTHORIZED → 恰一次
+> paid invocation）；A5-002 focused + A5-003 focused + A5-004 focused 全绿 +
+> canonical 回归零失败；report = docs/internal/AAF-v0.5-A5-PAID-FALLBACK-
+> RUNTIME-001-REPORT.md；A6 / A4+ 边界保持 outside；PRE_ALLOWED_UNTRACKED
+> 保留；no push）。此前更新：2026-09-03（AAF-v0.5-A5-PAID-ESCALATION-GATE-001-FIX-002 — **exact
 > paid authorization scope 收口（Codex 唯一 blocker 消除；parent =
 > AAF-v0.5-A5-PAID-ESCALATION-GATE-001-FIX-001，commit 4c2ebf9（grandparent =
 > 32c4bbe），新 commit 未 amend 未 push；A5 保持 STARTED，NOT CLOSED /

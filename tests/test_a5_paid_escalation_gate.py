@@ -1,17 +1,24 @@
 """AAF v0.5 A5 — paid escalation Cost Gate focused tests.
 
-TASK: AAF-v0.5-A5-PAID-ESCALATION-GATE-001（Requirement 10 全矩阵）：
+TASK: AAF-v0.5-A5-PAID-ESCALATION-GATE-001（Requirement 10 全矩阵）+ TASK:
+AAF-v0.5-A5-PAID-FALLBACK-RUNTIME-001（AUTHORIZED gate 下的 paid fallback
+invocation 由 live runtime 执行——A5-003 显式声明「paid invocation = 后续 A5
+任务 scope」，本套件中相关 live-runtime 场景随 A5-004 语义翻转）：
 - paid candidate + no auth -> BLOCKED（零 paid invocation）
 - paid candidate + mismatched task/stage/model/provider auth -> BLOCKED
 - malformed/unknown authorization state -> fail closed（FAIL_CLOSED）
-- exact valid auth -> AUTHORIZED but zero paid invocation
+- exact valid auth -> gate AUTHORIZED（A0 exact scope 一次性 claim）；live
+  runtime 在 AUTHORIZED 下执行**恰一次** paid fallback invocation（A5-004，
+  见 tests/test_a5_paid_fallback_runtime.py）；gate audit record 自身仍
+  attempted/used 恒 False（gate 单元零执行权威）
 - free candidate still takes precedence over paid escalation
 - unqualified/insufficient paid candidate never reaches Cost Gate
 - audit required fields and no-silent-paid evidence（machine-readable + validated）
-- authorization alone does not set fallback_attempted/used
+- authorization alone does not set fallback_attempted/used at the gate layer
 
 第 1 节：``fallback_paid_gate`` 纯解释器（A0 guard record → gate 状态）；
-第 2 节：live runtime 编排（run_fallback_after_failure 集成——free 路径零修改）；
+第 2 节：live runtime 编排（run_fallback_after_failure 集成——free 路径零修改；
+        AUTHORIZED → 恰一次 paid invocation 已翻转至 A5-004 语义）；
 第 3 节：gate audit validator fail-closed mutation 矩阵；
 第 4 节：真实 runner Hermes stage 集成（paid gate artifact / stage ref / WAITING /
         env 还原 / free fallback 行为保持）。
@@ -559,10 +566,13 @@ def test_paid_candidate_mismatched_auth_blocked(tmp_path, monkeypatch, auth_fact
     fpg.validate_paid_escalation_gate_record(rec)
 
 
-def test_exact_auth_authorized_zero_paid_invocation(tmp_path, monkeypatch):
-    """exact valid auth → gate AUTHORIZED（ready-for-paid-invocation 资格）
-    但仍零 paid invocation；attempted/used 恒 False（authorization 本身不设
-    attempted/used——Requirement 6/8/10）。"""
+def test_exact_auth_authorized_one_paid_invocation(tmp_path, monkeypatch):
+    """exact valid auth → gate AUTHORIZED（A0 exact scope 一次性 claim）→ live
+    runtime 执行**恰一次** paid fallback invocation（A5-004 语义）：attempted/
+    used=true、final actual = paid candidate、result_text = paid 输出、A0 消费
+    marker 存在；gate audit record 自身 attempted/used 仍 False（gate 单元零
+    执行权威——authorization 单独不设 gate 层 attempted/used）；paid runtime
+    audit validator-valid + 落盘。"""
     monkeypatch.setattr(cg, "resolve_effective_hermes", _REAL_RESOLVE)
     _pin_original(monkeypatch)
     auth = cg.scope_string(_TASK_ID, "hermes", "zzz-paid", "remote-api")
@@ -570,11 +580,11 @@ def test_exact_auth_authorized_zero_paid_invocation(tmp_path, monkeypatch):
     reg = _registry(_local_entry("aaa-orig"), _entry("zzz-paid"))
     calls = {}
     outcome, out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path)
-    assert calls["calls"] == 0  # 授权 ≠ 执行：零 paid invocation
-    assert outcome["attempted"] is False
-    assert outcome["used"] is False
-    assert outcome["result_text"] is None  # 原始失败保留（不自动继续）
-    assert outcome["overlay_saved"] is None
+    assert calls["calls"] == 1  # 恰一次 paid fallback invocation
+    assert outcome["attempted"] is True
+    assert outcome["used"] is True
+    assert outcome["result_text"].startswith("ok")  # paid 输出成为 stage result
+    assert outcome["overlay_saved"] is not None  # runner 观察后还原
     gate_rec = _gate(outcome)
     assert gate_rec["gate_decision"] == fpg.GATE_DECISION_AUTHORIZED
     assert gate_rec["paid_escalation_required"] is True
@@ -584,21 +594,48 @@ def test_exact_auth_authorized_zero_paid_invocation(tmp_path, monkeypatch):
     assert gate_rec["guard_decision"] == cg.DECISION_ALLOWED_AUTHORIZED_PAID
     assert gate_rec["guard_model"] == "zzz-paid"
     assert gate_rec["required_scope"] == auth
-    assert gate_rec["fallback_attempted"] is False  # authorization 不设 attempted
+    # gate 单元零执行权威：授权评估 record 的 attempted/used 恒 False
+    assert gate_rec["fallback_attempted"] is False
     assert gate_rec["fallback_used"] is False
     assert gate_rec["final_actual_model"] == "aaa-orig"
     # A0 一次性消费记录（既有 A0 语义；gate 只转述）
     assert (out_dir / cg.CONSUMPTION_FILENAME).exists()
-    ev = " ".join(gate_rec["no_silent_paid_evidence"])
-    assert "NOT invoke" in ev or "not invoke" in ev or "no paid model invocation" in ev
     fpg.validate_paid_escalation_gate_record(gate_rec)
-    # runtime record：仍不 attempt、A5-002 语义零修改
+    # FREE 层 runtime record（A5-002 语义零修改：无合格 FREE 候选 → 该层不
+    # attempt、decision=fallback_not_eligible）
     rt = outcome["audit_record"]
     assert rt["fallback_attempted"] is False
     assert rt["fallback_used"] is False
     assert rt["decision"] == fc.DECISION_FALLBACK_NOT_ELIGIBLE
+    assert any("EXACTLY ONE paid fallback invocation" in n for n in rt["notes"])
     fr.validate_fallback_runtime_record(rt)
-    assert os.environ.get(cg.ENV_MODEL) == "aaa-orig"  # env 还原
+    # paid runtime audit（A5-004）：attempted/used=true、final = paid candidate
+    paid = outcome["paid_audit_record"]
+    assert paid["fallback_attempted"] is True
+    assert paid["fallback_used"] is True
+    assert paid["paid_invocation_outcome"] == fr.PAID_OUTCOME_SUCCESS
+    assert paid["paid_gate_decision"] == fpg.GATE_DECISION_AUTHORIZED
+    assert paid["paid_required_scope"] == auth
+    assert paid["authorization_matched"] is True
+    assert paid["authorization_consumed"] is True
+    assert paid["final_actual_model"] == "zzz-paid"
+    assert paid["final_actual_provider"] == "remote-api"
+    assert paid["original_model"] == "aaa-orig"
+    fr.validate_paid_fallback_runtime_record(paid)
+    assert (out_dir / fr.ARTIFACT_FILENAME_PAID).exists()
+    loaded_paid = fr.load_paid_fallback_runtime(out_dir)
+    assert loaded_paid is not None
+    fr.validate_paid_fallback_runtime_record(loaded_paid)
+    # no-silent-paid evidence（Requirement 5）
+    ev = " ".join(paid["no_silent_paid_evidence"])
+    assert "no silent paid execution" in ev
+    assert "no second payment authorization system" in ev
+    n3 = " ".join(paid["no_third_invocation_evidence"])
+    assert "no third model invocation" in n3
+    assert "no fallback chain" in n3
+    # env 不泄漏（_run 模拟 runner：observation 后还原 overlay）
+    assert os.environ.get(cg.ENV_MODEL) == "aaa-orig"
+    assert os.environ.get(cg.ENV_AUTH) == auth  # auth env 由调用方持有（无消费副作用）
 
 
 def test_guard_evaluation_failure_fail_closed(tmp_path, monkeypatch):
@@ -962,24 +999,41 @@ def test_gate_audit_required_fields_and_no_silent_evidence(tmp_path, monkeypatch
     assert loaded["risk_class"] == RISK_LOW
 
 
-def test_authorization_alone_never_sets_attempted_used(tmp_path, monkeypatch):
-    """exact auth → AUTHORIZED：authorization 单独绝不设 fallback_attempted/
-    used（Requirement 6/10——gate 与 runtime 双 record 均为 false）。"""
+def test_authorization_invokes_only_through_runtime_not_gate(tmp_path, monkeypatch):
+    """exact auth → AUTHORIZED：authorization 不设 **gate 层** attempted/used
+    （gate audit record 恒 False——gate 单元零执行权威），但 live runtime 在
+    AUTHORIZED 下执行恰一次 paid fallback invocation（A5-004：attempted/used
+    true 只出现在 paid runtime audit）；authorization 无 eligible-failure
+    上下文时（非 fallback-eligible 失败）→ 零 invocation（授权本身不执行）。"""
     monkeypatch.setattr(cg, "resolve_effective_hermes", _REAL_RESOLVE)
     _pin_original(monkeypatch)
-    monkeypatch.setenv(
-        cg.ENV_AUTH, cg.scope_string(_TASK_ID, "hermes", "zzz-paid", "remote-api")
-    )
+    auth = cg.scope_string(_TASK_ID, "hermes", "zzz-paid", "remote-api")
+    monkeypatch.setenv(cg.ENV_AUTH, auth)
     reg = _registry(_local_entry("aaa-orig"), _entry("zzz-paid"))
-    outcome, _out_dir, _state = _run(reg, tmp_path=tmp_path)
+    calls = {}
+    outcome, _out_dir, state = _run(reg, calls=calls, tmp_path=tmp_path)
     gate_rec = _gate(outcome)
     assert gate_rec["gate_decision"] == fpg.GATE_DECISION_AUTHORIZED
-    assert gate_rec["fallback_attempted"] is False
+    assert gate_rec["fallback_attempted"] is False  # gate 层恒 False
     assert gate_rec["fallback_used"] is False
-    assert outcome["attempted"] is False
-    assert outcome["used"] is False
+    # runtime 层：paid runtime audit 记录实际执行（attempted/used=true）
+    assert outcome["attempted"] is True
+    assert outcome["used"] is True
+    assert outcome["paid_audit_record"]["fallback_attempted"] is True
+    assert outcome["paid_audit_record"]["fallback_used"] is True
+    assert state["calls"] == 1
+    # FREE 层 record（该层无 attempt）保持 false——与 paid record 分层
     assert outcome["audit_record"]["fallback_attempted"] is False
     assert outcome["audit_record"]["fallback_used"] is False
+    # 授权无 eligible-failure 上下文 → 零 invocation（authorization 本身不执行）
+    monkeypatch.setenv(cg.ENV_AUTH, auth)  # 仍在 env（非 fallback 上下文不消费）
+    outcome2, _out2, _s2 = _run(
+        reg, exc=OSError(13, "permission denied"), tmp_path=tmp_path
+    )
+    assert outcome2["attempted"] is False
+    assert outcome2["used"] is False
+    assert "paid_gate_record" not in outcome2  # 无 gate（blocked_fail_closed）
+    assert _s2["calls"] == 0
 
 
 def test_gate_consideration_audits_free_unavailable_reason(tmp_path, monkeypatch):
@@ -1472,10 +1526,70 @@ def test_runner_paid_only_no_auth_blocked_waiting(tmp_path, monkeypatch):
     assert cg.ENV_MODEL not in os.environ  # env 不泄漏
 
 
-def test_runner_exact_auth_authorized_no_paid_invocation(tmp_path, monkeypatch):
-    """真实 runner：paid-only 候选 + exact auth → gate AUTHORIZED（仍 WAITING
-    ——授权只建立未来 paid invocation 资格，本任务绝不执行）；恰 1 次 invocation
-    （无 paid 执行）；A0 一次性消费 marker 存在；stage ref 存在；env 还原。"""
+def test_runner_exact_auth_authorized_one_paid_invocation_success(tmp_path, monkeypatch):
+    """真实 runner：paid-only 候选 + exact auth → gate AUTHORIZED（A0 exact
+    scope 一次性 claim）→ paid fallback runtime 执行**恰一次** paid invocation
+    （marker = aaa-orig + zzz-paid 两行）→ paid 输出成为 stage result → 全链
+    SUCCESS；paid_fallback_runtime.json used=true / final actual=zzz-paid /
+    no_third / no_silent evidence；stage 携带 paid_escalation_gate_ref +
+    paid_fallback_runtime_ref；env 还原。"""
+    task_id = "A5PG-RUN"
+    monkeypatch.setattr(cg, "resolve_effective_hermes", _REAL_RESOLVE)
+    monkeypatch.setattr(mr, "baseline_registry", lambda: _pg_registry())
+    auth = cg.scope_string(task_id, "hermes", "zzz-paid", "remote-api")
+    monkeypatch.setenv(cg.ENV_AUTH, auth)
+    counter = {"n": 0}
+
+    def fake_run_agent(agent, prompt, workspace):
+        if agent == "hermes":
+            counter["n"] += 1
+            if counter["n"] == 1:
+                raise RuntimeError("original invocation failed (simulated)")
+            return _structured_ok(agent)  # paid fallback invocation 成功
+        return _structured_ok(agent)
+
+    out = _run_runner(tmp_path, monkeypatch, _task(RISK_LOW, task_id),
+                      fake_run_agent)
+    assert counter["n"] == 2  # original + 恰一次 paid fallback；无第三模型
+    gate = fpg.load_paid_gate(out)
+    assert gate is not None
+    assert gate["gate_decision"] == fpg.GATE_DECISION_AUTHORIZED
+    assert gate["authorization_matched"] is True
+    assert gate["authorization_consumed"] is True
+    assert gate["fallback_attempted"] is False  # gate 层恒 False
+    fpg.validate_paid_escalation_gate_record(gate)
+    assert (out / cg.CONSUMPTION_FILENAME).exists()  # A0 一次性 claim（既有语义）
+    paid = fr.load_paid_fallback_runtime(out)
+    assert paid is not None
+    assert paid["fallback_attempted"] is True
+    assert paid["fallback_used"] is True
+    assert paid["paid_candidate"] == "zzz-paid@remote-api"
+    assert paid["paid_gate_decision"] == fpg.GATE_DECISION_AUTHORIZED
+    assert paid["final_actual_model"] == "zzz-paid"
+    assert paid["final_actual_provider"] == "remote-api"
+    assert paid["original_model"] == "aaa-orig"
+    fr.validate_paid_fallback_runtime_record(paid)
+    # FREE 层 audit 仍为 not-eligible（paid-only 场景；分层语义）
+    rt = fr.load_fallback_runtime(out)
+    assert rt["decision"] == fc.DECISION_FALLBACK_NOT_ELIGIBLE
+    assert rt["fallback_attempted"] is False
+    fr.validate_fallback_runtime_record(rt)
+    stage = json.loads((out / "hermes_result.json").read_text(encoding="utf-8"))
+    assert stage.get("paid_escalation_gate_ref", {}).get("entry") == "hermes"
+    assert stage.get("paid_fallback_runtime_ref", {}).get("entry") == "hermes"
+    assert stage.get("fallback_runtime_ref", {}).get("entry") == "hermes"
+    result = (out / "hermes_result.md").read_text(encoding="utf-8")
+    assert result.startswith("ok")  # paid fallback 输出成为 stage result
+    run = json.loads((out / "run.json").read_text(encoding="utf-8"))
+    assert run["status"] == "SUCCESS"
+    assert cg.ENV_MODEL not in os.environ  # env 不泄漏
+
+
+def test_runner_exact_auth_paid_fallback_failure_no_third(tmp_path, monkeypatch):
+    """真实 runner：exact auth + paid-only 候选，但 paid fallback invocation
+    也失败 → 恰 2 次 invocation（original + 恰一次 paid fallback）、无第三
+    模型、attempted=true / used=false、paid audit outcome=failed、WAITING、
+    paid 失败细节保留、env 还原。"""
     task_id = "A5PG-RUN"
     monkeypatch.setattr(cg, "resolve_effective_hermes", _REAL_RESOLVE)
     monkeypatch.setattr(mr, "baseline_registry", lambda: _pg_registry())
@@ -1484,19 +1598,24 @@ def test_runner_exact_auth_authorized_no_paid_invocation(tmp_path, monkeypatch):
     counter = {"n": 0}
     out = _run_runner(tmp_path, monkeypatch, _task(RISK_LOW, task_id),
                       _failing_hermes_first(counter))
-    assert counter["n"] == 1  # 授权 ≠ 执行：无 paid invocation
+    assert counter["n"] == 2  # original + 恰一次 paid fallback；无第三模型
     gate = fpg.load_paid_gate(out)
-    assert gate is not None
     assert gate["gate_decision"] == fpg.GATE_DECISION_AUTHORIZED
-    assert gate["authorization_matched"] is True
-    assert gate["authorization_consumed"] is True
-    assert gate["fallback_attempted"] is False
     fpg.validate_paid_escalation_gate_record(gate)
-    assert (out / cg.CONSUMPTION_FILENAME).exists()  # A0 一次性 claim（既有语义）
-    stage = json.loads((out / "hermes_result.json").read_text(encoding="utf-8"))
-    assert stage.get("paid_escalation_gate_ref", {}).get("entry") == "hermes"
+    paid = fr.load_paid_fallback_runtime(out)
+    assert paid is not None
+    assert paid["fallback_attempted"] is True
+    assert paid["fallback_used"] is False
+    assert paid["paid_invocation_outcome"] == fr.PAID_OUTCOME_FAILED
+    assert paid["paid_gate_decision"] == fpg.GATE_DECISION_AUTHORIZED
+    assert paid["final_actual_model"] == "zzz-paid"
+    assert paid["original_model"] == "aaa-orig"
+    assert any("raised" in e for e in paid["no_silent_paid_evidence"])  # paid failure 细节保留
+    fr.validate_paid_fallback_runtime_record(paid)
+    result = (out / "hermes_result.md").read_text(encoding="utf-8")
+    assert result.startswith("FRAMEWORK_ERROR")  # 原始失败保留（fail closed）
     run = json.loads((out / "run.json").read_text(encoding="utf-8"))
-    assert run["status"] == "WAITING"  # 无自动继续/无 paid 执行
+    assert run["status"] == "WAITING"
     assert cg.ENV_MODEL not in os.environ
 
 

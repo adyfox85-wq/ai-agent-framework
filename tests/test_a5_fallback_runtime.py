@@ -866,7 +866,7 @@ def test_fix001_authorized_paid_never_invokes(tmp_path, monkeypatch):
     assert (out_dir / cg.CONSUMPTION_FILENAME).exists()
     notes_text = " ".join(rec["notes"])
     evidence_text = " ".join(rec["no_silent_fallback_evidence"])
-    assert "paid escalation is a later A5 unit's scope" in notes_text
+    assert "separate A5-004 authorized-paid branch" in notes_text
     assert "was NOT invoked" in evidence_text
     assert "no silent paid fallback" in evidence_text
     fr.validate_fallback_runtime_record(rec)

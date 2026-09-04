@@ -1,10 +1,12 @@
-"""AAF v0.5 A5 — Fallback Runtime Layer（bounded FREE/LOCAL_FREE automatic fallback）。
+"""AAF v0.5 A5 — Fallback Runtime Layer（bounded FREE/LOCAL_FREE automatic
+fallback + one-shot authorized paid fallback）。
 
 TASK: AAF-v0.5-A5-FREE-FALLBACK-RUNTIME-001
 把已验收的 A5 fallback decision/audit contract（``fallback_contract.py``，CLOSED
 & SYNCED）接入真实执行路径：Hermes executor stage 的原始模型 invocation 以
 fallback-eligible failure 失败后，**至多一次** automatic model-level fallback
-attempt，且只允许 FREE / LOCAL_FREE 合格候选。本任务**不实现 paid escalation**。
+attempt，且只允许 FREE / LOCAL_FREE 合格候选（A5-002 任务本身不实现 paid
+escalation——paid fallback invocation 由后续 A5-004 单元在本模块实现，见下）。
 
 FIX-001（TASK: AAF-v0.5-A5-FREE-FALLBACK-RUNTIME-001-FIX-001，Codex 两个
 blocking runtime-contract defects 收口）：
@@ -14,7 +16,9 @@ blocking runtime-contract defects 收口）：
    authorized-paid 语义）**绝不**发起 fallback invocation——即使 registry
    候选最初标为 FREE/LOCAL_FREE、即使 ``AAF_COST_AUTH`` 存在且精确匹配（A0
    在 admission 边界按既有一次性语义 claim 该授权，本层不 bypass/削弱/复刻
-   A0；paid escalation = 后续 A5 任务的 scope，本单元只拒绝并 fail closed）。
+   A0；paid fallback execution = A5-004 authorized-paid 分支（AUTHORIZED
+   gate、无合格 FREE 候选时）的 scope——ALLOWED_AUTHORIZED_PAID 绝不进入
+   FREE fallback 路径，本 FREE 路径只拒绝并 fail closed）。
 2. **authoritative audit closure 是 fallback 结果被接受的前提**：fallback
    invocation 已发生后，若权威 audit record 的组装/校验/持久化失败——该
    invocation 的输出**不得**被接受为成功 stage result（fail-closed framework
@@ -116,24 +120,48 @@ Paid Guard（``cost_guard.evaluate`` —— 唯一付费授权 authority）对�
 的 paid candidate 做显式、可审计的授权判断并持久化权威 gate audit
 （``paid_escalation_gate.json``，decision_kind=paid_escalation_gate_audit）：
 - A0 ALLOWED_AUTHORIZED_PAID + exact candidate scope → gate AUTHORIZED
-  （ready-for-paid-invocation 资格；**绝不 invocation**——attempted/used 恒
-  False；A0 已按既有一次性语义在其准入边界 claim 该授权，本层如实转述
-  authorization_present/matched/consumed）；
+  （A0 已按既有一次性语义在其准入边界原子 claim 该授权，本层如实转述
+  authorization_present/matched/consumed——AUTHORIZED = 唯一允许 paid
+  fallback invocation 的 gate 状态）；
 - A0 BLOCKED_COST_APPROVAL → gate BLOCKED（absent/mismatch/replay）；
 - guard malformed / guard 解析 model≠candidate / ALLOWED_FREE（成本视图冲突）
   / guard 异常 → gate FAIL_CLOSED（fail closed）。
-考虑前置（Requirement 2）：failure_class ∈ TRIGGER_CAPABLE_CLASSES 且
-automatic_fallback_count_used == 0（paid 只作为 FREE 路径不可用时的替代，
-绝不在已消耗一次 model-level fallback 之后再次考虑——no chain/loop 保持）；
-free candidate 存在时 free 路径优先（gate 不运行）。零第二授权系统、零 paid
-invocation（Requirement 4/6/8）。free fallback 路径（上述 A5-002 语义）零修改。
+gate audit record 自身（``fallback_paid_gate.py`` 单元）仍零执行权威
+（attempted/used 恒 False、final actual == original——它只审计授权评估）。
 
-范围边界：**paid escalation 授权评估（Cost Gate）已交付**，但 paid fallback
-model **invocation** 仍不实现（gate 只记录 AUTHORIZED / ready-for-paid-
-invocation 资格状态，绝不在本单元发起付费模型调用——未来 paid invocation
-任务 scope；A0 authority 语义保持）；A6（health/quarantine/requalification）
-与 A4+（broader agent scope）显式 outside；A3 初始 routing / A0 guard / A4
-经济路由行为零修改。
+A5-004（TASK: AAF-v0.5-A5-PAID-FALLBACK-RUNTIME-001 —— 一次性 authorized
+paid fallback invocation，本文件实现）：
+当 gate 考虑前置全部满足（contract decision=fallback_eligible +
+TRIGGER_CAPABLE_CLASSES + automatic_fallback_count_used == 0 —— FREE 与
+paid 共用同一 one-attempt budget，绝不在已消耗一次 model-level fallback 后
+再次考虑，no chain/loop）且 gate 决策 = **AUTHORIZED**（exact
+task/stage/model/provider 授权已由既有 A0 Paid Guard 在准入边界一次性 claim）
+时，本编排器对**恰一个**确定性选中的 paid candidate 发起**恰一次** paid
+fallback invocation（Requirement 7）：
+- 调用前以既有 A0/A5 authorities 复验（gate record 重新 validate + 归属
+  当前 task/stage + candidate 与失败 original 不同 + candidate ∈ contract
+  eligible 集——A1/A2 资格与 executor main-scope 闸已由 contract 决策证明）；
+- invocation 在 candidate env 覆盖下执行（与 FREE 路径同一 A3 env 契约，
+  observation 后由调用方还原）；paid invocation 成功输出被接受（used=true）
+  仅当权威 paid runtime audit（``paid_fallback_runtime.json``，
+  decision_kind=paid_fallback_runtime_audit）组装/校验/持久化成功——audit
+  closure 失败 → 输出**不**被接受（attempted=true / used=false /
+  audit_closure_error 显式 surface / env 还原 / 无第三模型，Requirement 10）；
+- paid invocation 自身失败 → attempted=true / used=false / 原始失败保留 /
+  无第三模型 / 无第二 paid candidate（Requirement 9）；
+- gate BLOCKED / FAIL_CLOSED / malformed / missing / stale / mismatch →
+  **零 paid invocation**、原始失败保留、fail closed、权威证据持久化
+  （Requirement 3）。
+零第二授权系统、零隐式/宽泛授权、无授权跨 task/stage/model/provider 复用
+（A0 一次性 claim + marker replay 拒绝保持）；FREE fallback 路径（上述
+A5-002 语义）零修改——ALLOWED_AUTHORIZED_PAID 绝不进入 FREE 路径，
+AUTHORIZED gate 只在无合格 FREE 候选分支消费。
+
+范围边界：paid fallback 已实现为**每受影响 stage 至多一次 model-level
+fallback**（FREE 与 paid 共享同一次预算）；A6
+（health/quarantine/requalification）与 A4+（broader agent scope）显式
+outside；A3 初始 routing / A0 guard / A4 经济路由 / A5-002 FREE 路径行为
+零修改。
 """
 
 from __future__ import annotations
@@ -249,6 +277,52 @@ _ALLOWED_AUTH_OUTCOMES = frozenset(
         AUTH_OUTCOME_ALLOWED_AUTHORIZED_PAID,
         AUTH_OUTCOME_BLOCKED,
     )
+)
+
+# ---------------------------------------------------------------------------
+# Paid fallback runtime audit（TASK: AAF-v0.5-A5-PAID-FALLBACK-RUNTIME-001）：
+# 与 FREE 层 fallback_runtime.json 分层的**第二个 runtime audit artifact**
+# ——记录 AUTHORIZED gate 之下恰一次 paid fallback invocation 的执行结果。
+# FREE 层 audit（decision_kind=fallback_runtime_audit）的 schema / validator /
+# 语义零修改（A5-002 保持）；本 artifact 独立 decision_kind + authority。
+# ---------------------------------------------------------------------------
+
+DECISION_KIND_PAID = "paid_fallback_runtime_audit"
+ARTIFACT_FILENAME_PAID = "paid_fallback_runtime.json"
+
+# paid invocation outcome 词汇（attempted=true 恒真——artifact 只在 invocation
+# 真实发生后持久化；outcome 只区分成功/失败）
+PAID_OUTCOME_SUCCESS = "success"
+PAID_OUTCOME_FAILED = "failed"
+_PAID_OUTCOMES = frozenset((PAID_OUTCOME_SUCCESS, PAID_OUTCOME_FAILED))
+
+# 唯一权威说明（与 FREE 层 AUTHORITY 同型但明确区分：本 artifact 记录
+# AUTHORIZED paid fallback invocation 的**执行结果**——attempted/used/final
+# actual 如实反映；gate 决策证据（AUTHORIZED + exact scope + consumed）作为
+# 授权字段嵌入本 record（Requirement 11/12——validator 独立拒绝无 AUTHORIZED
+# gate 证据的 paid invocation 声称），原始授权判断的完整审计仍在
+# paid_escalation_gate.json）
+AUTHORITY_PAID = (
+    "fallback_runtime.py (A5 one-shot authorized paid fallback runtime, TASK: "
+    "AAF-v0.5-A5-PAID-FALLBACK-RUNTIME-001): this artifact is the "
+    "AUTHORITATIVE audit record of the live Hermes executor stage's single "
+    "authorized paid model-level fallback invocation (exactly one paid "
+    "fallback model invoked at most once per affected stage, sharing the "
+    "one-attempt budget with the FREE/LOCAL_FREE fallback path). Paid "
+    "invocation occurred ONLY because the A5 paid escalation Cost Gate "
+    "(fallback_paid_gate.py) decided AUTHORIZED with an exact "
+    "task/stage/model/provider-scoped one-time authorization claimed at the "
+    "existing A0 Paid Guard (cost_guard.evaluate) admission boundary — the "
+    "single payment authorization authority, no second auth token/format, "
+    "no broad/global authorization, no reuse across task/stage/model/"
+    "provider. fallback_attempted=true / fallback_used reflects whether the "
+    "paid invocation output was accepted AND the authoritative audit closure "
+    "succeeded; final_actual_model/provider reflect the paid fallback "
+    "model/provider when used. No third model, no fallback chain, no silent "
+    "paid execution. Contrast with the FREE-layer fallback_runtime.json "
+    "(decision_kind=fallback_runtime_audit, ALLOWED_FREE-only) and the gate's "
+    "own decision record (paid_escalation_gate_audit, attempted/used always "
+    "false)."
 )
 
 
@@ -813,8 +887,11 @@ def validate_fallback_runtime_record(record: dict) -> None:
                 "an attempted fallback requires an A0 Paid Guard "
                 "ALLOWED_FREE admission (this FREE/LOCAL_FREE fallback "
                 "runtime never executes an ALLOWED_AUTHORIZED_PAID "
-                "candidate — paid fallback is a later A5 unit's scope; "
-                "no silent paid execution; FIX-001 admission fail-closed)"
+                "candidate — paid fallback execution belongs to the "
+                "separate A5-004 authorized-paid branch (AUTHORIZED gate, "
+                "no eligible FREE candidate) and NEVER enters the FREE "
+                "fallback path; no silent paid execution; FIX-001 "
+                "admission fail-closed)"
             )
     elif decision_token == fc.DECISION_FALLBACK_ELIGIBLE:
         # eligible 但未 attempt：合法路径只有 admission 边界拒绝——A0 BLOCKED
@@ -929,6 +1006,510 @@ def save_fallback_runtime(output_dir: Path | str, record: dict) -> Path:
 
 def load_fallback_runtime(output_dir: Path | str) -> dict | None:
     path = Path(output_dir) / ARTIFACT_FILENAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+# ---------------------------------------------------------------------------
+# Paid fallback runtime audit schema（Requirement 11 全字段；分层于 FREE 层
+# audit——本 record 自包含 AUTHORIZED gate 证据，validator 独立拒绝伪造/矛盾）
+# ---------------------------------------------------------------------------
+
+_PAID_REQUIRED_KEYS = (
+    "schema_version",
+    "decision_kind",
+    "authority",
+    "authoritative",
+    "task_id",
+    "stage_agent",
+    "role",
+    "risk_class",
+    "risk_source",
+    "failure_class",
+    "failure_label",
+    "trigger",
+    "trigger_evidence",
+    "original_model",
+    "original_provider",
+    "transport_retry_count",
+    "automatic_fallback_count_used",
+    "automatic_fallback_count_budget",
+    "free_fallback_unavailable_reason",
+    "contract_candidates",
+    "paid_candidates",
+    "paid_candidate",
+    "paid_candidate_model",
+    "paid_candidate_provider",
+    "paid_gate_decision",
+    "paid_required_scope",
+    "paid_guard_decision",
+    "authorization_present",
+    "authorization_matched",
+    "authorization_consumed",
+    "fallback_attempted",
+    "fallback_used",
+    "paid_invocation_outcome",
+    "final_actual_model",
+    "final_actual_provider",
+    "no_third_invocation_evidence",
+    "no_silent_paid_evidence",
+    "audit_closure_error",
+    "notes",
+    "generated_at",
+)
+
+
+def assemble_paid_runtime_audit_record(
+    *,
+    decision_record: dict,
+    original_identity: dict,
+    task_id: str,
+    stage_agent: str,
+    role: str,
+    risk_class: str,
+    risk_source: str,
+    gate_record: dict,
+    transport_retry_count: int,
+    automatic_fallback_count_used: int,
+    free_fallback_unavailable_reason: str,
+    attempted: bool,
+    used: bool,
+    paid_invocation_outcome: str,
+    invocation_evidence: list[str],
+    extra_notes: list[str] | None = None,
+) -> dict:
+    """组装 authoritative paid fallback runtime audit record（Req 11 全字段）。
+
+    本 record 只在 AUTHORIZED gate 之下 paid invocation 真实发生后产生：
+    - 授权字段（paid_gate_decision / paid_required_scope / paid_guard_decision /
+      authorization_* ）由 gate audit record 权威转述（self-contained 授权
+      证据——Requirement 11/12：validator 可独立拒绝「无 AUTHORIZED gate 证据
+      的 paid invocation 声称」）；
+    - fallback_attempted/used/final actual 如实反映本次 paid fallback 执行；
+    - paid_invocation_outcome ∈ {success, failed}（used=true ⟺ success）；
+    - 组装后立即经 ``validate_paid_fallback_runtime_record`` fail-closed 校验。
+    """
+    paid_candidate = gate_record["paid_candidate"]
+    paid_model, paid_provider = _split_candidate(paid_candidate)
+    original_model = original_identity.get("model")
+    original_provider = original_identity.get("provider")
+
+    no_third = [
+        (
+            "no third model invocation: this affected stage performed exactly "
+            f"ONE model-level fallback attempt — the authorized paid fallback "
+            f"invocation of {paid_candidate!r} (automatic_fallback_count_used="
+            f"{automatic_fallback_count_used} against a one-attempt budget of "
+            f"{fc.MAX_AUTOMATIC_FALLBACKS_PER_STAGE}; the FREE/LOCAL_FREE "
+            "fallback path performed no attempt — no eligible free candidate "
+            "existed after the A5 Requirement-3 cost gate)"
+        ),
+        (
+            "no fallback chain: the paid fallback remains ONE attempt — no "
+            "second paid candidate, no third model, no further fallback retry "
+            "follows (success or failure)"
+        ),
+    ]
+    no_silent = [
+        (
+            "no silent paid execution: the single paid fallback invocation of "
+            f"{paid_candidate!r} occurred ONLY because the A5 paid escalation "
+            f"Cost Gate decided "
+            f"{gate_record['gate_decision']!r} with an exact A0 Paid Guard "
+            f"ALLOWED_AUTHORIZED_PAID result (paid_required_scope="
+            f"{gate_record['required_scope']!r}; authorization_present/"
+            f"matched/consumed all true) matching the current task/stage/"
+            f"model/provider — absent/mismatched/malformed authorization "
+            "invokes zero paid models (fail closed)"
+        ),
+        (
+            "no second payment authorization system: the existing A0 Paid "
+            "Guard one-time exact-scope AAF_COST_AUTH authorization is the "
+            "single payment authorization authority consumed at its own "
+            "admission boundary (authorization_consumed=true; no duplicate "
+            "consumption, no broad/global auth, no reuse across "
+            "task/stage/model/provider, no second token format)"
+        ),
+    ]
+    # invocation outcome evidence（含 paid failure 细节——Requirement 9：
+    # paid invocation 失败时必须保留 paid failure details）进入
+    # no_silent_paid_evidence，与授权/单次性证据一起构成完整执行证据
+    evidence = list(invocation_evidence)
+    if used:
+        evidence.append(
+            f"paid fallback invocation of {paid_candidate!r} produced an "
+            "accepted stage execution result (valid non-FRAMEWORK_ERROR "
+            "output) and the authoritative audit closure succeeded — "
+            "fallback_used=true"
+        )
+    else:
+        evidence.append(
+            f"the paid fallback invocation of {paid_candidate!r} did NOT "
+            "produce an accepted stage result (invocation failure or invalid "
+            "output) — fallback_used=false, the original stage failure is "
+            "preserved (no silent substitution)"
+        )
+    if attempted:
+        evidence.append(
+            "no silent paid fallback: the authorized paid fallback invocation "
+            f"was actually attempted exactly once against candidate "
+            f"{paid_candidate!r} (this is a model-level fallback consuming "
+            "the affected stage's single one-attempt budget)"
+        )
+    no_silent = no_silent + evidence
+
+    record = {
+        "schema_version": SCHEMA_VERSION,
+        "decision_kind": DECISION_KIND_PAID,
+        "authority": AUTHORITY_PAID,
+        "authoritative": True,
+        "task_id": task_id,
+        "stage_agent": stage_agent,
+        "role": role,
+        "risk_class": risk_class,
+        "risk_source": risk_source,
+        "failure_class": decision_record["failure_class"],
+        "failure_label": decision_record["failure_label"],
+        "trigger": decision_record["trigger"],
+        "trigger_evidence": list(decision_record["trigger_evidence"]),
+        "original_model": original_model,
+        "original_provider": original_provider,
+        "transport_retry_count": transport_retry_count,
+        "automatic_fallback_count_used": automatic_fallback_count_used,
+        "automatic_fallback_count_budget": fc.MAX_AUTOMATIC_FALLBACKS_PER_STAGE,
+        "free_fallback_unavailable_reason": free_fallback_unavailable_reason,
+        "contract_candidates": sorted(gate_record["contract_candidates"]),
+        "paid_candidates": sorted(gate_record["paid_candidates"]),
+        "paid_candidate": paid_candidate,
+        "paid_candidate_model": paid_model,
+        "paid_candidate_provider": paid_provider,
+        "paid_gate_decision": gate_record["gate_decision"],
+        "paid_required_scope": gate_record["required_scope"],
+        "paid_guard_decision": gate_record["guard_decision"],
+        "authorization_present": gate_record["authorization_present"],
+        "authorization_matched": gate_record["authorization_matched"],
+        "authorization_consumed": gate_record["authorization_consumed"],
+        "fallback_attempted": attempted,
+        "fallback_used": used,
+        "paid_invocation_outcome": paid_invocation_outcome,
+        "final_actual_model": paid_model,
+        "final_actual_provider": paid_provider,
+        "no_third_invocation_evidence": no_third,
+        "no_silent_paid_evidence": no_silent,
+        "audit_closure_error": None,
+        "notes": list(extra_notes or []),
+        "generated_at": _now_iso(),
+    }
+    validate_paid_fallback_runtime_record(record)
+    return record
+
+
+def validate_paid_fallback_runtime_record(record: dict) -> None:
+    """Paid fallback runtime audit fail-closed 校验（Requirement 12）。
+
+    任一违例 → ValueError（不返回部分有效状态）。不变量：
+    - schema / authority 精确匹配（single authoritative source）；
+    - failure_class ∈ TRIGGER_CAPABLE_CLASSES（paid fallback 只在
+      fallback-eligible failure 之后发生）；
+    - fallback_attempted 必须 True（本 artifact 只在 paid invocation 真实
+      发生后持久化；used=true ⟹ attempted=true 由结构保证）；
+    - paid_gate_decision 必须 == AUTHORIZED（拒绝「无 AUTHORIZED gate 的
+      paid invocation」）；authorization_present/matched/consumed 全 True +
+      paid_guard_decision == A0 ALLOWED_AUTHORIZED_PAID（拒绝「声称 paid
+      use 但无对应授权证据」）；
+    - paid_required_scope 必须精确等于 canonical expected scope
+      （cost_guard.scope_string(task_id, stage_agent, paid_candidate_model,
+      paid_candidate_provider)——拒绝 wrong task/stage/model/provider 或
+      forged scope）；
+    - automatic_fallback_count_used == 0（拒绝多过一次 model-level fallback
+      的声称——FREE 与 paid 共享 one-attempt budget）；
+    - paid_invocation_outcome ∈ {success, failed} 且与 used 互洽；
+    - final_actual == paid candidate split（attempted 恒真）；
+    - candidates 一致性（paid ⊆ contract；paid_candidate ∈ paid；distinct
+      from original）；evidence/notes 类型不变量。
+    """
+    if not isinstance(record, dict):
+        raise ValueError(f"record must be a dict, got {type(record).__name__}")
+    for key in _PAID_REQUIRED_KEYS:
+        if key not in record:
+            raise ValueError(f"audit record missing required field: {key!r}")
+    unknown = [k for k in record if k not in _PAID_REQUIRED_KEYS]
+    if unknown:
+        raise ValueError(f"audit record has unknown fields: {sorted(unknown)}")
+    if record["schema_version"] != SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported schema_version: {record['schema_version']!r}"
+        )
+    if record["decision_kind"] != DECISION_KIND_PAID:
+        raise ValueError(
+            f"decision_kind must be {DECISION_KIND_PAID!r}, "
+            f"got {record['decision_kind']!r}"
+        )
+    if record["authoritative"] is not True:
+        raise ValueError("authoritative must be true")
+    if record["authority"] != AUTHORITY_PAID:
+        raise ValueError(
+            "authority must exactly match the authoritative A5 paid fallback "
+            "runtime value emitted by this module (single authoritative "
+            "source; missing/altered/unexpected authority fails closed — no "
+            "second authority system)"
+        )
+
+    failure_class = record["failure_class"]
+    if failure_class not in fc.TRIGGER_CAPABLE_CLASSES:
+        raise ValueError(
+            "a paid fallback may only follow a fallback-eligible failure "
+            "(failure_class must be in TRIGGER_CAPABLE_CLASSES), got "
+            f"{failure_class!r}"
+        )
+    if record["failure_label"] != fc.FAILURE_LABELS[failure_class]:
+        raise ValueError("failure_label does not match failure_class")
+    if record["role"] not in fc.STAGE_ROLES:
+        raise ValueError(f"unknown role: {record['role']!r}")
+    if record["risk_class"] not in fc.RISK_CLASSES:
+        raise ValueError(f"unknown risk_class: {record['risk_class']!r}")
+
+    # --- 执行语义不变量（Requirement 8/9/12） ---
+    attempted = record["fallback_attempted"]
+    used = record["fallback_used"]
+    if attempted is not True:
+        raise ValueError(
+            "fallback_attempted must be true (this artifact is only produced "
+            "after an authorized paid fallback invocation was actually "
+            "attempted — a used=false/attempted=false paid runtime record is "
+            "not a paid fallback execution record)"
+        )
+    if used is not True and used is not False:
+        raise ValueError("fallback_used must be a bool")
+    outcome = record["paid_invocation_outcome"]
+    if outcome not in _PAID_OUTCOMES:
+        raise ValueError(
+            f"unknown paid_invocation_outcome: {outcome!r} "
+            f"(allowed: {sorted(_PAID_OUTCOMES)})"
+        )
+    if used and outcome != PAID_OUTCOME_SUCCESS:
+        raise ValueError(
+            "fallback_used=true requires paid_invocation_outcome=success"
+        )
+    if (not used) and outcome != PAID_OUTCOME_FAILED:
+        raise ValueError(
+            "fallback_used=false requires paid_invocation_outcome=failed"
+        )
+
+    # --- 授权证据（Requirement 12：paid invocation 必须带 AUTHORIZED gate
+    #      证据 + exact scope + 对应授权消费证据） ---
+    if record["paid_gate_decision"] != fpg.GATE_DECISION_AUTHORIZED:
+        raise ValueError(
+            "a paid fallback invocation record requires paid_gate_decision="
+            f"AUTHORIZED (gate decision must be exactly AUTHORIZED before any "
+            f"paid model may be invoked), got "
+            f"{record['paid_gate_decision']!r}"
+        )
+    for flag in (
+        "authorization_present",
+        "authorization_matched",
+        "authorization_consumed",
+    ):
+        if record[flag] is not True:
+            raise ValueError(
+                f"{flag} must be true in a paid fallback invocation record "
+                "(a claimed paid use without the corresponding exact-scope "
+                "authorization evidence is contradictory and fails closed)"
+            )
+    if record["paid_guard_decision"] != cost_guard_mod.DECISION_ALLOWED_AUTHORIZED_PAID:
+        raise ValueError(
+            "paid_guard_decision must be A0 ALLOWED_AUTHORIZED_PAID in a paid "
+            f"fallback invocation record, got {record['paid_guard_decision']!r}"
+        )
+
+    paid_candidate_model = record["paid_candidate_model"]
+    paid_candidate_provider = record["paid_candidate_provider"]
+    if not (
+        isinstance(record["task_id"], str)
+        and record["task_id"].strip()
+        and isinstance(record["stage_agent"], str)
+        and record["stage_agent"].strip()
+        and isinstance(paid_candidate_model, str)
+        and paid_candidate_model.strip()
+    ):
+        raise ValueError(
+            "task_id/stage_agent/paid_candidate_model must be non-empty "
+            "strings to rebuild the canonical authorization scope"
+        )
+    expected_scope = cost_guard_mod.scope_string(
+        record["task_id"],
+        record["stage_agent"],
+        paid_candidate_model,
+        paid_candidate_provider,
+    )
+    if record["paid_required_scope"] != expected_scope:
+        raise ValueError(
+            "paid_required_scope must exactly equal the canonical expected "
+            f"scope {expected_scope!r} for the record's own "
+            f"task/stage/model/provider ({record['task_id']!r}/"
+            f"{record['stage_agent']!r}/{paid_candidate_model!r}/"
+            f"{paid_candidate_provider!r}) — an authorization claimed for a "
+            "different task/stage/model/provider cannot authorize this paid "
+            "fallback (exact scope matching unmodified; no reuse across "
+            f"task/stage/model/provider), got {record['paid_required_scope']!r}"
+        )
+
+    # --- one-fallback budget（Requirement 4/12） ---
+    budget = record["automatic_fallback_count_budget"]
+    used_count = record["automatic_fallback_count_used"]
+    if budget != fc.MAX_AUTOMATIC_FALLBACKS_PER_STAGE:
+        raise ValueError(
+            "automatic_fallback_count_budget must be "
+            f"{fc.MAX_AUTOMATIC_FALLBACKS_PER_STAGE} (one-fallback rule), "
+            f"got {budget!r}"
+        )
+    if isinstance(used_count, bool) or not isinstance(used_count, int):
+        raise ValueError("automatic_fallback_count_used must be an int")
+    if used_count != 0:
+        raise ValueError(
+            "a paid fallback invocation requires an unspent one-attempt "
+            "budget (automatic_fallback_count_used must be 0 — FREE and paid "
+            "fallback share the same single model-level fallback budget; a "
+            "record claiming a paid fallback after an earlier model-level "
+            "fallback attempt is contradictory and fails closed), got "
+            f"{used_count!r}"
+        )
+    retry = record["transport_retry_count"]
+    if isinstance(retry, bool) or not isinstance(retry, int) or retry < 0:
+        raise ValueError(
+            f"transport_retry_count must be a non-negative int, got {retry!r}"
+        )
+
+    if not (
+        isinstance(record["free_fallback_unavailable_reason"], str)
+        and record["free_fallback_unavailable_reason"].strip()
+    ):
+        raise ValueError(
+            "free_fallback_unavailable_reason (why FREE/LOCAL_FREE fallback "
+            "was unavailable/exhausted) must be a non-empty string"
+        )
+
+    # --- candidates 一致性 ---
+    contract_candidates = record["contract_candidates"]
+    paid_candidates = record["paid_candidates"]
+    if not isinstance(contract_candidates, list) or not all(
+        isinstance(item, str) and item.strip() for item in contract_candidates
+    ):
+        raise ValueError("contract_candidates must be a list of non-empty str")
+    if contract_candidates != sorted(set(contract_candidates)):
+        raise ValueError("contract_candidates must be unique and sorted")
+    if not isinstance(paid_candidates, list) or not paid_candidates or not all(
+        isinstance(item, str) and item.strip() for item in paid_candidates
+    ):
+        raise ValueError(
+            "paid_candidates must be a non-empty list of non-empty str"
+        )
+    if paid_candidates != sorted(set(paid_candidates)):
+        raise ValueError("paid_candidates must be unique and sorted")
+    if not set(paid_candidates).issubset(set(contract_candidates)):
+        raise ValueError(
+            "paid_candidates must be a subset of contract_candidates "
+            "(only already-qualified candidates may be paid fallback "
+            "candidates)"
+        )
+    paid_candidate = record["paid_candidate"]
+    if paid_candidate not in paid_candidates:
+        raise ValueError(
+            "paid_candidate must be one of paid_candidates (the "
+            "deterministically selected paid fallback candidate)"
+        )
+    if (paid_candidate_model, paid_candidate_provider) != _split_candidate(
+        paid_candidate
+    ):
+        raise ValueError(
+            "paid_candidate_model/provider must equal the paid_candidate "
+            "key split (model@provider)"
+        )
+    original_model = record["original_model"]
+    original_provider = record["original_provider"]
+    if not (isinstance(original_model, str) and original_model.strip()):
+        raise ValueError("original_model must be a non-empty string")
+    if original_provider is not None and not (
+        isinstance(original_provider, str) and original_provider.strip()
+    ):
+        raise ValueError("original_provider must be a non-empty string or None")
+    orig_key = model_registry_mod.canonical_key(original_model, original_provider)
+    if orig_key == model_registry_mod.canonical_key(
+        paid_candidate_model, paid_candidate_provider
+    ):
+        raise ValueError(
+            "the paid fallback candidate must be distinct from the failed "
+            "original model/provider (same-model recovery is the retry layer, "
+            "not model-level fallback)"
+        )
+
+    # --- final actual（attempted 恒真：最后一次实际 invocation = paid candidate） ---
+    final_model = record["final_actual_model"]
+    final_provider = record["final_actual_provider"]
+    if not (isinstance(final_model, str) and final_model.strip()):
+        raise ValueError("final_actual_model must be a non-empty string")
+    if final_provider is not None and not (
+        isinstance(final_provider, str) and final_provider.strip()
+    ):
+        raise ValueError(
+            "final_actual_provider must be a non-empty string or None"
+        )
+    if (final_model, final_provider) != (paid_candidate_model, paid_candidate_provider):
+        raise ValueError(
+            "final_actual_model/provider must equal the attempted paid "
+            "fallback candidate's model/provider (provenance of the last "
+            "actual invocation)"
+        )
+
+    for ev_field in ("no_third_invocation_evidence", "no_silent_paid_evidence"):
+        value = record[ev_field]
+        if not isinstance(value, list) or not value or not all(
+            isinstance(item, str) and item.strip() for item in value
+        ):
+            raise ValueError(f"{ev_field} must be a non-empty list of str")
+    notes = record["notes"]
+    if not isinstance(notes, list) or not all(
+        isinstance(item, str) for item in notes
+    ):
+        raise ValueError("notes must be a list of str")
+    for key in ("task_id", "stage_agent", "trigger", "risk_source"):
+        if not (isinstance(record[key], str) and record[key].strip()):
+            raise ValueError(f"{key} must be a non-empty string")
+    if not (isinstance(record["generated_at"], str) and record["generated_at"]):
+        raise ValueError("generated_at must be a non-empty string")
+    tev = record["trigger_evidence"]
+    if not isinstance(tev, list) or not all(
+        isinstance(item, str) for item in tev
+    ):
+        raise ValueError("trigger_evidence must be a list of str")
+    ace = record["audit_closure_error"]
+    if ace is not None and not (
+        isinstance(ace, str) and ace.strip()
+    ):
+        raise ValueError(
+            "audit_closure_error must be a non-empty string or null"
+        )
+
+
+def save_paid_fallback_runtime(output_dir: Path | str, record: dict) -> Path:
+    """原子写 paid_fallback_runtime.json（同目录 tmp + os.replace）。"""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / ARTIFACT_FILENAME_PAID
+    tmp = output_dir / f"{ARTIFACT_FILENAME_PAID}.tmp-{os.getpid()}"
+    tmp.write_text(
+        json.dumps(record, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+    return path
+
+
+def load_paid_fallback_runtime(output_dir: Path | str) -> dict | None:
+    path = Path(output_dir) / ARTIFACT_FILENAME_PAID
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeError):
@@ -1127,14 +1708,18 @@ def run_fallback_after_failure(
     #     admission 后才组装最终记录——本层 artifact = outcome evidence） ---
     outcome = _runtime_outcome(decision_record, registry, automatic_fallback_count_used)
     if not outcome["fallback_eligible"] or outcome["fallback_candidate"] is None:
-        # --- A5-003（TASK: AAF-v0.5-A5-PAID-ESCALATION-GATE-001）：paid
-        #     escalation Cost Gate 考虑（authorization evaluation ONLY） ---
+        # --- A5-003（TASK: AAF-v0.5-A5-PAID-ESCALATION-GATE-001）+ A5-004
+        #     （TASK: AAF-v0.5-A5-PAID-FALLBACK-RUNTIME-001）：paid escalation
+        #     考虑 = Cost Gate 授权评估 + AUTHORIZED 时恰一次 paid fallback
+        #     invocation ---
         # 仅当：contract 层有合格 paid candidate（decision=fallback_eligible
         # ——A1/A2 闸已过、original 已排除）+ failure 是 fallback-eligible 类 +
-        # automatic fallback budget 未耗尽（count_used==0——free 路径不可用时的
-        # 替代考虑，绝不形成 chain/loop）。gate 内部任何意外失败都被收口为
-        # 显式 fail-closed evidence（outcome 的 paid_gate_error 字段），绝不
-        # 掩盖/改变本 runtime 的 not-eligible 结果（Requirement 7/9）。
+        # automatic fallback budget 未耗尽（count_used==0——FREE 与 paid 共用
+        # 同一 one-attempt budget，free 路径不可用时的替代考虑，绝不形成
+        # chain/loop；free candidate 存在时 free 路径优先，gate 根本不运行）。
+        # gate 内部任何意外失败都被收口为显式 fail-closed evidence（outcome
+        # 的 paid_gate_error 字段），绝不掩盖/改变本 runtime 的 not-eligible
+        # 结果（Requirement 7/9）。
         paid_gate_result: dict | None = None
         paid_gate_error: str | None = None
         if (
@@ -1164,17 +1749,58 @@ def run_fallback_after_failure(
                     "closed; no paid model invocation occurred and none was "
                     "authorized; the original stage failure is preserved)"
                 )
+
+        gate_record = (
+            paid_gate_result["record"]
+            if paid_gate_result is not None
+            and isinstance(paid_gate_result.get("record"), dict)
+            else None
+        )
+        paid_authorized = (
+            gate_record is not None
+            and gate_record.get("gate_decision") == fpg.GATE_DECISION_AUTHORIZED
+        )
+        extra_notes = [
+            f"contract decision record validated: decision="
+            f"{decision_record['decision']!r} with "
+            f"{len(decision_record['fallback_candidates'])} contract-"
+            "eligible candidate(s) (A1/A2 gates); runtime Requirement-3 "
+            "cost gate applied afterwards",
+        ]
+        if gate_record is not None:
+            if paid_authorized:
+                extra_notes.append(
+                    "A5 paid escalation Cost Gate decision=AUTHORIZED with an "
+                    "exact A0 Paid Guard ALLOWED_AUTHORIZED_PAID "
+                    "task/stage/model/provider scope — the A5 paid fallback "
+                    "runtime performs EXACTLY ONE paid fallback invocation of "
+                    f"the authorized candidate "
+                    f"{gate_record['paid_candidate']!r}, audited separately "
+                    "in paid_fallback_runtime.json; this FREE/LOCAL_FREE "
+                    "layer performed no attempt (no eligible free candidate "
+                    "existed)"
+                )
+            else:
+                extra_notes.append(
+                    "A5 paid escalation Cost Gate decision="
+                    f"{gate_record['gate_decision']!r} (authorization "
+                    "absent/mismatched/malformed) — zero paid fallback "
+                    "invocation occurs (fail closed; the original stage "
+                    "failure is preserved and the gate audit evidence is "
+                    "persisted in paid_escalation_gate.json)"
+                )
+        elif paid_gate_error is not None:
+            extra_notes.append(
+                f"paid escalation Cost Gate could not be evaluated "
+                f"({_excerpt(paid_gate_error)}) — zero paid fallback "
+                "invocation occurs (fail closed; the original stage failure "
+                "is preserved)"
+            )
         record = _emit(
             attempted=False,
             used=False,
             authorization_outcome=AUTH_OUTCOME_NONE,
-            extra_notes=[
-                f"contract decision record validated: decision="
-                f"{decision_record['decision']!r} with "
-                f"{len(decision_record['fallback_candidates'])} contract-"
-                "eligible candidate(s) (A1/A2 gates); runtime Requirement-3 "
-                "cost gate applied afterwards",
-            ],
+            extra_notes=extra_notes,
         )
         if record is None:
             return None
@@ -1189,12 +1815,32 @@ def run_fallback_after_failure(
             "used": False,
             "overlay_saved": None,
         }
-        if paid_gate_result is not None:
-            result["paid_gate_record"] = paid_gate_result["record"]
+        if gate_record is not None:
+            result["paid_gate_record"] = gate_record
             result["paid_gate_artifact_ref"] = paid_gate_result["artifact_ref"]
         elif paid_gate_error is not None:
             result["paid_gate_error"] = paid_gate_error
-        return result
+        if not paid_authorized:
+            return result
+        # --- A5-004：AUTHORIZED gate → 恰一次 paid fallback invocation ---
+        return _execute_authorized_paid_fallback(
+            gate_record=gate_record,
+            decision_record=decision_record,
+            original_identity=original_identity,
+            task_id=task_id,
+            stage_agent=stage_agent,
+            role=role,
+            risk_class=risk_class,
+            risk_source=risk_source,
+            registry=registry,
+            output_dir=output_dir,
+            prompt=prompt,
+            workspace=workspace,
+            invoke=invoke,
+            transport_retry_count=transport_retry_count,
+            automatic_fallback_count_used=automatic_fallback_count_used,
+            free_layer_result=result,
+        )
 
     # --- eligible：candidate env 覆盖 + A0 Paid Guard 求值（既有 authority） ---
     selected = outcome["fallback_candidate"]
@@ -1272,7 +1918,10 @@ def run_fallback_after_failure(
                 "does not bypass, weaken or replicate it) BUT this "
                 "FREE/LOCAL_FREE fallback runtime NEVER executes an "
                 "authorized-paid / paid-classified fallback candidate: paid "
-                "escalation is a later A5 unit's scope. No second model was "
+                "fallback execution belongs to the separate A5-004 "
+                "authorized-paid branch (AUTHORIZED gate, only entered when "
+                "no eligible FREE candidate exists) and NEVER enters the "
+                "FREE fallback path (Requirement 13). No second model was "
                 "invoked; no silent paid fallback (fail closed; the original "
                 "stage failure is preserved)",
             ],
@@ -1461,8 +2110,275 @@ def _no_attempt_result(
 
 
 # ---------------------------------------------------------------------------
+# A5-004 authorized paid fallback invocation（TASK:
+# AAF-v0.5-A5-PAID-FALLBACK-RUNTIME-001）——AUTHORIZED gate 之下**恰一次**
+# paid fallback invocation + 权威 paid runtime audit closure（exception-safe
+# fail-closed 边界，与 FREE 路径 FIX-002 同型）
+# ---------------------------------------------------------------------------
+
+
+def _execute_authorized_paid_fallback(
+    *,
+    gate_record: dict,
+    decision_record: dict,
+    original_identity: dict,
+    task_id: str,
+    stage_agent: str,
+    role: str,
+    risk_class: str,
+    risk_source: str,
+    registry: dict[str, model_registry_mod.RegistryEntry],
+    output_dir: Path | str,
+    prompt: str,
+    workspace: Any,
+    invoke: Callable[[str, str, Any], str],
+    transport_retry_count: int,
+    automatic_fallback_count_used: int,
+    free_layer_result: dict,
+) -> dict:
+    """执行恰一次 authorized paid fallback（Requirement 2/5/7/8/9/10）。
+
+    前置（由调用方保证）：A5 Cost Gate 已 AUTHORIZED（gate audit record 已
+    validator-valid、已落盘 paid_escalation_gate.json）、A0 Paid Guard 已在
+    准入边界按既有一次性语义 claim exact task/stage/model/provider scope。
+
+    调用前复验（Requirement 5——既有 A0/A5 authorities，零第二授权系统）：
+    1. gate record 重新经 ``fpg.validate_paid_escalation_gate_record`` 校验
+       （篡改/矛盾 → 拒绝 invocation，fail closed）；
+    2. gate record 的 task_id/stage_agent 必须 == 当前 task/stage（授权不
+       得跨 task/stage 归属）；
+    3. paid candidate ∈ contract fallback_candidates（A1/A2 资格 + executor
+       main-scope 闸已由 contract 的 fallback_eligible 决策证明——复验
+       membership，不重跑 selector，不建第二资格系统）；
+    4. registry 中 candidate entry 存在且为 RegistryEntry；
+    5. candidate distinct from 失败 original（same-model 恢复 = retry 层，
+       不是 model-level fallback）。
+
+    执行（attempted=true 自 invocation 真实发起起不可撤销）：
+    - candidate env 覆盖（复用 A3 env 契约；overlay_saved 返回调用方，在
+      model/shadow observation **之后**还原——observation 必须如实看到
+      final actual invocation model = paid candidate）；
+    - 恰一次 invoke；输出有效（非空、非 FRAMEWORK_ERROR 前缀）→ used=true；
+      invocation 异常 → used=false（paid failure 如实保留，Requirement 9）；
+    - 权威 paid runtime audit（paid_fallback_runtime.json）组装 + fail-closed
+      校验 + 原子落盘是 paid 输出被接受的前提——audit closure 的任何异常
+      （含 RuntimeError / UnicodeError / 其他未预期异常）→ 输出**不**被
+      接受：attempted=true / used=false / result_text=None / 原始失败保留 /
+      audit_closure_error 显式 surface / 无第三模型 / env 还原路径返回
+      （Requirement 10）；整个 invocation + audit closure 段由兜底边界包裹，
+      任何意外逃逸都转为同样的结构化 fail-closed 结果。
+
+    返回 dict：在 FREE 层结果（free_layer_result——attempted=false 的
+    fallback_runtime.json record + paid gate record/ref）之上叠加 paid
+    执行结果字段：result_text / paid_audit_record / paid_audit_artifact_ref /
+    attempted / used / overlay_saved（+ 失败时的 paid_invocation_error 或
+    audit_closure_error）。调用方照常还原 overlay。
+    """
+    output_dir = Path(output_dir)
+    paid_candidate = gate_record["paid_candidate"]
+    paid_model, paid_provider = _split_candidate(paid_candidate)
+
+    # ---- Requirement 5 复验（既有 authorities；任一失败 → 零 invocation，
+    #      fail closed——free_layer_result 已把 gate 证据带回调用方）----
+    try:
+        fpg.validate_paid_escalation_gate_record(gate_record)
+    except ValueError as exc:
+        result = dict(free_layer_result)
+        result["paid_invocation_error"] = (
+            "pre-invocation revalidation FAILED: the persisted A5 paid "
+            "escalation Cost Gate record is not validator-valid "
+            f"({type(exc).__name__}: {_excerpt(str(exc))}) — no paid model "
+            "was invoked (fail closed; the original stage failure is "
+            "preserved)"
+        )
+        return result
+    if gate_record.get("task_id") != task_id or gate_record.get("stage_agent") != stage_agent:
+        result = dict(free_layer_result)
+        result["paid_invocation_error"] = (
+            "pre-invocation revalidation FAILED: the A5 paid escalation "
+            "Cost Gate record belongs to task/stage "
+            f"{gate_record.get('task_id')!r}/{gate_record.get('stage_agent')!r} "
+            f"but the current execution context is {task_id!r}/{stage_agent!r} "
+            "— an authorization recorded for another task/stage cannot "
+            "authorize this paid fallback; no paid model was invoked (fail "
+            "closed; exact task/stage scope unmodified; no authorization "
+            "carryover)"
+        )
+        return result
+    contract_candidates = set(
+        key
+        for key in (decision_record.get("fallback_candidates") or [])
+        if isinstance(key, str) and key.strip()
+    )
+    if paid_candidate not in contract_candidates:
+        result = dict(free_layer_result)
+        result["paid_invocation_error"] = (
+            "pre-invocation revalidation FAILED: paid candidate "
+            f"{paid_candidate!r} is not a member of the contract-eligible "
+            "fallback candidates (A1/A2 qualification + executor main-scope "
+            "gate evidence) — no paid model was invoked (fail closed)"
+        )
+        return result
+    entry = registry.get(paid_candidate)
+    if entry is None or not isinstance(entry, model_registry_mod.RegistryEntry):
+        result = dict(free_layer_result)
+        result["paid_invocation_error"] = (
+            "pre-invocation revalidation FAILED: registry entry for paid "
+            f"candidate {paid_candidate!r} is missing/unsupported — no paid "
+            "model was invoked (fail closed)"
+        )
+        return result
+    original_model = original_identity.get("model")
+    original_provider = original_identity.get("provider")
+    original_key = model_registry_mod.canonical_key(original_model, original_provider)
+    if original_key == model_registry_mod.canonical_key(paid_model, paid_provider):
+        result = dict(free_layer_result)
+        result["paid_invocation_error"] = (
+            "pre-invocation revalidation FAILED: paid candidate "
+            f"{paid_candidate!r} is not distinct from the failed original "
+            f"model/provider {original_key!r} (same-model recovery is the "
+            "transport retry layer, not model-level fallback) — no paid "
+            "model was invoked (fail closed)"
+        )
+        return result
+
+    free_unavailable_reason = (
+        decision_record.get("decision_reason")
+        or gate_record.get("free_fallback_unavailable_reason")
+        or "no eligible FREE/LOCAL_FREE fallback candidate"
+    )
+
+    # ---- candidate env overlay（admission/invocation truth = candidate 事实）----
+    try:
+        overlay_saved = _apply_candidate_env(entry)
+    except (ValueError, OSError) as exc:
+        result = dict(free_layer_result)
+        result["paid_invocation_error"] = (
+            "paid candidate env overlay failed "
+            f"({type(exc).__name__}: {_excerpt(str(exc))}) — the authorized "
+            "paid fallback could not be launched; no paid invocation "
+            "occurred (fail closed; the original stage failure is preserved; "
+            "gate AUTHORIZED evidence remains in paid_escalation_gate.json)"
+        )
+        return result
+
+    # ---- 恰一次 paid fallback invocation + audit closure（FIX-002 同型
+    #      exception-safe fail-closed 边界：attempted=true 自此处起）----
+    try:
+        attempted = True
+        used = False
+        paid_output: str | None = None
+        invocation_evidence: list[str] = []
+        invocation_failure: str | None = None
+        try:
+            paid_output = invoke(stage_agent, prompt, workspace)
+        except Exception as exc:  # noqa: BLE001 — paid invocation 失败 = fallback 失败
+            invocation_failure = f"{type(exc).__name__}: {_excerpt(str(exc))}"
+            invocation_evidence.append(
+                f"paid fallback invocation of {paid_candidate!r} raised "
+                f"{invocation_failure} — the failed paid fallback remains "
+                "ONE attempt (used=false) and must not trigger a third "
+                "model or a second paid candidate (no fallback chain)"
+            )
+        if paid_output is not None:
+            if _output_is_valid(paid_output):
+                used = True
+                invocation_evidence.append(
+                    f"paid fallback invocation of {paid_candidate!r} produced "
+                    "an accepted stage execution result (valid "
+                    "non-FRAMEWORK_ERROR output)"
+                )
+            else:
+                invocation_evidence.append(
+                    f"paid fallback invocation of {paid_candidate!r} produced "
+                    "an invalid result (empty or FRAMEWORK_ERROR-prefixed "
+                    "output) — the failed paid fallback remains ONE attempt "
+                    "(used=false) and must not trigger a third model (no "
+                    "fallback chain)"
+                )
+        paid_invocation_outcome = (
+            PAID_OUTCOME_SUCCESS if used else PAID_OUTCOME_FAILED
+        )
+        # 权威 paid runtime audit closure——paid 输出被接受的前提
+        paid_record = assemble_paid_runtime_audit_record(
+            decision_record=decision_record,
+            original_identity=original_identity,
+            task_id=task_id,
+            stage_agent=stage_agent,
+            role=role,
+            risk_class=risk_class,
+            risk_source=risk_source,
+            gate_record=gate_record,
+            transport_retry_count=transport_retry_count,
+            automatic_fallback_count_used=automatic_fallback_count_used,
+            free_fallback_unavailable_reason=free_unavailable_reason,
+            attempted=attempted,
+            used=used,
+            paid_invocation_outcome=paid_invocation_outcome,
+            invocation_evidence=invocation_evidence,
+            extra_notes=[
+                "A0 Paid Guard exact-scope authorization consumed at its own "
+                "admission boundary during the A5 Cost Gate evaluation "
+                "(authorization_consumed=true; one-time; A0 authority "
+                f"unmodified); exactly one paid fallback invocation was "
+                f"performed against candidate {paid_candidate!r} under its "
+                "own env overlay (observation sees the final actual "
+                "invocation model/provider)",
+                f"pre-invocation revalidation passed: gate record "
+                "validator-valid + current task/stage ownership + candidate "
+                "∈ contract-eligible set (A1/A2 gates) + distinct from "
+                f"failed original {original_key!r}",
+            ],
+        )
+        save_paid_fallback_runtime(output_dir, paid_record)
+    except Exception as exc:  # noqa: BLE001 — audit closure / 边界内意外逃逸
+        # paid invocation 已真实发起（attempted=true 不可撤销、绝不假装未
+        # 发生），但权威 paid runtime audit 的组装/校验/持久化失败（或边界
+        # 内任何意外逃逸）→ paid 输出**绝不**被接受：used=false /
+        # result_text=None（原始失败保留 = fail-closed framework result）；
+        # audit failure 经 audit_closure_error 显式 surface；无第三模型、
+        # 无第二 paid candidate；overlay_saved 返回供调用方还原 env。
+        audit_error = (
+            f"authoritative paid fallback runtime audit closure FAILED after "
+            f"the paid fallback invocation of {paid_candidate!r} was "
+            f"actually attempted (attempted=true; {type(exc).__name__}: "
+            f"{_excerpt(str(exc))}) — the paid fallback output is NOT "
+            "accepted as the stage result (used=false, fail closed): no "
+            "third model invocation and no second paid candidate will "
+            "occur; the audit failure is surfaced here and to stderr, not "
+            "silently discarded; the paid candidate routing overlay is "
+            "returned so the caller can restore the environment"
+        )
+        if os.environ.get("AAF_FALLBACK_DEBUG"):
+            print(
+                f"[a5-paid-fallback][debug] audit closure failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+        result = dict(free_layer_result)
+        result["result_text"] = None
+        result["attempted"] = True
+        result["used"] = False
+        result["overlay_saved"] = overlay_saved
+        result["audit_closure_error"] = audit_error
+        return result
+
+    result = dict(free_layer_result)
+    result["result_text"] = paid_output if used else None
+    result["attempted"] = True
+    result["used"] = used
+    result["overlay_saved"] = overlay_saved
+    result["paid_audit_record"] = paid_record
+    result["paid_audit_artifact_ref"] = {
+        "authority": str(output_dir / ARTIFACT_FILENAME_PAID),
+        "entry": stage_agent,
+    }
+    return result
+
+
+# ---------------------------------------------------------------------------
 # A5-003 paid escalation Cost Gate（TASK: AAF-v0.5-A5-PAID-ESCALATION-GATE-001；
-# authorization-evaluation ONLY——绝不 invocation）
+# authorization-evaluation ONLY——Cost Gate 单元自身绝不 invocation）
 # ---------------------------------------------------------------------------
 
 
@@ -1589,10 +2505,12 @@ def _run_paid_escalation_gate(
             "authorization was claimed by the existing A0 Paid Guard at its "
             "own admission boundary during this evaluation (A0 semantics "
             "unmodified; one-time replay protection intact for this "
-            "execution context). Gate AUTHORIZED establishes "
-            "ready-for-paid-invocation ELIGIBILITY for a FUTURE paid "
-            "invocation task in its own execution context — this task "
-            "performed no paid invocation."
+            "execution context). Gate AUTHORIZED is the authorization "
+            "evidence the A5 paid fallback runtime consumes to perform "
+            "EXACTLY ONE paid fallback invocation of the authorized "
+            "candidate — that invocation is separately and authoritatively "
+            "audited in paid_fallback_runtime.json (this Cost Gate unit "
+            "itself performed no invocation)."
         )
     record = fpg.assemble_paid_gate_record(
         decision_record=decision_record,

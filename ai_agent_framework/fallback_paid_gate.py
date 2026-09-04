@@ -7,9 +7,11 @@ foundation）内交付 paid escalation / Cost Gate 的 **runtime foundation**：
 无合格 FREE/LOCAL_FREE fallback 可用、但存在**合格 paid candidate**（已通过
 A1/A2 资格闸、与失败 original 不同）时，使用**既有 A0 Paid Guard / Cost Guard
 authority**（``cost_guard.evaluate``——唯一付费授权 authority）对该 candidate
-做显式、可审计的授权判断。**本任务/本模块绝不执行 paid fallback model
-invocation**：Cost Gate 只记录 AUTHORIZED / ready-for-paid-invocation 资格
-状态；paid invocation 是后续 A5 任务的 scope。
+做显式、可审计的授权判断。**本单元（fallback_paid_gate.py）绝不执行 paid
+fallback model invocation**：Cost Gate 只记录 AUTHORIZED（= 授权证据）/
+BLOCKED / FAIL_CLOSED 状态；paid invocation 由 A5 paid fallback runtime 层
+（``fallback_runtime.py``，TASK: AAF-v0.5-A5-PAID-FALLBACK-RUNTIME-001）在
+AUTHORIZED 时执行**恰一次**并另行审计于 ``paid_fallback_runtime.json``。
 
 设计纪律（与既有权威的关系——**不创建第二套授权系统**，Requirement 4）：
 1. candidate 资格判定**复用** A2 selector（``shadow_routing.select_shadow_candidate``
@@ -102,9 +104,13 @@ AUTHORITY = (
     "second auth token, no implicit/broad/global authorization, exact "
     "task/stage/model/provider scope matching unmodified. This unit performs "
     "authorization evaluation ONLY: fallback_attempted/fallback_used are "
-    "always false and no paid model was or can be invoked by this unit "
-    "(gate decision AUTHORIZED records ready-for-paid-invocation eligibility "
-    "for a FUTURE paid invocation task only)."
+    "always false and no paid model invocation is performed by this unit "
+    "itself. Gate decision AUTHORIZED is the authorization evidence that the "
+    "A5 paid fallback runtime (fallback_runtime.py, TASK: "
+    "AAF-v0.5-A5-PAID-FALLBACK-RUNTIME-001) may consume to perform EXACTLY "
+    "ONE paid fallback invocation of the authorized candidate in the same "
+    "execution context — that invocation is separately and authoritatively "
+    "audited in paid_fallback_runtime.json (paid_fallback_runtime_audit)."
 )
 
 # Cost Gate decision tokens（Requirement 3：三种状态至少可区分）
@@ -477,10 +483,14 @@ def interpret_guard(
                 "atomically claimed at the A0 Paid Guard admission boundary "
                 f"(decision={decision!r}, required_scope={scope!r} exactly "
                 f"equals the canonical expected scope "
-                f"{expected_scope!r}) — gate decision AUTHORIZED records "
-                "ready-for-paid-invocation ELIGIBILITY for a future paid "
-                "invocation task only; NO paid model was or will be invoked "
-                "by this Cost Gate (fallback_attempted/used stay false)"
+                f"{expected_scope!r}) — gate decision AUTHORIZED is the "
+                "authorization evidence that the A5 paid fallback runtime "
+                "may consume to perform EXACTLY ONE paid fallback invocation "
+                "of the authorized candidate (this Cost Gate unit itself "
+                "performs no invocation — fallback_attempted/used stay "
+                "false in this authorization-evaluation record; any paid "
+                "invocation is separately audited in paid_fallback_runtime."
+                "json)"
             ),
             "authorization_present": present,
             "authorization_matched": matched,
@@ -610,10 +620,10 @@ def assemble_paid_gate_record(
 
     evidence = [
         "no silent paid execution: the paid escalation Cost Gate performs "
-        "authorization evaluation ONLY — NO paid model invocation was "
-        "attempted and none is authorized to be performed by this task "
-        f"(fallback_attempted={_FALLBACK_ATTEMPTED} / fallback_used="
-        f"{_FALLBACK_USED}; zero second-model invocation occurred)",
+        "authorization evaluation ONLY — this gate unit itself performs "
+        "zero second-model invocation (fallback_attempted=false / "
+        "fallback_used=false in this authorization-evaluation record; no "
+        "paid model is invoked by the gate unit)",
         f"gate decision {interpretation['gate_decision']!r}: the exact "
         "task-scoped AAF_COST_AUTH / Paid Guard contract (A0) is the only "
         "payment authorization authority consumed; no second auth token, "
@@ -622,29 +632,38 @@ def assemble_paid_gate_record(
     ]
     if interpretation["gate_decision"] == GATE_DECISION_AUTHORIZED:
         evidence.append(
-            "AUTHORIZED = ready-for-paid-invocation ELIGIBILITY recorded "
-            "for a FUTURE paid invocation task; this task still did NOT "
-            "invoke the paid model — the original stage failure is "
-            "preserved and authorization alone does not set "
-            "fallback_attempted/fallback_used"
+            "AUTHORIZED: the exact task-scoped one-time authorization was "
+            "claimed by the existing A0 Paid Guard at its own admission "
+            "boundary (authorization_consumed=true) — the A5 paid fallback "
+            "runtime may perform EXACTLY ONE paid fallback invocation of "
+            "the authorized candidate in the same execution context; this "
+            "Cost Gate unit itself still performs no invocation "
+            "(fallback_attempted/fallback_used stay false here) and any "
+            "such paid invocation is separately and authoritatively audited "
+            "in paid_fallback_runtime.json"
         )
     elif interpretation["gate_decision"] == GATE_DECISION_BLOCKED:
         evidence.append(
             "BLOCKED: paid escalation required but authorization absent/"
-            "mismatched — fail closed, no paid model invoked, original "
-            "stage failure preserved"
+            "mismatched/replay-rejected — fail closed: no paid model "
+            "invocation occurred and none is authorized (the original stage "
+            "failure is preserved)"
         )
     else:
         evidence.append(
             "FAIL_CLOSED: malformed/unknown authorization state — fail "
-            "closed, no paid model invoked, original stage failure preserved"
+            "closed: no paid model invocation occurred and none is "
+            "authorized (the original stage failure is preserved)"
         )
     evidence.append(
-        "one-fallback/no-chain: the Cost Gate performs no model invocation "
-        "and consumes none of the affected stage's automatic fallback "
-        "budget — this stage has no fallback chain/loop; the automatic "
-        "fallback decision (fallback_not_eligible with explicit reason) is "
-        "recorded separately in the authoritative fallback_runtime.json"
+        "one-fallback/no-chain: the Cost Gate unit itself performs no model "
+        "invocation and consumes none of the affected stage's automatic "
+        "fallback budget itself; if the A5 paid fallback runtime consumes "
+        "an AUTHORIZED decision, that single paid fallback invocation "
+        "consumes the affected stage's one-attempt budget (FREE and paid "
+        "fallback share the same single model-level fallback budget — no "
+        "fallback chain/loop; the FREE-layer decision is recorded "
+        "separately in the authoritative fallback_runtime.json)"
     )
     if automatic_fallback_count_used == 0:
         evidence.append(

@@ -2,7 +2,26 @@
 
 > Project: AI Agent Framework\
 > Current Version: **v0.4（FROZEN / RELEASE READY — 2026-08-29 AAF-v0.4-FREEZE-001 正式冻结；Final Acceptance = PASS（AAF-v0.4-FINAL-ACCEPTANCE-002，Codex APPROVE，Unresolved Issues = None）；accepted implementation baseline = `1d3771fe8220e1b2e21c774840d680ec9f2dce61`；final freeze metadata commit = docs-only 提交（见本文件 §0 顶部与 git tag `v0.4`）；Release Closure Matrix 全项 COMPLETE / CLOSED / IMPLEMENTED / SOLVED / ACCEPTED；Automatic Model Routing 与 Cost Gate = NOT IMPLEMENTED（future scope）；下一开发线 post-v0.4 / v0.5 仅在用户显式启动时开启。以下为 v0.4 开发全程历史记录（IN PROGRESS 时期，保留不删除）：Phase A/B/C/D COMPLETE；Phase E COMPLETE（E-Core / Soft Cancel COMPLETE — 005-A + FIX-001/002/003；E-Ownership / Force Cancel 已交付 — 005-B + 005-B-FIX-001（canonical force authority + successful termination proof，Codex 两个 blocker 已闭合）；005-C Status Window Cancel UX + Real Windows E2E Closure 已交付——实现 + 测试 + 真实 Windows 正负 E2E 全量通过，Phase E 正式标记 COMPLETE；005-C-FIX-001（Cancel Timestamp Timezone Compatibility Fix）已交付——canonical UTC/aware elapsed contract 统一 cancel elapsed 计算，合法 offset-aware（+08:00 / +00:00 / Z）与 legacy naive 均不再因 naive/aware 混算而破坏 Cancel UI / force eligibility，malformed fail closed，Codex 原 timezone blocker 已闭合；route 阶段 WorkBuddy / Codex 独立复核按项目惯例由 route 执行并记录于任务 REPORT，若发现 blocking 则按惯例开 FIX）；Phase F IMPLEMENTATION DELIVERED（AAF-v0.4-TASK-006：Project Switching + Duplicate Task UX 实现 + 72 项新测试（63 单元 + 9 真实 Windows E2E A–I）+ 760 passed；RW-003 / RW-016 / RW-006 按真实交付证据收口 SOLVED；正式 COMPLETE 判定留待 WorkBuddy 独立验证 + Codex 审查后由 Planner 确认，本任务不自行宣布 Phase F COMPLETE）；Phase F FIX-001（Atomic Config Persistence + Real UX Closure）已交付——config.save_config 统一 atomic contract（同目录 tmp + flush/fsync + os.replace，失败清理 tmp 且旧 config 原样保留，无 write_text 旁路）；真实 Bridge UI 交互 harness（真实 Tk 弹窗 + 真实按钮 invoke + 真实剪贴板）覆盖 Known switch 确认/拒绝/Unknown fail-safe/Invalid fail closed/Duplicate running 卡片+无第二 runner/Duplicate terminal 卡片+不覆盖/restart 恢复；顺带修复 duplicate 卡片 [打开 REPORT] 死按钮（Tk 按钮 invoke 不带参数 → 闭包捕获 report_path）；780 passed（760 + 20 新增，零下降）；WorkBuddy 独立验证 + Codex 复审由 route 执行（本任务不自行宣布 COMPLETE））；Model Observability / Discovery Foundation 已交付（AAF-v0.4-TASK-010：只读模型观测 + 发现事实层——model_observation.json 单一 machine authority、每 stage stage_timing、REPORT 紧凑 Model Observation 摘要、30 项定向测试；Automatic Model Routing 未实现，仅登记未来 policy（backlog §5.5 CAP-003））；WorkBuddy Stage Reliability 已交付（AAF-v0.4-TASK-011 + FIX-001 + FIX-002：bounded transient retry / confirmed-dead-before-retry / single absolute stage deadline / Windows tree cleanup authority / safe cleanup reserve / attempt admission / telemetry）；当前状态 = FROZEN（见下方 §0））**\
-> Last Updated: 2026-09-05（AAF-v0.5-A5-PAID-FALLBACK-RUNTIME-001 — **一次性
+> Last Updated: 2026-09-05（AAF-v0.5-A5-CLOSE-001 — **A5 Fallback / Escalation /
+> Cost Gate 正式关闭（docs-only closure；parent = e905610，新 commit 未 amend 未
+> push；A5 = **CLOSED / COMPLETE**——2026-09-05 依已完成的 AAF-v0.5-A5-CLOSURE-
+> AUDIT-001（判定 A5_READY_TO_CLOSE：REQUIRED_BEFORE_A5_CLOSE 9 项全部
+> SATISFIED，Unresolved Issues = None）正式关闭，closure evidence = A5-001
+> fallback contract / A5-002 FREE runtime / A5-003 paid escalation Cost Gate /
+> A5-004 authorized paid fallback runtime 四个已接受实现单元 + audit 判定，各实现
+> 单元历史记录不重写；REQUIRED_BEFORE_A5_CLOSE 9 项原文不重写（PROJECT_STATE
+> 「A5 Scope Formalization」块 = 唯一权威 completion boundary 保持）；正式边界
+> 保持 outside：A6（health scoring / quarantine / runtime requalification /
+> calibration / observation policy）与 A4+（HIGH / CRITICAL WorkBuddy routing、
+> broader Codex / multi-agent routing）= future scope NOT IMPLEMENTED、未进入；
+> 改动 = PROJECT_STATE.md（Last Updated 新条目 + A5 Scope Formalization 块 A5
+> 状态加注 2026-09-05 CLOSED / COMPLETE 更新 + 新「A5 CLOSED」权威块 + Next
+> mainline A5 边界句加注）+ AAF_MASTER_BACKLOG.md（Last Updated 新条目 +
+> CAP-003 title / Status / Current Implementation / Remaining Gap / Do Not
+> Forget + RW-027 Related + CAP-004 Do Not Forget + §7 Summary 同步 A5 =
+> CLOSED / COMPLETE）+ closure record = docs/internal/AAF-v0.5-A5-CLOSE-001-
+> REPORT.md；docs-only——零 runtime / code / test / registry / economics /
+> qualification 变化；PRE_ALLOWED_UNTRACKED 保留；no push）。此前更新：2026-09-05（AAF-v0.5-A5-PAID-FALLBACK-RUNTIME-001 — **一次性
 > authorized paid fallback invocation 交付（A5 保持 STARTED，NOT CLOSED /
 > COMPLETE——REQUIRED_BEFORE_A5_CLOSE 9 项不重写；parent = dd4e6e0，新 commit
 > 未 amend 未 push）**：把 A5-003 AUTHORIZED paid gate 状态接入 live fallback
@@ -287,8 +306,9 @@ Next mainline: v0.5 -> A2 Shadow Routing = CLOSED / COMPLETE / SYNCED（2026-08-
     routing——A4 正式 completion boundary = LOW + MEDIUM risk foundation，multi-agent /
     Codex 划归 A4+ future scope，见下方「A4 Scope Formalization」块；**A4 = CLOSED /
     COMPLETE**（2026-09-02 AAF-v0.5-A4-CLOSE-001 正式关闭，见下方「A4 CLOSED」块）、
-    A5 = fallback / Cost Gate UX（A5 正式 completion boundary / READY_TO_START =
-    2026-09-02 AAF-v0.5-A5-SCOPE-FORMALIZATION-001 正式化——bounded auditable
+    A5 = fallback / Cost Gate UX = **CLOSED / COMPLETE**（2026-09-05
+    AAF-v0.5-A5-CLOSE-001 正式关闭，见下方「A5 CLOSED」块；completion boundary
+    = 2026-09-02 AAF-v0.5-A5-SCOPE-FORMALIZATION-001 正式化——bounded auditable
     fallback / escalation / Cost Gate foundation，见下方「A5 Scope Formalization」
     块）、A6 = observation/calibration/runtime requalification（health/
     quarantine 属之）——A3 关闭时 A4-A6 均 NOT IMPLEMENTED、未进入；MEDIUM/HIGH 自动
@@ -1100,6 +1120,15 @@ A5 Scope Formalization（2026-09-02，AAF-v0.5-A5-SCOPE-FORMALIZATION-001 — do
     deselected（0 failed）** = HEAD 4c2ebf9 基线 **2093 + 8 精确零回归**
     + parent fresh-runner 驱动复跑 FIX-001 5/5 + A5-003 5/5 全绿；实现细节 =
     docs/internal/AAF-v0.5-A5-PAID-ESCALATION-GATE-001-FIX-002-REPORT.md
+  - **A5 状态（2026-09-05 AAF-v0.5-A5-CLOSE-001 更新）**: A5 = **CLOSED /
+    COMPLETE**——正式关闭已执行（本块界定的 completion boundary 与上方
+    REQUIRED_BEFORE_A5_CLOSE 9 项 closure requirements 保持唯一权威定义不变；
+    上方各「A5 实现状态」bullet 的 STARTED / NOT CLOSED = 各实现单元任务时点的
+    历史状态记录，A5-001..004 实现历史不改写；A5-004 = 2026-09-05
+    AAF-v0.5-A5-PAID-FALLBACK-RUNTIME-001 已交付（一次性 authorized paid
+    fallback invocation runtime + paid_fallback_runtime.json 权威 audit，摘要
+    见顶部 Last Updated 2026-09-05 A5-004 条目与 docs/internal/AAF-v0.5-A5-
+    PAID-FALLBACK-RUNTIME-001-REPORT.md）；正式关闭记录见下方「A5 CLOSED」块）
   - **Explicitly outside A5（A5 closure 不含以下任何项；本任务不实现、不进入）**:
     - **A6**: health scoring / quarantine / long-term availability tracking /
       automatic requalification / calibration / ongoing observation policy
@@ -1119,6 +1148,49 @@ A5 Scope Formalization（2026-09-02，AAF-v0.5-A5-SCOPE-FORMALIZATION-001 — do
   - decision record = docs/internal/AAF-v0.5-A5-SCOPE-FORMALIZATION-001-REPORT.md
     （prior ambiguity / formal purpose and closure requirements / one-fallback
     rule / free and paid fallback rules / auditability / A4+ / A6 boundaries）
+A5 CLOSED（2026-09-05，AAF-v0.5-A5-CLOSE-001 — 依上方 Formalization 块正式化的
+  completion boundary 关闭 A5；docs-only closure，零 runtime/code/test/model
+  registry/economics/qualification 变化）:
+  - **A5 = CLOSED / COMPLETE**（2026-09-05 正式关闭：closure boundary = 上方
+    「A5 Scope Formalization」块——bounded auditable fallback / escalation /
+    Cost Gate foundation，REQUIRED_BEFORE_A5_CLOSE 9 项 closure requirements
+    全部由已接受交付满足：A5-001 = AAF-v0.5-A5-FALLBACK-CONTRACT-001（commit
+    5255d8b，fallback decision + audit contract foundation）/ A5-002 =
+    AAF-v0.5-A5-FREE-FALLBACK-RUNTIME-001（a0ac326 + FIX-001 8b3c24b +
+    FIX-002 b082fef，FREE/LOCAL_FREE fallback runtime）/ A5-003 =
+    AAF-v0.5-A5-PAID-ESCALATION-GATE-001（32c4bbe + FIX-001 4c2ebf9 +
+    FIX-002 927d965，paid escalation Cost Gate）/ A5-004 =
+    AAF-v0.5-A5-PAID-FALLBACK-RUNTIME-001（e905610，authorized paid fallback
+    runtime）；Scope Formalization = f6c577d（+FIX-003 cc404c1 READY_TO_START
+    token 收口））；A5 formal scope 内无 remaining gap；A5 closure audit =
+    AAF-v0.5-A5-CLOSURE-AUDIT-001 判定 **A5_READY_TO_CLOSE**（9 项全部
+    SATISFIED，Hermes audit + WorkBuddy 独立复核，Unresolved = None）；按 A2/A3/
+    A4 惯例经 WorkBuddy 独立验证 + Codex APPROVE（route 阶段，verdict 见
+    AAF-v0.5-A5-CLOSE-001-REPORT.md）
+  - 交付能力（closure capability，已交付并验证）：bounded auditable fallback /
+    escalation / Cost Gate foundation——A5-001：唯一权威 fallback decision
+    contract（8 类 failure taxonomy / one-fallback budget（每 stage 至多 1 次）/
+    transport-retry（RW-027）分层分离 / authoritative audit record + validate
+    fail closed）；A5-002：FREE/LOCAL_FREE automatic fallback runtime（Hermes
+    executor live path 原始失败后至多一次 FREE fallback attempt +
+    fallback_runtime.json 权威 audit；no silent paid）；A5-003：paid escalation
+    Cost Gate（既有 A0 Paid Guard 唯一付费授权 authority 的 authorization-
+    evaluation gate——AUTHORIZED / BLOCKED / FAIL_CLOSED + paid_escalation_gate.
+    json audit；exact task/stage/model/provider scope）；A5-004：authorized paid
+    fallback runtime（gate AUTHORIZED + exact scope 时恰一次 paid fallback
+    invocation + paid_fallback_runtime.json 权威 audit（attempted/used/closure
+    error 如实）；free 优先、共享 one-attempt budget、无第二付费授权系统、无
+    chain/loop、no silent paid）
+  - **A6 / A4+ future scope 保持 outside、未进入（本任务不实现、不标记实现）**：
+    A6 = health scoring / quarantine / long-term availability tracking /
+    automatic requalification / calibration / ongoing observation policy；
+    A4+ = HIGH / CRITICAL WorkBuddy routing、broader Codex / multi-agent
+    routing（既有 prerequisite 记录保持）；A0-A4 不重开
+  - **A5 整体 closure 与历史实现单元记录区分保持**：本块 = A5 整体 CLOSED /
+    COMPLETE 权威记录；A5-001..004 历史任务记录（上方 A5 块各「A5 实现状态」
+    bullet / 各单元 REPORT / 顶部 Last Updated 嵌套条目）作为历史证据保留、不改写
+  - closure record = docs/internal/AAF-v0.5-A5-CLOSE-001-REPORT.md；no push
+    （Requirement：review 后同步）
 Maintenance branch（2026-08-30，AAF-v0.5-RUNTIME-UX-CONSOLE-FLASH-001 — 临时 UX 维护，已收口）:
   - 修复确认的 Windows helper 子进程瞬时 console 闪现（cosmetic/UX only，非功能失败）：
     context_packet.py 6 处 git 调用 + git_status._git() + model_observation._run_readonly()

@@ -604,13 +604,31 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 # 在本 stage 期间生效；adapters.run_agent 以该 env 解析 subprocess
                 # timeout（显式 timeout 参数仍优先）。A5 fallback 的第二次
                 # invocation 在同一 env 下同样有界（不额外烧 unbounded budget）。
+                # FIX-001（TASK: AAF-v0.5-COST-STOP-LOSS-001-FIX-001 —— Codex
+                # REQUEST_CHANGE blocker 收口）：**共享 Hermes stage deadline**。
+                # 在首次模型 invocation 之前一次性设置绝对 stage deadline env
+                # （AAF_HERMES_STAGE_DEADLINE = monotonic() + stage budget；
+                # budget = AAF_HERMES_STAGE_BUDGET override 或默认 3600s——
+                # 即原 ~3600s 级无进度问题边界）。original invocation 与 A5
+                # FREE/PAID fallback 全部消费这**同一个**绝对 deadline：
+                # adapters.run_agent 每次 subprocess 前把 per-attempt timeout
+                # 裁剪到剩余预算（effective = min(per_attempt, remaining)）；
+                # 本 stage 结束 restore。fallback 层（run_fallback_after_failure）
+                # 绝不重算/重设该值。WorkBuddy/Codex stage 不触碰该 env。
                 stage_timeout_env_saved = None
+                stage_deadline_env_saved = None
                 if agent == 'hermes':
                     sl_timeout = stop_loss_mod.resolve_agent_attempt_timeout(
                         'hermes', risk_class=task_risk
                     )
                     stage_timeout_env_saved = os.environ.get(stop_loss_mod.ENV_HERMES_ATTEMPT_TIMEOUT)
                     os.environ[stop_loss_mod.ENV_HERMES_ATTEMPT_TIMEOUT] = f'{sl_timeout:g}'
+                    # FIX-001：共享 Hermes stage deadline（绝对 monotonic 值；只
+                    # 设一次——即便稍后进入 A5 fallback 也不 reset/重算）。
+                    stage_deadline_env_saved = os.environ.get(stop_loss_mod.ENV_HERMES_STAGE_DEADLINE)
+                    os.environ[stop_loss_mod.ENV_HERMES_STAGE_DEADLINE] = (
+                        f'{stop_loss_mod.hermes_stage_deadline_value():g}'
+                    )
                 fb_exc = None
                 try:
                     if agent == 'hermes':
@@ -649,56 +667,78 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 fallback_overlay_saved = None
                 fb_paid_gate_ref = None
                 fb_paid_runtime_ref = None
+                fb_budget_suppressed = None
                 if agent == 'hermes' and fb_exc is not None:
-                    try:
-                        fb_risk = parse_task_fields(task).get('Risk') or None
-                        if fb_risk is not None:
-                            fb_outcome = fallback_runtime_mod.run_fallback_after_failure(
-                                task_id=task_id,
-                                risk_class=fb_risk,
-                                risk_source=shadow_obs_mod.TASK_RISK_SOURCE,
-                                stage_agent=agent,
-                                role=ROLE_EXECUTOR,
-                                registry=model_registry_mod.baseline_registry(),
-                                output_dir=output_dir,
-                                prompt=prompt,
-                                workspace=workspace,
-                                invoke=run_agent,
-                                failure_exc=fb_exc,
-                            )
-                            if fb_outcome is not None:
-                                if fb_outcome.get('result_text') is not None:
-                                    result_text = fb_outcome['result_text']
-                                a5_audit_closure_error = fb_outcome.get('audit_closure_error')
-                                if a5_audit_closure_error:
-                                    # v0.5 A5 FIX-001：authoritative audit 未闭合 →
-                                    # fallback 输出不得成为 stage result（fallback
-                                    # 层已返回 result_text=None / used=false）——
-                                    # 显式 surface audit failure：stderr + 追加到
-                                    # stage result 文本（attempt 证据持久化，绝不
-                                    # 静默丢弃；不发起第三模型、不重试 fallback）。
-                                    print(
-                                        f'[a5-fallback] {a5_audit_closure_error}',
-                                        file=sys.stderr,
-                                    )
-                                    result_text = (
-                                        f'{result_text}\n'
-                                        'FRAMEWORK_ERROR[a5-fallback audit '
-                                        'closure failed]: '
-                                        f'{a5_audit_closure_error}'
-                                    )
-                                fallback_runtime_ref = fb_outcome.get('artifact_ref')
-                                fallback_overlay_saved = fb_outcome.get('overlay_saved') or None
-                                fb_paid_gate_ref = fb_outcome.get('paid_gate_artifact_ref') or None
-                                fb_paid_runtime_ref = fb_outcome.get(
-                                    'paid_audit_artifact_ref'
-                                ) or None
-                    except Exception as a5_exc:
-                        # A5 层内部失败不得掩盖原始 stage 失败（也不得导致第二模型）
+                    # v0.5 COST-STOP-LOSS-001-FIX-001（shared Hermes stage
+                    # deadline；Codex REQUEST_CHANGE blocker 收口）：A5 fallback
+                    # 评估**之前**的共享 deadline 预算 gate（Requirement 3/5）——
+                    # remaining = stage_deadline - now；耗尽/低于安全下限 → 不
+                    # 发起第二模型（FREE 与 PAID 都被拦截——gate 位于 fallback
+                    # 层入口之前），stage 以机器可读 STAGE_BUDGET_EXHAUSTED
+                    # 终止（stop_loss.json；底层失败文本原样保留，RESUME 语义
+                    # 不变）。gate 之后到实际 invocation 之间的任何剩余消耗由
+                    # adapters.run_agent 的 min(per_attempt, remaining) 裁剪兜底。
+                    fb_budget_state = stop_loss_mod.hermes_fallback_allowed()
+                    if not fb_budget_state['allowed']:
+                        fb_budget_suppressed = fb_budget_state
                         print(
-                            f'[a5-fallback] layer error: {type(a5_exc).__name__}: {a5_exc}',
+                            f'[stop-loss] {fb_budget_suppressed["suppressed_reason"]} '
+                            '— no fallback invocation (FREE or PAID) was '
+                            'started; the Hermes stage fails closed with '
+                            'terminal reason STAGE_BUDGET_EXHAUSTED '
+                            '(original failure preserved for RESUME/recovery)',
                             file=sys.stderr,
                         )
+                    else:
+                        try:
+                            fb_risk = parse_task_fields(task).get('Risk') or None
+                            if fb_risk is not None:
+                                fb_outcome = fallback_runtime_mod.run_fallback_after_failure(
+                                    task_id=task_id,
+                                    risk_class=fb_risk,
+                                    risk_source=shadow_obs_mod.TASK_RISK_SOURCE,
+                                    stage_agent=agent,
+                                    role=ROLE_EXECUTOR,
+                                    registry=model_registry_mod.baseline_registry(),
+                                    output_dir=output_dir,
+                                    prompt=prompt,
+                                    workspace=workspace,
+                                    invoke=run_agent,
+                                    failure_exc=fb_exc,
+                                )
+                                if fb_outcome is not None:
+                                    if fb_outcome.get('result_text') is not None:
+                                        result_text = fb_outcome['result_text']
+                                    a5_audit_closure_error = fb_outcome.get('audit_closure_error')
+                                    if a5_audit_closure_error:
+                                        # v0.5 A5 FIX-001：authoritative audit 未闭合 →
+                                        # fallback 输出不得成为 stage result（fallback
+                                        # 层已返回 result_text=None / used=false）——
+                                        # 显式 surface audit failure：stderr + 追加到
+                                        # stage result 文本（attempt 证据持久化，绝不
+                                        # 静默丢弃；不发起第三模型、不重试 fallback）。
+                                        print(
+                                            f'[a5-fallback] {a5_audit_closure_error}',
+                                            file=sys.stderr,
+                                        )
+                                        result_text = (
+                                            f'{result_text}\n'
+                                            'FRAMEWORK_ERROR[a5-fallback audit '
+                                            'closure failed]: '
+                                            f'{a5_audit_closure_error}'
+                                        )
+                                    fallback_runtime_ref = fb_outcome.get('artifact_ref')
+                                    fallback_overlay_saved = fb_outcome.get('overlay_saved') or None
+                                    fb_paid_gate_ref = fb_outcome.get('paid_gate_artifact_ref') or None
+                                    fb_paid_runtime_ref = fb_outcome.get(
+                                        'paid_audit_artifact_ref'
+                                    ) or None
+                        except Exception as a5_exc:
+                            # A5 层内部失败不得掩盖原始 stage 失败（也不得导致第二模型）
+                            print(
+                                f'[a5-fallback] layer error: {type(a5_exc).__name__}: {a5_exc}',
+                                file=sys.stderr,
+                            )
                 # TASK-011：WorkBuddy stage attempt telemetry（machine artifact；
                 # supporting evidence——canonical 结果仍只有 <agent>_result.md/json）。
                 wb_retry_meta = None
@@ -715,7 +755,8 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 # v0.5 COST-STOP-LOSS-001：stop-loss 机器可读记录。仅当 stage 最终
                 # 失败且存在已识别 stop reason（ATTEMPT_TIMEOUT / RETRIES_EXHAUSTED /
                 # NO_PROGRESS / RATE_LIMIT / QUOTA / PROVIDER_FAILURE /
-                # TOOL_OR_TEST_STILL_ACTIVE——词汇表见 stop_loss.TERMINAL_STOP_REASONS）
+                # TOOL_OR_TEST_STILL_ACTIVE / STAGE_BUDGET_EXHAUSTED——词汇表见
+                # stop_loss.TERMINAL_STOP_REASONS）
                 # 时写出/更新；stage 有效（含 resume 修复后）清除旧记录——
                 # stop_loss.json 描述当前 run 状态，历史保留在各 stage result /
                 # attempt 机器 artifact 中（workbuddy_attempts.json / *_result.json）。
@@ -726,6 +767,9 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                             agent=agent, exc=fb_exc, wb_telemetry=wb_retry_meta,
                             result_text=result_text, task_id=task_id,
                             elapsed_seconds=stage_elapsed,
+                            # FIX-001：共享 stage deadline 耗尽 → 覆盖分类为
+                            # STAGE_BUDGET_EXHAUSTED（机器可读；见 build 内注释）
+                            stage_budget_exhausted=fb_budget_suppressed,
                         )
                     except Exception:
                         stop_loss_record = None  # 辅助 telemetry 失败非阻塞
@@ -811,6 +855,13 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                         os.environ.pop(stop_loss_mod.ENV_HERMES_ATTEMPT_TIMEOUT, None)
                     else:
                         os.environ[stop_loss_mod.ENV_HERMES_ATTEMPT_TIMEOUT] = stage_timeout_env_saved
+                    # FIX-001：共享 stage deadline env 还原（与 attempt timeout
+                    # 同一纪律——绝不泄漏到后续 stage / 调用方；若 operator 在
+                    # stage 前已预设该 env，精确还原其值）。
+                    if stage_deadline_env_saved is None:
+                        os.environ.pop(stop_loss_mod.ENV_HERMES_STAGE_DEADLINE, None)
+                    else:
+                        os.environ[stop_loss_mod.ENV_HERMES_STAGE_DEADLINE] = stage_deadline_env_saved
                 head_after = git_head(workspace)
                 stage = build_stage_result(
                     agent=agent,

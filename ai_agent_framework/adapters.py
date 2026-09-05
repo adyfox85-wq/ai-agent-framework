@@ -496,6 +496,20 @@ def run_agent(agent: str, prompt: str, workspace: Path, timeout: float | None = 
     # WorkBuddy 不消费该 timeout（retry 层以 AAF_WORKBUDDY_* 自管）。
     if timeout is None:
         timeout = stop_loss_mod.resolve_agent_attempt_timeout(agent)
+    # v0.5 COST-STOP-LOSS-001-FIX-001（shared Hermes stage deadline——Codex
+    # REQUEST_CHANGE blocker 收口）：original invocation 与 A5 FREE/PAID
+    # fallback 共享 runner 设置的同一个绝对 stage deadline。每次 subprocess
+    # 创建前：effective_timeout = min(per_attempt_timeout, remaining_stage_budget)
+    # （Requirement 4/8）——fallback 绝不能重启一个完整 per-attempt timeout；
+    # remaining ≤ 0 → 以 subprocess.TimeoutExpired 有界早停（不 spawn child，
+    # 分类路径与真实 timeout 相同：ATTEMPT_TIMEOUT）。deadline env 只由 runner
+    # 在 Hermes stage 期间设置/还原；absent → 本段 no-op（既有语义零变化；
+    # codex/workbuddy stage、直接调用本模块的测试均不受影响）。
+    remaining = stop_loss_mod.hermes_stage_remaining_seconds()
+    if remaining is not None:
+        if remaining <= 0.0:
+            raise subprocess.TimeoutExpired(agent, timeout)
+        timeout = min(timeout, remaining)
     # 子进程统一使用 Windows 新会话 PATH；workbuddy 额外禁用后台任务
     env = {**os.environ, 'PATH': _windows_path()}
     if agent == 'hermes':

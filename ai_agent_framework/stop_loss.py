@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import time
 
 # ---------------------------------------------------------------------------
 # Machine-readable terminal stop reasons（Requirement 7 词汇表）
@@ -34,6 +35,9 @@ STOP_REASON_RATE_LIMIT = "RATE_LIMIT"
 STOP_REASON_QUOTA = "QUOTA"
 STOP_REASON_PROVIDER_FAILURE = "PROVIDER_FAILURE"
 STOP_REASON_TOOL_OR_TEST_STILL_ACTIVE = "TOOL_OR_TEST_STILL_ACTIVE"
+# v0.5-COST-STOP-LOSS-001-FIX-001：共享 Hermes stage deadline 耗尽/低于安全
+# 下限 → 不再发起任何（FREE/PAID）fallback invocation，stage fail closed。
+STOP_REASON_STAGE_BUDGET_EXHAUSTED = "STAGE_BUDGET_EXHAUSTED"
 
 TERMINAL_STOP_REASONS = (
     STOP_REASON_ATTEMPT_TIMEOUT,
@@ -43,6 +47,7 @@ TERMINAL_STOP_REASONS = (
     STOP_REASON_QUOTA,
     STOP_REASON_PROVIDER_FAILURE,
     STOP_REASON_TOOL_OR_TEST_STILL_ACTIVE,
+    STOP_REASON_STAGE_BUDGET_EXHAUSTED,
 )
 
 STOP_LOSS_ARTIFACT = "stop_loss.json"
@@ -118,6 +123,164 @@ def resolve_agent_attempt_timeout(agent: str, risk_class: str | None = None,
         return DEFAULT_CODEX_ATTEMPT_TIMEOUT
     # workbuddy（retry 层自管）与未知 agent：返回 Hermes 默认（不参与决策）
     return DEFAULT_HERMES_ATTEMPT_TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# Shared Hermes stage deadline（v0.5-COST-STOP-LOSS-001-FIX-001 —— Codex
+# REQUEST_CHANGE 唯一 blocker 收口）：original invocation 与 A5 FREE/PAID
+# fallback 共享**同一个**绝对 stage deadline；fallback 绝不能重启一个完整
+# per-attempt timeout（HIGH/CRITICAL 理论 2400+2400=4800s 行为被消除）。
+#
+# 机制（runner 是 deadline 的唯一 owner，只在 Hermes stage 期间设置/还原）：
+# - ``AAF_HERMES_STAGE_BUDGET``（operator 逃生口）→ 默认 3600s（原 3600s 级
+#   无进度问题边界；> 全部 risk 档 per-attempt 上限 → 单次成功 invocation 语义
+#   零变化，总 stage 墙钟有界）。
+# - runner 在首次 invocation 前把 ``AAF_HERMES_STAGE_DEADLINE`` 设为
+#   ``monotonic() + budget``（绝对值）；fallback 层绝不重算/重设该值
+#   （Requirement 7：进入 fallback_runtime 不 reset deadline）。
+# - ``adapters.run_agent`` 每次 subprocess 创建前：
+#   effective_timeout = min(per_attempt_timeout, deadline - now)
+#   （Requirement 4/8；original 与每个 fallback invocation 同一公式）。
+# - ``hermes_fallback_allowed``：每次 fallback 评估前 runner 求值剩余预算；
+#   耗尽/低于安全下限（Requirement 5）→ 不发起第二模型、以
+#   STAGE_BUDGET_EXHAUSTED 机器原因 fail closed（FREE 与 PAID 都覆盖——
+#   该 gate 位于 A5 层入口之前，两种 fallback 都不可能被发起）。
+# ---------------------------------------------------------------------------
+ENV_HERMES_STAGE_BUDGET = "AAF_HERMES_STAGE_BUDGET"
+ENV_HERMES_STAGE_DEADLINE = "AAF_HERMES_STAGE_DEADLINE"
+ENV_HERMES_STAGE_MIN_REMAINING = "AAF_HERMES_STAGE_MIN_REMAINING"
+
+# 默认 Hermes stage 总墙钟预算（秒）。evidence：原问题边界 = ~3600s 级无进度
+# 等待（adapters 历史 per-attempt 默认 3600）；成功 Hermes stage 按 risk 分组
+# p100 ≤ 1886s（COST-STOP-LOSS-001 recon），故 3600s 单 stage 总预算保留 100%
+# 已观测成功样本 + 至少一次有界 fallback 尝试空间，同时把
+# original+free+paid 理论等待收口到 ≤3600s（2400+1200 / 1500+1500 / …）。
+DEFAULT_HERMES_STAGE_BUDGET = 3600.0
+# 发起另一次模型 invocation 前必须剩余的安全下限（秒）——低于该值不再启动
+# 第二模型（启动即注定无法在 deadline 内产出/有界收敛；fail closed 早停，
+# 不空转）。operator 可用 AAF_HERMES_STAGE_MIN_REMAINING 显式调低/归零。
+DEFAULT_HERMES_STAGE_MIN_REMAINING = 60.0
+
+
+def _monotonic() -> float:
+    """测试可注入的单调时钟（模块级间接；其余全部 helper 经此取时）。"""
+    return time.monotonic()
+
+
+def resolve_hermes_stage_budget(env=None) -> float:
+    """Hermes stage 总墙钟预算（秒）——AAF_HERMES_STAGE_BUDGET 优先，否则默认。
+
+    非法/非正数 env → 默认（operator typo 不杀死 run；沿用 attempt-timeout
+    resolver 的防御语义）。返回值只被 runner 用于计算绝对 deadline。
+    """
+    env = os.environ if env is None else env
+    raw = env.get(ENV_HERMES_STAGE_BUDGET, "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            pass
+        else:
+            if value > 0:
+                return value
+    return DEFAULT_HERMES_STAGE_BUDGET
+
+
+def resolve_hermes_stage_min_remaining(env=None) -> float:
+    """fallback invocation 安全下限（秒）——env override，否则默认。
+
+    允许 operator 显式设 0（禁用早停下限；remaining<0 才停）；负数/非法 →
+    默认。永不返回负值。
+    """
+    env = os.environ if env is None else env
+    raw = env.get(ENV_HERMES_STAGE_MIN_REMAINING, "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            pass
+        else:
+            if value >= 0:
+                return value
+    return DEFAULT_HERMES_STAGE_MIN_REMAINING
+
+
+def hermes_stage_deadline_value(budget_seconds: float | None = None,
+                                env=None) -> float:
+    """绝对 stage deadline（monotonic epoch 秒）= now + budget。
+
+    budget_seconds=None → resolve_hermes_stage_budget（env/default）。
+    runner 在首次 invocation 前调用一次并把结果写入
+    ENV_HERMES_STAGE_DEADLINE；**只计算一次**，进入 fallback_runtime 不重算。
+    """
+    if budget_seconds is None:
+        budget_seconds = resolve_hermes_stage_budget(env)
+    return _monotonic() + budget_seconds
+
+
+def hermes_stage_remaining_seconds(env=None) -> float | None:
+    """共享 deadline 的剩余秒数；无 deadline env（非 Hermes stage / 直接调用
+    本模块的测试）→ None（调用方保持既有语义，不裁剪不 gate）。"""
+    env = os.environ if env is None else env
+    raw = env.get(ENV_HERMES_STAGE_DEADLINE, "").strip()
+    if not raw:
+        return None
+    try:
+        deadline = float(raw)
+    except ValueError:
+        return None
+    return deadline - _monotonic()
+
+
+def effective_attempt_timeout(per_attempt_timeout: float, env=None) -> float:
+    """Requirement 8：effective_timeout = min(per_attempt_timeout,
+    remaining_stage_budget)。无共享 deadline → per_attempt_timeout 原样（既有
+    语义）；remaining ≤ 0 → 返回 ≤ 0（调用方以 bounded 早停处理，不启动子进程）。"""
+    remaining = hermes_stage_remaining_seconds(env)
+    if remaining is None:
+        return per_attempt_timeout
+    return min(per_attempt_timeout, remaining)
+
+
+def hermes_fallback_allowed(env=None) -> dict:
+    """Requirement 3/5：每次 fallback 评估前的共享 deadline 预算 gate。
+
+    返回 {"allowed", "remaining_seconds", "minimum_required_seconds",
+    "suppressed_reason"}：
+    - 无共享 deadline env → allowed=True / remaining=None（保持既有 fallback
+      语义——只有 runner 的 Hermes stage 设置 deadline，live 路径恒有值）；
+    - remaining < 安全下限（默认 60s，AAF_HERMES_STAGE_MIN_REMAINING 可调）→
+      allowed=False + suppressed_reason（机器可读；调用方不得发起第二模型，
+      并以 STAGE_BUDGET_EXHAUSTED 终止）；
+    - 否则 allowed=True（实际 invocation 仍会被 adapters 裁剪到 remaining——
+      双保险，gate 之后到 subprocess 创建之间的消耗也被同一 deadline 约束）。
+    """
+    remaining = hermes_stage_remaining_seconds(env)
+    if remaining is None:
+        return {
+            "allowed": True,
+            "remaining_seconds": None,
+            "minimum_required_seconds": resolve_hermes_stage_min_remaining(env),
+            "suppressed_reason": None,
+        }
+    minimum = resolve_hermes_stage_min_remaining(env)
+    if remaining < minimum:
+        return {
+            "allowed": False,
+            "remaining_seconds": remaining,
+            "minimum_required_seconds": minimum,
+            "suppressed_reason": (
+                "shared Hermes stage deadline exhausted: remaining budget "
+                f"{remaining:.1f}s is below the safe minimum {minimum:.1f}s "
+                "required to start another model invocation"
+            ),
+        }
+    return {
+        "allowed": True,
+        "remaining_seconds": remaining,
+        "minimum_required_seconds": minimum,
+        "suppressed_reason": None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -286,8 +449,46 @@ def classify_terminal_reason(*, agent: str, exc: BaseException | None,
 
 def build_stop_loss_record(*, agent: str, task_id: str, exc: BaseException | None,
                            wb_telemetry: dict | None, result_text: str | None,
-                           elapsed_seconds: float | None) -> dict | None:
-    """构造 stop_loss.json 机器记录；无已识别 stop reason → None（调用方不写文件）。"""
+                           elapsed_seconds: float | None,
+                           stage_budget_exhausted: dict | None = None) -> dict | None:
+    """构造 stop_loss.json 机器记录；无已识别 stop reason → None（调用方不写文件）。
+
+    ``stage_budget_exhausted``（FIX-001：runner 在共享 Hermes stage deadline
+    耗尽、fallback 被 gate 拦截时传入的 ``hermes_fallback_allowed`` 结果）优先
+    于其他分类——stage 因预算耗尽而无法发起任何 fallback 是比底层异常更精确的
+    terminal reason（STAGE_BUDGET_EXHAUSTED，机器可读）；缺省 None → 既有
+    classify_terminal_reason 路径不变。
+    """
+    if stage_budget_exhausted and not stage_budget_exhausted.get("allowed", True):
+        reason = STOP_REASON_STAGE_BUDGET_EXHAUSTED
+        remaining = stage_budget_exhausted.get("remaining_seconds")
+        minimum = stage_budget_exhausted.get("minimum_required_seconds")
+        detail = (
+            f"shared Hermes stage deadline exhausted before any fallback "
+            f"invocation: remaining budget "
+            f"{round(float(remaining), 1) if remaining is not None else '?'}s < "
+            f"safe minimum "
+            f"{round(float(minimum), 1) if minimum is not None else '?'}s — "
+            "no FREE or PAID fallback model was invoked (fail closed); the "
+            "original stage failure is preserved for RESUME/recovery"
+        )
+        return {
+            "schema_version": 1,
+            "task_id": task_id,
+            "agent": agent,
+            "terminal_reason": reason,
+            "detail": detail,
+            "triggered_at": _iso_now(),
+            "elapsed_seconds": round(float(elapsed_seconds), 1) if elapsed_seconds else None,
+            "outcome": "stage_attempt_failed",
+            "attempt_count": 1,
+            "notes": [
+                "shared Hermes stage deadline: the A5 fallback layer was not "
+                "entered (remaining budget below the safe minimum); stage "
+                "result/attempt evidence 见本目录 *_result.md / *_result.json",
+                "RESUME/recovery：保留本目录全部 artifacts；修复后以 --resume-from 重新执行本 stage",
+            ],
+        }
     reason, detail = classify_terminal_reason(
         agent=agent, exc=exc, wb_telemetry=wb_telemetry, result_text=result_text
     )

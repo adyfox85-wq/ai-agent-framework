@@ -11,6 +11,7 @@
 Hermetic：全部 fake Popen / fake subprocess.run / fake run_agent；零真实 Agent CLI。
 """
 import json
+import math
 import os
 import subprocess
 import time
@@ -748,7 +749,8 @@ def test_resolve_min_remaining_override_zero_allowed(monkeypatch):
     assert sl_mod.resolve_hermes_stage_min_remaining() == 60.0
     monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_MIN_REMAINING, "7")
     assert sl_mod.resolve_hermes_stage_min_remaining() == 7.0
-    # operator 可显式归零（禁用安全下限；remaining<0 才停）
+    # operator 可显式归零（禁用 60s 安全下限；remaining<=0/近零边界仍停——
+    # FIX-002：0 只解除安全下限，不解除耗尽边界）
     monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_MIN_REMAINING, "0")
     assert sl_mod.resolve_hermes_stage_min_remaining() == 0.0
     monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_MIN_REMAINING, "-3")
@@ -788,8 +790,13 @@ def test_shared_deadline_absolute_remaining_and_fallback_gate(monkeypatch):
     clock.advance(60)
     state = sl_mod.hermes_fallback_allowed()
     assert state["allowed"] is False and state["remaining_seconds"] == -10.0
-    # 非法 deadline env → None（不 gate 不裁剪，保持既有语义；不误判）
+    # FIX-002：非法 deadline env（present but malformed）→ 0.0 fail-closed
+    # （视为已到期：adapter spawn 前早停 + gate 拒绝，绝不回退到不 gate 的
+    # None 放行态）；只有 env **absent** 才返回 None（非 Hermes stage 语义）。
     monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_DEADLINE, "not-a-number")
+    assert sl_mod.hermes_stage_remaining_seconds() == 0.0
+    assert sl_mod.hermes_fallback_allowed()["allowed"] is False
+    monkeypatch.delenv(sl_mod.ENV_HERMES_STAGE_DEADLINE)
     assert sl_mod.hermes_stage_remaining_seconds() is None
 
 
@@ -804,6 +811,144 @@ def test_effective_attempt_timeout_min_remaining_formula(monkeypatch):
     assert sl_mod.effective_attempt_timeout(50.0) == 50.0  # per-attempt 更小仍优先
     monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_DEADLINE, "900")  # remaining=-100
     assert sl_mod.effective_attempt_timeout(2400.0) <= 0.0  # 耗尽 → ≤0（调用方早停）
+
+
+# ---------------------------------------------------------------------------
+# FIX-002 focused regressions（TASK: AAF-v0.5-COST-STOP-LOSS-001-FIX-002 ——
+# Codex REQUEST_CHANGE blockers 1-3 收口：预算/截止有限性 · 无损 deadline
+# 序列化 · remaining<=0 & fp 近零边界恒拒绝 fallback）
+# ---------------------------------------------------------------------------
+
+
+def test_fix002_budget_nonfinite_invalid_fail_safe_to_default(monkeypatch):
+    """Blocker 1（Test A/B/C）：stage budget env = inf / -inf / NaN / <=0 /
+    malformed / float 溢出（1e999→inf）→ resolve 一律 fail-safe 到有界默认，
+    返回恒为有限正数——预算绝不可能产生无限 deadline/remaining（Requirement 1）。
+    min-remaining resolver 对非有限值同样 fail-safe（inf/-inf/NaN → 默认 60s）。"""
+    monkeypatch.delenv(sl_mod.ENV_HERMES_STAGE_BUDGET, raising=False)
+    for bad in ("inf", "-inf", "Infinity", "nan", "NaN", "0", "-5", "abc", "1e999"):
+        monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_BUDGET, bad)
+        resolved = sl_mod.resolve_hermes_stage_budget()
+        assert resolved == sl_mod.DEFAULT_HERMES_STAGE_BUDGET
+        assert math.isfinite(resolved) and resolved > 0
+    # 合法有限正数不受影响（Test G 单元面）
+    monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_BUDGET, "3605.25")
+    assert sl_mod.resolve_hermes_stage_budget() == 3605.25
+    # min-remaining：非有限（inf/-inf/NaN）→ 默认 60s（负数/非法同）
+    monkeypatch.delenv(sl_mod.ENV_HERMES_STAGE_MIN_REMAINING, raising=False)
+    for bad in ("inf", "-inf", "nan", "-1", "abc"):
+        monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_MIN_REMAINING, bad)
+        assert sl_mod.resolve_hermes_stage_min_remaining() == 60.0
+
+
+def test_fix002_deadline_value_guards_nonfinite_nonpositive_budget(monkeypatch):
+    """Blocker 1 兜底：显式传入 hermes_stage_deadline_value 的非有限/非正
+    budget 同样被拒（fail-safe 到默认）——deadline 恒为有限正数（绝无 inf/nan）。"""
+    clock = _install_fake_clock(monkeypatch, start=1000.0)
+    for bad in (float("inf"), float("-inf"), float("nan"), 0.0, -1.0):
+        deadline = sl_mod.hermes_stage_deadline_value(budget_seconds=bad)
+        assert deadline == 1000.0 + sl_mod.DEFAULT_HERMES_STAGE_BUDGET
+        assert math.isfinite(deadline) and deadline > 0
+    # 合法有限正数照常
+    assert sl_mod.hermes_stage_deadline_value(budget_seconds=3605.0) == 4605.0
+
+
+def test_fix002_deadline_serialization_never_extends_budget(monkeypatch):
+    """Blocker 2（Test D，Codex 独立复现数值）：monotonic=1000001 + budget=3605
+    → 精确 deadline=1003606。默认 :g 只留 6 位有效数字 → '1.00361e+06' → 解析后
+    有效预算 3609s（+4s 越界）；repr round-trip 使 float(repr(x)) == x 恒成立 →
+    parsed deadline == 精确值，有效预算 == 配置 3605s（parsed <= exact，不放大）。"""
+    clock = _install_fake_clock(monkeypatch, start=1000001.0)
+    budget = 3605.0
+    exact_deadline = sl_mod.hermes_stage_deadline_value(budget_seconds=budget)
+    assert exact_deadline == 1003606.0
+    # 复现 :g 放大缺陷（同 Codex 独立实测：配置 3605s → 解析后 3609s）
+    legacy_serialized = f"{exact_deadline:g}"
+    assert legacy_serialized == "1.00361e+06"
+    assert float(legacy_serialized) - clock.now == 3609.0  # 越界 +4s
+    # 无损序列化：解析值 == 精确值（误差 0）
+    serialized = sl_mod.format_stage_deadline(exact_deadline)
+    assert serialized == "1003606.0"
+    assert float(serialized) == exact_deadline
+    monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_DEADLINE, serialized)
+    assert sl_mod.hermes_stage_remaining_seconds() == budget  # 有效预算未被放大
+    # 分数 budget 同样无损 round-trip（绝不向前扩展）
+    frac = sl_mod.hermes_stage_deadline_value(budget_seconds=3605.25)
+    assert float(sl_mod.format_stage_deadline(frac)) == frac
+    assert float(sl_mod.format_stage_deadline(frac)) <= clock.now + 3605.25
+
+
+def test_fix002_remaining_zero_blocks_fallback_even_min_remaining_zero(monkeypatch):
+    """Blocker 3（Test E，Codex 独立复现）：AAF_HERMES_STAGE_MIN_REMAINING=0
+    只解除 60s 安全下限——remaining == 0（边界精确命中）仍恒拒绝 fallback，
+    机器 reason 走 exhausted（zero boundary）分支，不再出现 allowed=true。"""
+    _install_fake_clock(monkeypatch, start=1000.0)
+    monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_DEADLINE, "1000")  # remaining == 0.0
+    monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_MIN_REMAINING, "0")
+    state = sl_mod.hermes_fallback_allowed()
+    assert state["allowed"] is False
+    assert state["remaining_seconds"] == 0.0
+    assert state["minimum_required_seconds"] == 0.0
+    assert "zero boundary" in state["suppressed_reason"]
+    # 负 remaining（min=0）同样拒绝（FIX-001 语义保持；exhausted 分支）
+    monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_DEADLINE, "999.999")  # remaining=-0.001
+    state = sl_mod.hermes_fallback_allowed()
+    assert state["allowed"] is False
+    assert state["remaining_seconds"] < 0.0
+    assert "zero boundary" in state["suppressed_reason"]
+
+
+def test_fix002_near_zero_fp_remainder_denied_strictly_positive_allowed(monkeypatch):
+    """Blocker 3（Test F）：deadline 边界处的浮点近零正残差（1e-9 级）在 min=0
+    下同样视为耗尽（< STAGE_BUDGET_ZERO_EPSILON = 1µs）——绝不因 fp 噪声放行
+    注定无法收敛的 invocation；真实可用剩余（>= 零边界）才放行。"""
+    _install_fake_clock(monkeypatch, start=1000.0)
+    monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_MIN_REMAINING, "0")
+    # +1e-9 正残差 → 拒绝（exhausted：at/below zero boundary）
+    monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_DEADLINE, "1000.000000001")
+    state = sl_mod.hermes_fallback_allowed()
+    assert state["allowed"] is False
+    assert 0.0 < state["remaining_seconds"] < sl_mod.STAGE_BUDGET_ZERO_EPSILON
+    assert "zero boundary" in state["suppressed_reason"]
+    # -1e-9 负残差 → 拒绝
+    monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_DEADLINE, "999.999999999")
+    assert sl_mod.hermes_fallback_allowed()["allowed"] is False
+    # 真实可用剩余（0.5s，min=0）→ 放行（只有耗尽/低于下限才拒绝）
+    monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_DEADLINE, "1000.5")
+    state = sl_mod.hermes_fallback_allowed()
+    assert state["allowed"] is True and state["remaining_seconds"] == 0.5
+    # 低于 60s 默认下限但高于零边界 → 拒绝（below safe minimum 分支）
+    monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_MIN_REMAINING, "60")
+    state = sl_mod.hermes_fallback_allowed()
+    assert state["allowed"] is False
+    assert "below the safe minimum" in state["suppressed_reason"]
+
+
+def test_fix002_exhausted_gate_feeds_machine_stop_loss_record(monkeypatch):
+    """Blocker 4（记录面）：耗尽/无效 deadline 态的 gate 结果（allowed=False +
+    machine reason）直接驱动 build_stop_loss_record → terminal_reason =
+    STAGE_BUDGET_EXHAUSTED（机器可读词汇表成员），绝无 None 回退/静默放行。
+    覆盖两种耗尽形态：remaining == 0（min=0）与 malformed deadline env（→0.0）。"""
+    _install_fake_clock(monkeypatch, start=1000.0)
+    exc = subprocess.TimeoutExpired("hermes", 2400.0)
+    monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_MIN_REMAINING, "0")
+    for deadline_env in ("1000", "not-a-number"):  # remaining==0 / malformed→0.0
+        monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_DEADLINE, deadline_env)
+        state = sl_mod.hermes_fallback_allowed()
+        assert state["allowed"] is False
+        record = sl_mod.build_stop_loss_record(
+            agent="hermes", task_id="T-SL-FIX002-4", exc=exc,
+            wb_telemetry=None, result_text=None, elapsed_seconds=2400.89,
+            stage_budget_exhausted=state,
+        )
+        assert record is not None
+        assert record["terminal_reason"] == sl_mod.STOP_REASON_STAGE_BUDGET_EXHAUSTED
+        assert sl_mod.STOP_REASON_STAGE_BUDGET_EXHAUSTED in sl_mod.TERMINAL_STOP_REASONS
+        assert record["agent"] == "hermes"
+        assert "remaining budget" in record["detail"]
+    # 无 deadline env（非 Hermes stage 上下文）→ gate 不裁剪（既有语义不变）
+    monkeypatch.delenv(sl_mod.ENV_HERMES_STAGE_DEADLINE, raising=False)
+    assert sl_mod.hermes_fallback_allowed()["allowed"] is True
 
 
 def test_run_agent_clips_to_remaining_stage_budget(tmp_path, monkeypatch):
@@ -936,10 +1081,11 @@ def _dl_structured_ok(agent: str) -> str:
 
 def _dl_run_runner(tmp_path, monkeypatch, fake_run_agent, *,
                    task_id="T-SL-DL-001", budget="2400", clock=None,
-                   cost_auth=None):
-    """scrub 相关 env + （可选）注入时钟 + budget env + （可选）cost auth +
-    fake run_agent 下跑真实 runner；返回 (out, clock)。clock 需在 fake_run_agent
-    定义前由测试安装（fake 要在调用内推进时钟模拟 original 消耗预算）。"""
+                   cost_auth=None, min_remaining=None):
+    """scrub 相关 env + （可选）注入时钟 + budget env + （可选）cost auth /
+    min_remaining env + fake run_agent 下跑真实 runner；返回 (out, clock)。
+    clock 需在 fake_run_agent 定义前由测试安装（fake 要在调用内推进时钟模拟
+    original 消耗预算）。"""
     monkeypatch.delenv(sl_mod.ENV_HERMES_STAGE_DEADLINE, raising=False)
     monkeypatch.delenv(sl_mod.ENV_HERMES_STAGE_BUDGET, raising=False)
     monkeypatch.delenv(sl_mod.ENV_HERMES_STAGE_MIN_REMAINING, raising=False)
@@ -947,6 +1093,8 @@ def _dl_run_runner(tmp_path, monkeypatch, fake_run_agent, *,
     if clock is None:
         clock = _install_fake_clock(monkeypatch, start=1000.0)
     monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_BUDGET, budget)
+    if min_remaining is not None:
+        monkeypatch.setenv(sl_mod.ENV_HERMES_STAGE_MIN_REMAINING, min_remaining)
     if cost_auth is not None:
         monkeypatch.setenv(cg.ENV_AUTH, cost_auth)
     monkeypatch.setattr(runner_mod, "run_agent", fake_run_agent)
@@ -986,7 +1134,10 @@ def test_runner_shared_deadline_original_and_fallback_same_absolute_value(
     out, _clock = _dl_run_runner(tmp_path, monkeypatch, fake_run_agent,
                                  task_id="T-SL-DL-A", budget="2400", clock=clock)
     # 两次 hermes invocation 看到同一个绝对 deadline 值（未 reset；Requirement 2/7）
-    assert seen["deadlines"]["hermes"] == ["3400", "3400"]
+    # FIX-002：runner 以无损 repr 序列化（:g 只留 6 位有效数字，可向未来舍入）
+    assert seen["deadlines"]["hermes"] == [
+        sl_mod.format_stage_deadline(3400.0), sl_mod.format_stage_deadline(3400.0)
+    ]
     # original 消耗 1200s → fallback 只剩 1200s（不是完整 2400s per-attempt budget）
     assert seen["remaining_at_fallback"] == 1200.0
     assert seen["remaining_at_fallback"] >= sl_mod.DEFAULT_HERMES_STAGE_MIN_REMAINING
@@ -1146,8 +1297,11 @@ def test_runner_paid_fallback_success_under_shared_deadline(tmp_path, monkeypatc
     )
     assert seen["hermes_calls"] == 2
     assert seen["models"] == ["aaa-orig", "zzz-paid"]  # original + paid candidate
-    # original 与 paid fallback 看到同一绝对 deadline（共享预算，未 reset）
-    assert seen["deadlines"] == ["3400", "3400"]
+    # original 与 paid fallback 看到同一绝对 deadline（共享预算，未 reset；
+    # FIX-002：runner 无损 repr 序列化）
+    assert seen["deadlines"] == [
+        sl_mod.format_stage_deadline(3400.0), sl_mod.format_stage_deadline(3400.0)
+    ]
     paid = fr.load_paid_fallback_runtime(out)
     assert paid is not None
     assert paid["fallback_attempted"] is True and paid["fallback_used"] is True

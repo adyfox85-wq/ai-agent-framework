@@ -625,9 +625,16 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                     os.environ[stop_loss_mod.ENV_HERMES_ATTEMPT_TIMEOUT] = f'{sl_timeout:g}'
                     # FIX-001：共享 Hermes stage deadline（绝对 monotonic 值；只
                     # 设一次——即便稍后进入 A5 fallback 也不 reset/重算）。
+                    # FIX-002（Codex REQUEST_CHANGE blocker 2 收口）：deadline 用
+                    # 无损序列化（repr round-trip），**不用**默认 :g——:g 只保留 6
+                    # 位有效数字，可把 deadline 向未来舍入（实测 3605s 预算被放大
+                    # 为 3609s）从而超出配置墙钟预算；repr(float) 使解析后的
+                    # deadline 与精确值逐位相等（parsed <= exact，误差 0）。
                     stage_deadline_env_saved = os.environ.get(stop_loss_mod.ENV_HERMES_STAGE_DEADLINE)
                     os.environ[stop_loss_mod.ENV_HERMES_STAGE_DEADLINE] = (
-                        f'{stop_loss_mod.hermes_stage_deadline_value():g}'
+                        stop_loss_mod.format_stage_deadline(
+                            stop_loss_mod.hermes_stage_deadline_value()
+                        )
                     )
                 fb_exc = None
                 try:

@@ -20,6 +20,7 @@ Scope（严格执行，不扩大）：
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import subprocess
@@ -160,6 +161,14 @@ DEFAULT_HERMES_STAGE_BUDGET = 3600.0
 # 第二模型（启动即注定无法在 deadline 内产出/有界收敛；fail closed 早停，
 # 不空转）。operator 可用 AAF_HERMES_STAGE_MIN_REMAINING 显式调低/归零。
 DEFAULT_HERMES_STAGE_MIN_REMAINING = 60.0
+# FIX-002（TASK: AAF-v0.5-COST-STOP-LOSS-001-FIX-002 —— Codex REQUEST_CHANGE
+# blocker 3 收口）：浮点零边界防护。remaining = deadline - now 是浮点差，在
+# deadline 边界处可算出 +1e-9 级"近零正残差"（真实预算已耗尽、仅剩浮点噪声）。
+# 任何低于该阈值的 remaining（< 1µs）一律视为已耗尽——绝不因 fp 残差放行一次
+# 注定无法收敛的 invocation。阈值远小于任何真实可用剩余（实际读取粒度 ≥ 毫秒
+# 级），不可能误杀合法 fallback；AAF_HERMES_STAGE_MIN_REMAINING=0 只解除 60s
+# 安全下限，不解除本零边界（Requirement 3：remaining <= 0 / fp near-zero 恒拒绝）。
+STAGE_BUDGET_ZERO_EPSILON = 1e-6
 
 
 def _monotonic() -> float:
@@ -170,8 +179,12 @@ def _monotonic() -> float:
 def resolve_hermes_stage_budget(env=None) -> float:
     """Hermes stage 总墙钟预算（秒）——AAF_HERMES_STAGE_BUDGET 优先，否则默认。
 
-    非法/非正数 env → 默认（operator typo 不杀死 run；沿用 attempt-timeout
-    resolver 的防御语义）。返回值只被 runner 用于计算绝对 deadline。
+    非法/非正数/非有限 env → 默认（operator typo 不杀死 run；沿用 attempt-timeout
+    resolver 的防御语义）。FIX-002（Codex REQUEST_CHANGE blocker 1 收口）：用
+    math.isfinite 做权威有限性检查——inf / -inf / NaN 与 <=0 / malformed 一律
+    拒绝（fail-safe 到有界默认），**绝不**接受会产生无限 deadline/remaining 的
+    预算值（Hermes stage 必须始终有有限墙钟边界）。返回值只被 runner 用于计算
+    绝对 deadline。
     """
     env = os.environ if env is None else env
     raw = env.get(ENV_HERMES_STAGE_BUDGET, "").strip()
@@ -181,7 +194,7 @@ def resolve_hermes_stage_budget(env=None) -> float:
         except ValueError:
             pass
         else:
-            if value > 0:
+            if math.isfinite(value) and value > 0:
                 return value
     return DEFAULT_HERMES_STAGE_BUDGET
 
@@ -189,8 +202,9 @@ def resolve_hermes_stage_budget(env=None) -> float:
 def resolve_hermes_stage_min_remaining(env=None) -> float:
     """fallback invocation 安全下限（秒）——env override，否则默认。
 
-    允许 operator 显式设 0（禁用早停下限；remaining<0 才停）；负数/非法 →
-    默认。永不返回负值。
+    允许 operator 显式设 0（禁用早停下限；remaining<=0/零边界 才停——FIX-002
+    blocker 3：0 只解除 60s 安全下限，绝不解除耗尽边界）；负数/非法/非有限
+    （inf/-inf/NaN）→ 默认。永不返回负值或非有限值。
     """
     env = os.environ if env is None else env
     raw = env.get(ENV_HERMES_STAGE_MIN_REMAINING, "").strip()
@@ -200,7 +214,7 @@ def resolve_hermes_stage_min_remaining(env=None) -> float:
         except ValueError:
             pass
         else:
-            if value >= 0:
+            if math.isfinite(value) and value >= 0:
                 return value
     return DEFAULT_HERMES_STAGE_MIN_REMAINING
 
@@ -212,15 +226,45 @@ def hermes_stage_deadline_value(budget_seconds: float | None = None,
     budget_seconds=None → resolve_hermes_stage_budget（env/default）。
     runner 在首次 invocation 前调用一次并把结果写入
     ENV_HERMES_STAGE_DEADLINE；**只计算一次**，进入 fallback_runtime 不重算。
+    FIX-002（blocker 1 兜底）：显式传入的 budget 同样必须有限正数——非有限
+    （inf/-inf/NaN）/非正 → fail-safe 默认。单调钟本身有限 → 本函数返回值恒为
+    有限正数（deadline 绝不可能为 inf/nan）。
     """
     if budget_seconds is None:
         budget_seconds = resolve_hermes_stage_budget(env)
+    if not (isinstance(budget_seconds, (int, float))
+            and math.isfinite(budget_seconds) and budget_seconds > 0):
+        budget_seconds = DEFAULT_HERMES_STAGE_BUDGET
     return _monotonic() + budget_seconds
 
 
+def format_stage_deadline(deadline: float) -> str:
+    """绝对 deadline 的无损序列化（FIX-002 —— Codex REQUEST_CHANGE blocker 2 收口）。
+
+    默认 ``:g`` 只保留 6 位有效数字，可把 deadline 向未来舍入（Codex 独立复现：
+    monotonic=1000001、budget=3605 → 精确 deadline=1003606 被序列化为
+    1.00361e+06 → 解析后有效预算 3609s，比配置多 4s）——违反「序列化 deadline
+    不得超出配置墙钟预算」。repr(float) 是 Python 的最短 round-trip 表示：
+    ``float(repr(x)) == x`` 恒成立（无方向性格式化误差）→ 解析后的 deadline 与
+    精确值逐位相等，剩余预算绝不可能被序列化放大（parsed_deadline <= exact
+    configured deadline 恒成立，误差 = 0）。
+    """
+    return repr(float(deadline))
+
+
 def hermes_stage_remaining_seconds(env=None) -> float | None:
-    """共享 deadline 的剩余秒数；无 deadline env（非 Hermes stage / 直接调用
-    本模块的测试）→ None（调用方保持既有语义，不裁剪不 gate）。"""
+    """共享 deadline 的剩余秒数。
+
+    - 无 deadline env（非 Hermes stage / 直接调用本模块的测试）→ None（调用方
+      保持既有语义，不裁剪不 gate）；
+    - FIX-002（blocker 1/4 收口）：deadline env **存在但** malformed / 非有限
+      （inf/-inf/NaN——runner 只写无损有限值，此类值只可能来自 operator 手写
+      该内部 env）→ 返回 0.0（视为**已到期**，fail closed）。绝不再返回 None：
+      None 的"无 deadline 上下文"语义会让该路径回到不裁剪、不 gate 的放行态
+      （静默允许另一次 invocation）；0.0 使 adapters 在 spawn 前有界早停、
+      fallback gate 拒绝，预算无效/耗尽路径以机器可读 STAGE_BUDGET_EXHAUSTED
+      终止（Requirement 4）。
+    """
     env = os.environ if env is None else env
     raw = env.get(ENV_HERMES_STAGE_DEADLINE, "").strip()
     if not raw:
@@ -228,7 +272,9 @@ def hermes_stage_remaining_seconds(env=None) -> float | None:
     try:
         deadline = float(raw)
     except ValueError:
-        return None
+        deadline = float("nan")  # 不可解析 → 走下方 isfinite 拒绝路径（0.0）
+    if not math.isfinite(deadline):
+        return 0.0
     return deadline - _monotonic()
 
 
@@ -249,9 +295,14 @@ def hermes_fallback_allowed(env=None) -> dict:
     "suppressed_reason"}：
     - 无共享 deadline env → allowed=True / remaining=None（保持既有 fallback
       语义——只有 runner 的 Hermes stage 设置 deadline，live 路径恒有值）；
-    - remaining < 安全下限（默认 60s，AAF_HERMES_STAGE_MIN_REMAINING 可调）→
-      allowed=False + suppressed_reason（机器可读；调用方不得发起第二模型，
-      并以 STAGE_BUDGET_EXHAUSTED 终止）；
+    - FIX-002（Requirement 3 / Codex blocker 3 收口）：**remaining <= 0 恒拒绝**
+      （即便 operator 把 AAF_HERMES_STAGE_MIN_REMAINING 调到 0——0 只解除 60s
+      安全下限，不解除耗尽边界）；浮点"近零"正残差（< STAGE_BUDGET_ZERO_EPSILON
+      = 1µs 零边界）同样视为耗尽。放行条件 = remaining > 0 且 remaining >=
+      max(minimum, 零边界)；
+    - remaining < 安全下限（默认 60s）且仍 > 零边界 → allowed=False +
+      suppressed_reason（机器可读；调用方不得发起第二模型，并以
+      STAGE_BUDGET_EXHAUSTED 终止）；
     - 否则 allowed=True（实际 invocation 仍会被 adapters 裁剪到 remaining——
       双保险，gate 之后到 subprocess 创建之间的消耗也被同一 deadline 约束）。
     """
@@ -264,16 +315,26 @@ def hermes_fallback_allowed(env=None) -> dict:
             "suppressed_reason": None,
         }
     minimum = resolve_hermes_stage_min_remaining(env)
-    if remaining < minimum:
+    exhausted = remaining <= 0.0 or remaining < STAGE_BUDGET_ZERO_EPSILON
+    if exhausted or remaining < minimum:
+        if exhausted:
+            suppressed_reason = (
+                "shared Hermes stage deadline exhausted: remaining budget "
+                f"{remaining:.1f}s is at or below the zero boundary — no "
+                "fallback invocation may start (a strictly positive usable "
+                "budget is required)"
+            )
+        else:
+            suppressed_reason = (
+                "shared Hermes stage deadline exhausted: remaining budget "
+                f"{remaining:.1f}s is below the safe minimum {minimum:.1f}s "
+                "required to start another model invocation"
+            )
         return {
             "allowed": False,
             "remaining_seconds": remaining,
             "minimum_required_seconds": minimum,
-            "suppressed_reason": (
-                "shared Hermes stage deadline exhausted: remaining budget "
-                f"{remaining:.1f}s is below the safe minimum {minimum:.1f}s "
-                "required to start another model invocation"
-            ),
+            "suppressed_reason": suppressed_reason,
         }
     return {
         "allowed": True,
@@ -466,11 +527,14 @@ def build_stop_loss_record(*, agent: str, task_id: str, exc: BaseException | Non
         detail = (
             f"shared Hermes stage deadline exhausted before any fallback "
             f"invocation: remaining budget "
-            f"{round(float(remaining), 1) if remaining is not None else '?'}s < "
-            f"safe minimum "
-            f"{round(float(minimum), 1) if minimum is not None else '?'}s — "
-            "no FREE or PAID fallback model was invoked (fail closed); the "
-            "original stage failure is preserved for RESUME/recovery"
+            f"{round(float(remaining), 1) if remaining is not None else '?'}s "
+            f"is insufficient to start another model invocation "
+            f"(required minimum "
+            f"{round(float(minimum), 1) if minimum is not None else '?'}s; "
+            f"remaining <= 0 / below the zero boundary also counts as "
+            f"exhausted) — no FREE or PAID fallback model was invoked (fail "
+            f"closed); the original stage failure is preserved for "
+            f"RESUME/recovery"
         )
         return {
             "schema_version": 1,
@@ -484,8 +548,9 @@ def build_stop_loss_record(*, agent: str, task_id: str, exc: BaseException | Non
             "attempt_count": 1,
             "notes": [
                 "shared Hermes stage deadline: the A5 fallback layer was not "
-                "entered (remaining budget below the safe minimum); stage "
-                "result/attempt evidence 见本目录 *_result.md / *_result.json",
+                "entered (remaining budget exhausted/insufficient before the "
+                "shared deadline); stage result/attempt evidence 见本目录 "
+                "*_result.md / *_result.json",
                 "RESUME/recovery：保留本目录全部 artifacts；修复后以 --resume-from 重新执行本 stage",
             ],
         }

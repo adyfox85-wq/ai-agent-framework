@@ -10,6 +10,8 @@ Planner → Copy TASK → Ctrl+Alt+A → Bridge → Validation → Boundary Chec
 
 你的角色从“搬运工”变成“规划者 + 最终决策者”：你（或你的 AI Planner）输出一份标准 TASK，Framework 负责调度各 Agent 执行、复核、审查，最后把 REPORT 交回给你。
 
+> **新 Planner / 新会话接管入口**：见仓库根目录 `START_HERE_FOR_NEW_PLANNER.md`——正式 role onboarding 文件；即使旧 ChatGPT 账号/对话失效，只凭本仓库即可恢复上下文并开始规划。
+
 ---
 
 ## 它是什么 / 不是什么

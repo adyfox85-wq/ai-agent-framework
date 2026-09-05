@@ -2,23 +2,30 @@
 
 > Task: Close A5 fallback / escalation / Cost Gate phase（将 A5 从 STARTED / NOT CLOSED 正式更新为 CLOSED / COMPLETE，并记录权威 closure evidence；docs-only closure）
 > Executor: Hermes（AAF Executor stage）2026-09-05
-> Status: **A5 = CLOSED / COMPLETE（closure record / 状态更新已备妥——proposed closure record；final closure route acceptance = PENDING，见 §6）**
-> Route: Hermes -> WorkBuddy -> Codex（WorkBuddy 独立验证 + Codex APPROVE 为接受前置条件，按 route 阶段执行）——**route 当前状态：WorkBuddy = PENDING / external 429；Codex = REQUEST_CHANGE from PRECHECK（final Codex closure 未执行）**
+> Status: **A5 = CLOSED / COMPLETE / SYNCED（final closure route accepted——2026-09-05 AAF-v0.5-A5-CLOSURE-STATE-FINALIZE-001 收口，见 §8；CLOSE-001 / FIX-001 时点 proposed closure record / route acceptance = PENDING = 历史时点记录，见 Fix 行与 §6）**
+> Route: Hermes -> WorkBuddy -> Codex（WorkBuddy 独立验证 + Codex APPROVE 为接受前置条件，按 route 阶段执行）——**route 当前状态：COMPLETED / ACCEPTED——WorkBuddy = AAF-v0.5-A5-CLOSE-WORKBUDDY-VALIDATION-002（SUCCESS / PASS_WITH_WARNING / blocking_rework = false）；Codex = AAF-v0.5-A5-CLOSE-CODEX-FINAL-001（SUCCESS / APPROVE）；remote sync = AAF-v0.5-A5-CLOSE-SYNC-001（SUCCESS / 0/0）**（历史：CLOSE-001 时点 WorkBuddy = PENDING / external 429、Codex precheck = REQUEST_CHANGE from PRECHECK——见 Fix 行 / §6 / §8）
 > Baseline: HEAD = origin/main = `e9056104213a9bc227e294a740d0467471362585`（AAF-v0.5-A5-PAID-FALLBACK-RUNTIME-001；local == origin/main，ahead/behind = 0/0；未 push）
 > Snapshot: `.aaf/AAF-v0.5-A5-CLOSE-001/TASK.snapshot.md`（immutable execution snapshot）
 > Fix: 2026-09-05 **AAF-v0.5-A5-CLOSE-001-FIX-001**（docs-only 状态收口）：按 Codex precheck（AAF-v0.5-A5-CLOSE-CODEX-PRECHECK-001 = REQUEST_CHANGE）唯一 blocker——closure documentation 超前声称 final WorkBuddy 独立验证 + Codex APPROVE 已完成——本 record 如实化为：A5 closure record 备妥（proposed closure record，依 audit A5_READY_TO_CLOSE 正式化）+ final closure route acceptance = PENDING（WorkBuddy 独立 closure validation 因外部 429 未完成 → 本任务 terminal WAITING；final Codex closure 未执行）；WorkBuddy closure verdict = PENDING / external 429；Codex 当前结果 = REQUEST_CHANGE from PRECHECK（precheck 不构成 final Codex APPROVE）；Unresolved 状态见 §6
+> Finalize: 2026-09-05 **AAF-v0.5-A5-CLOSURE-STATE-FINALIZE-001**（docs-only final accepted 状态收口）：final route legs 已实际全部完成——WorkBuddy final closure validation = AAF-v0.5-A5-CLOSE-WORKBUDDY-VALIDATION-002（SUCCESS / PASS_WITH_WARNING / blocking_rework = false）、Codex final closure = AAF-v0.5-A5-CLOSE-CODEX-FINAL-001（SUCCESS / APPROVE）、remote sync = AAF-v0.5-A5-CLOSE-SYNC-001（SUCCESS / local == origin/main == cd2e056 / 0/0）——本 record 状态收口为 **A5 = CLOSED / COMPLETE / SYNCED（final closure route accepted；Unresolved Issues = None）**；CLOSE-001 / CODEX-PRECHECK-001 / FIX-001 时点 PENDING / REQUEST_CHANGE 表述保留为历史时点记录（Fix 行 + §6 + git cd2e056 全文）；final 证据记录见 §8
 
 ## 1. 结论（先给结论）
 
-1. 📋 **A5 closure record / 状态更新已备妥（docs-only，proposed closure record）**：
-   A5 = **CLOSED / COMPLETE（record 状态）**——2026-09-05，AAF-v0.5-A5-CLOSE-001
-   依已完成的 A5 Closure Audit（AAF-v0.5-A5-CLOSURE-AUDIT-001 = **A5_READY_TO_
-   CLOSE**，REQUIRED_BEFORE_A5_CLOSE 9 项全部 SATISFIED，Hermes 审计 + WorkBuddy
-   独立复核）正式化 closure record / 状态更新（docs-only）；**final closure route
-   acceptance = PENDING**（final WorkBuddy 独立 closure validation 因外部 429
-   未完成 → 本任务 terminal WAITING；final Codex closure 未执行——见 §6）；本
-   record 为 proposed / formal closure record，不构成 final accepted / synced
-   closure 状态（2026-09-05 FIX-001 如实化）。
+1. ✅ **A5 = CLOSED / COMPLETE / SYNCED（final closure route accepted——2026-09-05
+   AAF-v0.5-A5-CLOSURE-STATE-FINALIZE-001 收口，见 §8）**：2026-09-05，
+   AAF-v0.5-A5-CLOSE-001 依已完成的 A5 Closure Audit（AAF-v0.5-A5-CLOSURE-
+   AUDIT-001 = **A5_READY_TO_CLOSE**，REQUIRED_BEFORE_A5_CLOSE 9 项全部
+   SATISFIED，Hermes 审计 + WorkBuddy 独立复核）正式化 closure record / 状态
+   更新（docs-only），并经 final WorkBuddy 独立 closure validation
+   （AAF-v0.5-A5-CLOSE-WORKBUDDY-VALIDATION-002 = SUCCESS / PASS_WITH_WARNING /
+   blocking_rework = false）+ final Codex closure（AAF-v0.5-A5-CLOSE-CODEX-
+   FINAL-001 = SUCCESS / APPROVE）+ remote sync（AAF-v0.5-A5-CLOSE-SYNC-001 =
+   SUCCESS / local == origin/main == cd2e056 / 0/0）accepted；Unresolved
+   Issues = None。历史：本 record 曾为 proposed / formal closure record（CLOSE-001 /
+   FIX-001 时点 final closure route acceptance = PENDING——WorkBuddy 独立 closure
+   validation 因外部 429 未完成 → 本任务 terminal WAITING、final Codex closure
+   未执行，2026-09-05 FIX-001 如实化）——该 PENDING 表述 = 历史时点记录，见 Fix
+   行 / §6 / §8。
 2. ✅ **closure boundary 与正式化权威一致**：closure boundary = A5 Scope Formalization
    块（PROJECT_STATE.md v0.5「A5 Scope Formalization」块，唯一权威定义）——
    **bounded, auditable fallback / escalation / Cost Gate foundation**，
@@ -29,8 +36,9 @@
    的历史 artifacts / verdict 不可变、不重写；本任务不重新打开任何 A5 implementation
    gap，不新增实现。
 4. ✅ **A5 整体 closure 与历史 A5-001..004 实现记录区分保持**：A5 整体状态 =
-   CLOSED / COMPLETE（closure record 状态，proposed closure record——见上文
-   item 1）；A5-001..004 各实现单元的历史记录（PROJECT_STATE A5 块各
+   CLOSED / COMPLETE / SYNCED（final closure route accepted——见上文 item 1 与
+   §8；CLOSE-001 / FIX-001 时点 proposed closure record = 历史时点记录）；A5-001..004
+   各实现单元的历史记录（PROJECT_STATE A5 块各
    「A5 实现状态」bullet / 各单元 REPORT / Last Updated 嵌套条目 / backlog CAP-003
    行内 dated 叙述）作为历史证据保留，未改写任何执行事实。
 5. ✅ **A6 / A4+ future scope 保持 outside、未进入**：A6（health scoring /
@@ -40,13 +48,21 @@
    本任务不实现、不标记实现、未把其责任并入 A5 closure。
 6. ✅ **零行为变化**：docs-only——未修改任何 runtime / code / test / model registry /
    economics / qualification 数据（Requirement 11）；无功能删除、无未来能力放弃。
-7. ✅ 未 push（Requirement 10：no push，review 后同步）。
-8. ⏳ **final closure route = PENDING（2026-09-05 FIX-001 如实化）**：WorkBuddy 独立
-   closure validation 因外部 429（WorkBuddyRetriesExhausted）未完成 → 本任务
-   terminal WAITING；Codex precheck（AAF-v0.5-A5-CLOSE-CODEX-PRECHECK-001）=
+7. ✅ no push（Requirement 13：no push，route 后同步）——CLOSE-001 / FIX-001
+   提交时未 push（历史如实，commit message 记录）；closure commits（786729e +
+   cd2e056）已由 AAF-v0.5-A5-CLOSE-SYNC-001 同步 origin/main（SYNCED，
+   ahead/behind = 0/0）；本 FINALIZE-001 docs 收口 commit 亦 no push。
+8. ✅ **final closure route = COMPLETED / ACCEPTED（2026-09-05 AAF-v0.5-A5-
+   CLOSURE-STATE-FINALIZE-001 收口）**：final WorkBuddy 独立 closure validation =
+   AAF-v0.5-A5-CLOSE-WORKBUDDY-VALIDATION-002（SUCCESS / PASS_WITH_WARNING /
+   blocking_rework = false）；final Codex closure = AAF-v0.5-A5-CLOSE-CODEX-
+   FINAL-001（SUCCESS / APPROVE，无 blocking finding）；remote sync =
+   AAF-v0.5-A5-CLOSE-SYNC-001（SUCCESS，local == origin/main == cd2e056，0/0）。
+   历史（CLOSE-001 / FIX-001 时点）：route = PENDING——WorkBuddy 独立 closure
+   validation 因外部 429（WorkBuddyRetriesExhausted）未完成 → 本任务 terminal
+   WAITING；Codex precheck（AAF-v0.5-A5-CLOSE-CODEX-PRECHECK-001）=
    REQUEST_CHANGE——唯一 blocker = 超前验证状态表述（已由 FIX-001 收口），precheck
-   不构成 final Codex APPROVE；final Codex closure 待 WorkBuddy validation 完成后
-   执行（route 详情见 §6）。
+   不构成 final Codex APPROVE（route 详情见 §6 与 §8）。
 
 ## 2. Closure Decision
 
@@ -55,11 +71,20 @@
   （证据含源码位置核对：fallback_contract.py / fallback_runtime.py /
   fallback_paid_gate.py / runner.py 语义 + 测试矩阵）；audit 未识别 A5 runtime
   defect；final closure acceptance 留待独立 route closure task（本任务）的
-  WorkBuddy 独立验证 + Codex closure（当前 PENDING，见 §6）。
-- **本任务执行（2026-09-05 FIX-001 如实化）**：备妥 A5 closure record / 状态更新
-  ——A5 = STARTED / NOT CLOSED → **CLOSED / COMPLETE（proposed closure record，
-  docs-only closure record，2026-09-05 AAF-v0.5-A5-CLOSE-001）**；**final closure
-  route acceptance = PENDING**（非 final accepted / synced closure 状态）。
+  WorkBuddy 独立验证 + Codex closure——已于 2026-09-05 完成（WorkBuddy =
+  AAF-v0.5-A5-CLOSE-WORKBUDDY-VALIDATION-002 PASS_WITH_WARNING；Codex =
+  AAF-v0.5-A5-CLOSE-CODEX-FINAL-001 APPROVE；CLOSE-001 时点 PENDING / external
+  429 = 历史，见 §6 / §8）。
+- **本任务执行（2026-09-05 FIX-001 如实化 = 历史时点记录；2026-09-05
+  AAF-v0.5-A5-CLOSURE-STATE-FINALIZE-001 收口）**：备妥 A5 closure record / 状态
+  更新——A5 = STARTED / NOT CLOSED → **CLOSED / COMPLETE（proposed closure
+  record，docs-only closure record，2026-09-05 AAF-v0.5-A5-CLOSE-001）**，并
+  于 2026-09-05 经 final WorkBuddy validation（PASS_WITH_WARNING）与 final
+  Codex closure（APPROVE）accepted、由 AAF-v0.5-A5-CLOSE-SYNC-001 同步
+  origin/main——**A5 = CLOSED / COMPLETE / SYNCED（final closure route
+  accepted；Unresolved Issues = None；见 §8）**；CLOSE-001 / FIX-001 时点
+  final closure route acceptance = PENDING（非 final accepted / synced closure
+  状态）= 历史时点记录。
 - **验收交付映射**（closure requirements 满足证据，全部为已接受 + 已同步工作）：
   - A5 Scope Formalization（completion boundary 权威化 + 9 项 requirements）= `f6c577d`
     （+ FIX-003 `cc404c1` READY_TO_START token 收口）
@@ -98,7 +123,7 @@
 
 | 边界 | 内容 | 状态 |
 |---|---|---|
-| A5 | fallback / escalation / Cost Gate foundation（closure boundary = PROJECT_STATE v0.5「A5 Scope Formalization」块，唯一权威定义；9 项 REQUIRED_BEFORE_A5_CLOSE 原文不重写） | **CLOSED / COMPLETE（closure record 备妥，proposed closure record；final closure route acceptance = PENDING——2026-09-05 AAF-v0.5-A5-CLOSE-001，FIX-001 如实化）** |
+| A5 | fallback / escalation / Cost Gate foundation（closure boundary = PROJECT_STATE v0.5「A5 Scope Formalization」块，唯一权威定义；9 项 REQUIRED_BEFORE_A5_CLOSE 原文不重写） | **CLOSED / COMPLETE / SYNCED（final closure route accepted——2026-09-05 AAF-v0.5-A5-CLOSE-001 + FIX-001 经 final WorkBuddy validation（AAF-v0.5-A5-CLOSE-WORKBUDDY-VALIDATION-002 = PASS_WITH_WARNING）+ final Codex closure（AAF-v0.5-A5-CLOSE-CODEX-FINAL-001 = APPROVE）+ remote sync（AAF-v0.5-A5-CLOSE-SYNC-001 = SYNCED，0/0）accepted，2026-09-05 AAF-v0.5-A5-CLOSURE-STATE-FINALIZE-001 收口；CLOSE-001 / FIX-001 时点 proposed / PENDING = 历史时点记录）** |
 | A6 | health scoring / quarantine / long-term availability tracking / automatic requalification / calibration / ongoing observation policy | future scope；NOT IMPLEMENTED；未进入（A5 closure 之外） |
 | A4+ | HIGH / CRITICAL WorkBuddy routing（HIGH 前置 = T2-or-better WorkBuddy 候选 prerequisite qualification evidence）；broader Codex / multi-agent routing（前置 = 独立 scope/design） | future scope；NOT IMPLEMENTED；未进入（A5 closure 之外） |
 | A0-A4 | A0 Paid Guard / A3 Hermes LOW FREE routing / A4 WorkBuddy LOW + MEDIUM economic routing | CLOSED / COMPLETE 历史不可变；不重开 |
@@ -131,6 +156,10 @@
   （Requirement 11；git diff 验证见 §7）
 
 ## 6. 验收对照
+
+> 本 §6 = CLOSE-001 / FIX-001 时点的验收对照记录（历史时点记录，保留不改写）；
+> final closure route 结果与 final 验收状态以 §8 为准（2026-09-05
+> AAF-v0.5-A5-CLOSURE-STATE-FINALIZE-001 收口）。
 
 - A5 = CLOSED / COMPLETE（closure record 备妥，proposed closure record）✅
   （PROJECT_STATE.md v0.5「A5 CLOSED」块 + 本 record §2/§4；final closure route
@@ -183,3 +212,52 @@
 - 本任务为纯文档任务（Requirement 11），未新增/修改任何测试；无需运行测试套件
   （零代码变更，无回归面）——同 A3-CLOSE-001 / A4-CLOSE-001 / SCOPE-FORMALIZATION-001
   先例
+
+## 8. Post-Validation Closure Finalization（2026-09-05 AAF-v0.5-A5-CLOSURE-STATE-FINALIZE-001 收口）
+
+> 本 §8 = A5 closure 的 **final accepted 状态记录**（supersede §6 时点记录中的
+> route 未决表述）。§1–§7 保留 CLOSE-001 / FIX-001 时点的原始 closure-task 历史。
+
+- **触发**：AAF-v0.5-PHASE-TRANSITION-AUDIT-001 唯一 blocker = 权威文档仍停留在
+  FIX-001 时点表述（final closure route acceptance = PENDING / 未 push / 非 final
+  accepted-synced），与实际已完成的 final route legs 不一致。
+- **实际已完成的 final route legs（证据 = `.aaf/` 任务 artifacts，Executor 实测）**：
+  1. final WorkBuddy 独立 closure validation = **AAF-v0.5-A5-CLOSE-WORKBUDDY-
+     VALIDATION-002**——Current Status = SUCCESS；verdict = **PASS_WITH_WARNING**；
+     blocking_rework = false；Unresolved Issues = None（独立复核未修改任何文件，
+     确认 HEAD cd2e056 / 786729e / e905610 拓扑、两提交纯 docs（3 个
+     docs/internal/*.md）、Codex 前置 blocker 已解决、tracked tree CLEAN、
+     untracked 仅 PRE_ALLOWED_UNTRACKED）。
+  2. final Codex closure = **AAF-v0.5-A5-CLOSE-CODEX-FINAL-001**——Current Status
+     = SUCCESS；verdict = **APPROVE**；无 BLOCKING finding（含「FIX-001 对提交时
+     route 状态使用 PENDING 属于准确的时点记录」确认）；Unresolved Issues = None。
+  3. remote sync = **AAF-v0.5-A5-CLOSE-SYNC-001**——Current Status = SUCCESS；
+     normal fast-forward push `e905610..cd2e056 main -> main`；post-push local
+     HEAD == origin/main == cd2e056a2925f77775282879177a8c33061b4cd1；
+     ahead/behind = 0/0；CLOSE-001（786729e）+ FIX-001（cd2e056）closure commits
+     已纳入 origin/main；Commit Sync = SYNCED / Task Remote Sync = SYNCED。
+- **final A5 closure status = CLOSED / COMPLETE / SYNCED（final closure route
+  accepted）**；**Unresolved Issues = None**。
+- **历史 vs final 区分**：本 record §1–§7 中 CLOSE-001 / FIX-001 时点的 proposed
+  closure record / route acceptance = PENDING / WorkBuddy external 429
+  （WorkBuddyRetriesExhausted）/ Codex precheck REQUEST_CHANGE / terminal WAITING /
+  未 push 表述 = 各时点历史状态记录（完整文本见 git cd2e056 版本与上方 Fix 行 /
+  §6）；final 状态以本 §8 + 文件顶部 Status / Route 行为准。
+- **文档改动（本收口 commit）**：PROJECT_STATE.md（Last Updated 新条目 + A5 Scope
+  Formalization 状态 bullet + Next mainline A5 边界句 +「A5 CLOSED」块转 final
+  accepted / SYNCED）+ AAF_MASTER_BACKLOG.md（Last Updated 新条目 + CAP-003 /
+  CAP-004 / RW-027 Related / §7 Summary 9 处 route-PENDING marker 转 final
+  accepted + SYNCED）+ 本文件；docs-only——零 runtime / code / test / registry /
+  economics / qualification 变化；REQUIRED_BEFORE_A5_CLOSE 9 项原文不重写；
+  A6 / A4+ future scope 边界不变；A5-001..004 历史不改写；A0-A4 不重开；
+  PRE_ALLOWED_UNTRACKED 保留；一个 docs/state commit（parent cd2e056，未 amend）；
+  no push。
+- **验证（Executor 实测）**：git 状态 = main @ cd2e056（== origin/main，0/0），
+  tracked tree CLEAN；untracked 仅 PRE_ALLOWED_UNTRACKED（`.aaf/`、
+  `AAF_TASK004_PROCESS_CHECK.txt`、`scripts/start_bridge_hidden.vbs`）；
+  git diff 仅 3 个 docs/internal/*.md；UTF-8 / CRLF 保持原状；9 项
+  REQUIRED_BEFORE_A5_CLOSE 原文逐项存在未改写；「Explicitly outside A5」
+  A6/A4+ 边界文本不变；A5-001..004 与 CLOSE-001 / PRECHECK-001 / FIX-001 历史
+  记录保留。
+- 本收口为纯文档任务，未新增/修改任何测试；无需运行测试套件（零代码变更，
+  无回归面）——同 A3/A4 close 先例。

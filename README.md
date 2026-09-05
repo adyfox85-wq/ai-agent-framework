@@ -38,6 +38,7 @@ Planner → Copy TASK → Ctrl+Alt+A → Bridge → Validation → Boundary Chec
 | Result | REPORT / Planner Handoff | 交回 Planner 的机器可读结果 |
 
 > Planner 不要求必须是 ChatGPT。只要能输出标准 AAF TASK 文本即可。
+> v0.5 MVP 角色映射（Executor=Hermes / Validator=WorkBuddy / Reviewer=Codex）= 当前实现（implementation），非永久身份要求；满足同一角色契约即可替换任一角色产品，不重定义 MVP（v0.5 = PERSONAL MVP FROZEN，2026-09-05 AAF-v0.5-MVP-FREEZE-CLOSE-001；权威 = docs/internal/PROJECT_STATE.md v0.5「MVP FROZEN」块）。
 
 ---
 
@@ -327,7 +328,8 @@ Planner → Bridge → Hermes → WorkBuddy → Codex → REPORT
 | v0.2 | 历史自动化 MVP |
 | v0.3 | **CLOSED / stable personal-use baseline** |
 | v0.4 | **FROZEN / RELEASE READY（2026-08-29 Final Acceptance PASS；implementation baseline `1d3771fe8220e1b2e21c774840d680ec9f2dce61`；tag `v0.4`；最终交接见 docs/internal/handoffs/AI-Agent-Framework-v0.4-CLOSING-HANDOFF-2026-08-29.md）** |
-| v0.5+ | 未启动（仅在用户显式启动 v0.5 / Model Routing / 新功能开发时开启） |
+| v0.5 | **PERSONAL MVP FROZEN（2026-09-05 AAF-v0.5-MVP-FREEZE-CLOSE-001 正式收口：个人轻量 Agent 协作调度 MVP；A0-A5 = CLOSED / COMPLETE / SYNCED；MVP 边界 / freeze criteria / post-freeze policy / 角色契约见 docs/internal/PROJECT_STATE.md v0.5「MVP FROZEN」块与 docs/internal/AAF-v0.5-MVP-FREEZE-CLOSE-001-REPORT.md）** |
+| v0.5+（A6 / A4+ / 其他新 framework capability） | 未启动（NOT_REQUIRED_FOR_MVP；post-freeze 新能力 = opt-in only——须用户显式批准 scope 后才进入 mainline，不自动延续旧 roadmap future phases） |
 
 ## 测试
 

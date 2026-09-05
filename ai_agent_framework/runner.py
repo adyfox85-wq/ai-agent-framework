@@ -29,6 +29,7 @@ from . import cost_guard as cost_guard_mod
 from . import proc_identity
 from . import project_boundary
 from . import active_routing as active_routing_mod
+from . import stop_loss as stop_loss_mod
 from . import model_registry as model_registry_mod
 from .risk_contract import ROLE_EXECUTOR, ROLE_VALIDATOR
 from . import fallback_runtime as fallback_runtime_mod
@@ -591,6 +592,25 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 # model selection 混淆）；Risk 缺失 → 无法按 contract 决策 →
                 # 不评估（保持原失败语义）。
                 # A5 层内部任何异常都不掩盖原始 stage 失败（记录到 stderr）。
+                # v0.5 COST-STOP-LOSS-001（TASK: AAF-v0.5-COST-STOP-LOSS-001）：
+                # Hermes executor stage 的 per-attempt 有界预算。effective timeout
+                # = env override（AAF_HERMES_ATTEMPT_TIMEOUT，operator 逃生口）
+                # 优先，否则按 TASK Risk 分级默认（evidence-based 表见
+                # ai_agent_framework/stop_loss.py：实测成功 Hermes stage 按 risk
+                # 分组 max = HIGH 1886s / MEDIUM 891s / LOW 926s / NONE 1370s，
+                # 故默认档 HIGH/CRITICAL 2400s、MEDIUM 1500s、LOW 1200s、无 Risk
+                # 1800s——保留 100% 已观测成功样本，同时把 3600s 级无进度死 run
+                # 收口到有界值）。以 A3/A4 routing env 相同的 set/restore 纪律只
+                # 在本 stage 期间生效；adapters.run_agent 以该 env 解析 subprocess
+                # timeout（显式 timeout 参数仍优先）。A5 fallback 的第二次
+                # invocation 在同一 env 下同样有界（不额外烧 unbounded budget）。
+                stage_timeout_env_saved = None
+                if agent == 'hermes':
+                    sl_timeout = stop_loss_mod.resolve_agent_attempt_timeout(
+                        'hermes', risk_class=task_risk
+                    )
+                    stage_timeout_env_saved = os.environ.get(stop_loss_mod.ENV_HERMES_ATTEMPT_TIMEOUT)
+                    os.environ[stop_loss_mod.ENV_HERMES_ATTEMPT_TIMEOUT] = f'{sl_timeout:g}'
                 fb_exc = None
                 try:
                     if agent == 'hermes':
@@ -692,6 +712,32 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 if mo_enabled:
                     stage_elapsed = round(time.monotonic() - stage_started_mono, 3)
                 results[agent] = result_text
+                # v0.5 COST-STOP-LOSS-001：stop-loss 机器可读记录。仅当 stage 最终
+                # 失败且存在已识别 stop reason（ATTEMPT_TIMEOUT / RETRIES_EXHAUSTED /
+                # NO_PROGRESS / RATE_LIMIT / QUOTA / PROVIDER_FAILURE /
+                # TOOL_OR_TEST_STILL_ACTIVE——词汇表见 stop_loss.TERMINAL_STOP_REASONS）
+                # 时写出/更新；stage 有效（含 resume 修复后）清除旧记录——
+                # stop_loss.json 描述当前 run 状态，历史保留在各 stage result /
+                # attempt 机器 artifact 中（workbuddy_attempts.json / *_result.json）。
+                stop_loss_record = None
+                if not _result_is_valid(result_text):
+                    try:
+                        stop_loss_record = stop_loss_mod.build_stop_loss_record(
+                            agent=agent, exc=fb_exc, wb_telemetry=wb_retry_meta,
+                            result_text=result_text, task_id=task_id,
+                            elapsed_seconds=stage_elapsed,
+                        )
+                    except Exception:
+                        stop_loss_record = None  # 辅助 telemetry 失败非阻塞
+                if stop_loss_record is not None:
+                    (output_dir / stop_loss_mod.STOP_LOSS_ARTIFACT).write_text(
+                        json.dumps(stop_loss_record, ensure_ascii=False, indent=2),
+                        encoding='utf-8',
+                    )
+                else:
+                    _stale_sl = output_dir / stop_loss_mod.STOP_LOSS_ARTIFACT
+                    if _stale_sl.exists():
+                        _stale_sl.unlink()
                 (output_dir / f'{agent}_result.md').write_text(result_text, encoding='utf-8')
                 # Structured stage result（Requirement 5 + FIX-002 Req 6–9）：
                 # narrative 保留追溯；机器可读块经提取 + schema validation 后合并；
@@ -756,6 +802,15 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 # observation 之后；绝不泄漏到后续 stage / 调用方）。
                 if wb_routing_env_saved is not None:
                     workbuddy_routing_mod.restore_workbuddy_model_env(wb_routing_env_saved)
+                # v0.5 COST-STOP-LOSS-001：Hermes stage timeout env overlay 还原
+                # （与 routing env 同一纪律；只在设置过 overlay 的 Hermes stage
+                # 还原——非 Hermes stage 绝不触碰该 env，operator 预设值在整个
+                # run 期间保持有效，不泄漏本 stage 的 tier 值到后续 stage）。
+                if agent == 'hermes':
+                    if stage_timeout_env_saved is None:
+                        os.environ.pop(stop_loss_mod.ENV_HERMES_ATTEMPT_TIMEOUT, None)
+                    else:
+                        os.environ[stop_loss_mod.ENV_HERMES_ATTEMPT_TIMEOUT] = stage_timeout_env_saved
                 head_after = git_head(workspace)
                 stage = build_stage_result(
                     agent=agent,
@@ -781,6 +836,13 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                         'retried': bool(wb_retry_meta.get('retried')),
                         'outcome': wb_retry_meta.get('outcome'),
                         'artifact_path': str(output_dir / 'workbuddy_attempts.json'),
+                    }
+                if stop_loss_record:
+                    # v0.5 COST-STOP-LOSS-001：stop-loss 机器证据引用（详细记录在
+                    # stop_loss.json——terminal_reason 为该 stage 最终失败原因）。
+                    stage['stop_loss'] = {
+                        'terminal_reason': stop_loss_record.get('terminal_reason'),
+                        'artifact_path': str(output_dir / stop_loss_mod.STOP_LOSS_ARTIFACT),
                     }
                 if shadow_ref:
                     # v0.5 A2-002：shadow observation authority 引用（不复制记录内容；
@@ -829,6 +891,14 @@ def run(task_file: Path, workspace: Path, output_dir: Path, dry_run: bool = Fals
                 return output_dir / 'REPORT.md'
             status = _aggregate_status(route.agents, results, output_dir)
             final_status = 'SUCCESS' if status == 'SUCCESS' else 'WAITING'
+            # v0.5 COST-STOP-LOSS-001：任务最终 SUCCESS → 清除 stop-loss 记录
+            # （stop_loss.json = 未收敛 stop 状态的机器证据；成功 run（含 resume
+            # 修复后成功）不保留误导性 claim——历史失败 evidence 仍完整保留在各
+            # stage result / attempt 机器 artifact 中）。
+            if final_status == 'SUCCESS':
+                _stale_sl = output_dir / stop_loss_mod.STOP_LOSS_ARTIFACT
+                if _stale_sl.exists():
+                    _stale_sl.unlink()
 
         # 执行链完整性保护：必需 Executor / Validator / Reviewer 无有效结果 → REPORT 明确标记
         # （FIX-003 Req 3：required route 含 codex 而 codex 未执行 / 缺结果 /

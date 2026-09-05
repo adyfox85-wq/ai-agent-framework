@@ -52,6 +52,17 @@ NON_RETRYABLE（快速失败，不无意义重试）：
 遥测：每次执行返回完整 attempt telemetry（machine artifact ``workbuddy_attempts.json``
 由 runner 持久化；REPORT 只含紧凑摘要）。最终只有单一 canonical workbuddy_result；
 attempt logs 是 supporting evidence。
+
+v0.5 COST-STOP-LOSS-001 扩展（最小可审计止损；语义全部向后兼容）：
+- 429 / rate limit / quota evidence（CLI 文案）→ 独立分类 ``rate_limit``/``quota``：
+  reset 窗口可解析且落在剩余安全 budget 内 → 有界等到 reset 再试一次；否则**尽早
+  fail closed**（RATE_LIMIT/QUOTA terminal reason），绝不烧剩余 attempts / 空转到
+  stage budget。
+- repeated no-progress（连续 empty-output / 相同失败原因 ≥ 3，仅当 operator 配置
+  max_attempts>2 时生效）→ 提前终止（NO_PROGRESS）。默认 2-attempt 语义零变化。
+- 全部终态带机器可读 ``telemetry.terminal_reason``（stop_loss 词汇）；timeout 清理
+  排出的 partial output 含明确 tool/test markers → TOOL_OR_TEST_STILL_ACTIVE。
+- no-progress 判定只作用于"已完成的失败 attempt 之间"，绝不打断在跑 tool/test。
 """
 from __future__ import annotations
 
@@ -65,6 +76,7 @@ from enum import Enum
 from pathlib import Path
 
 from .subprocess_utils import no_console_kwargs
+from . import stop_loss as stop_loss_mod
 
 # ---------------------------------------------------------------------------
 # 可测试别名（monkeypatch 只影响本模块引用，不影响全局 subprocess）
@@ -121,6 +133,21 @@ _PLACEHOLDER_GATEWAY_RES = (
 
 FAILURE_CLASS_RETRYABLE = "retryable_transient"
 FAILURE_CLASS_NON_RETRYABLE = "non_retryable"
+# v0.5 COST-STOP-LOSS-001：限频/quota evidence 独立分类（429 / rate limit /
+# quota 文案；evidence-based，见 stop_loss.detect_rate_limit_evidence）。它们既
+# 不是"等一下就好的瞬态"，也不是"永久配置错误"——orchestrator 按 reset 窗口与
+# remaining budget 决定有界等待或尽早 fail closed（不空转到 stage budget）。
+FAILURE_CLASS_RATE_LIMIT = "rate_limit"
+FAILURE_CLASS_QUOTA = "quota"
+
+# v0.5 COST-STOP-LOSS-001：repeated no-progress 提前止损阈值（连续 attempt 级
+# evidence 判定）。默认 2 次 attempt 的既有语义完全保留（阈值 3 > 默认
+# max_attempts 2）；仅当 operator 配置更高 max_attempts 时，连续 3 次
+# empty-output / 相同失败原因不再无意义烧掉剩余 attempts / stage budget。
+# （合规长任务不受影响：本判定只作用于"已完成的失败 attempt 之间"，绝不打断
+# 在跑的 tool/test；实测存在 empty,empty,success 恢复序列 → 阈值定为 3。）
+NO_PROGRESS_EARLY_STOP_EMPTY_SEQUENCE = 3
+NO_PROGRESS_EARLY_STOP_IDENTICAL_SEQUENCE = 3
 
 OUTCOME_SUCCESS = "SUCCESS"
 OUTCOME_RETRIES_EXHAUSTED = "RETRIES_EXHAUSTED"
@@ -131,6 +158,9 @@ OUTCOME_CLEANUP_FAILURE = "CLEANUP_FAILURE"  # FIX-001：child 终止未确认 �
 class FailureClass(Enum):
     RETRYABLE_TRANSIENT = FAILURE_CLASS_RETRYABLE
     NON_RETRYABLE = FAILURE_CLASS_NON_RETRYABLE
+    # v0.5 COST-STOP-LOSS-001：429 / rate limit / quota evidence（CLI 文案识别）
+    RATE_LIMIT = FAILURE_CLASS_RATE_LIMIT
+    QUOTA = FAILURE_CLASS_QUOTA
 
 
 @dataclass(frozen=True)
@@ -199,6 +229,13 @@ class AttemptRecord:
     cleanup_tree_confirmed: bool | None = None
     taskkill_attempted: bool | None = None
     taskkill_success: bool | None = None
+    # v0.5 COST-STOP-LOSS-001：限频 attempt 的 reset 窗口（秒；单位明确才解析，
+    # 无/不可解析 → None = 无法证明可等 → orchestrator 尽早 fail closed）
+    rate_limit_reset_seconds: float | None = None
+    # v0.5 COST-STOP-LOSS-001：timeout attempt 清理时排出的 partial output 是否
+    # 含明确 tool/test 活动 markers（TOOL_OR_TEST_STILL_ACTIVE 判定 evidence；
+    # 启发式，absent ≠ 无活动——absent → ATTEMPT_TIMEOUT）
+    timeout_activity_markers: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -219,6 +256,8 @@ class AttemptRecord:
             "cleanup_tree_confirmed": self.cleanup_tree_confirmed,
             "taskkill_attempted": self.taskkill_attempted,
             "taskkill_success": self.taskkill_success,
+            "rate_limit_reset_seconds": self.rate_limit_reset_seconds,
+            "timeout_activity_markers": self.timeout_activity_markers,
         }
 
 
@@ -303,12 +342,27 @@ def classify_failure(
     """把一次失败 attempt 分类为 retryable transient / non-retryable。
 
     规则只基于真实 incident evidence，不得凭空造字符串规则：
+    - 429 / rate limit / quota 文案（v0.5 COST-STOP-LOSS-001）→ RATE_LIMIT/QUOTA
+      （独立分类；orchestrator 按 reset 窗口决定有界等待或尽早 fail closed——
+       audit 实测 429 被误归为 "empty output (exit=0)" 后重试未等 reset → 徒劳）
     - TimeoutExpired（CLOSURE-003）→ retryable
     - exit=0 + 空 stdout（CLOSURE-002）→ retryable
     - 任何含 gateway placeholder-only evidence 的 stderr → retryable
     - 其余（非零退出且无 transient evidence：unauthenticated / invalid config /
       CLI fatal 等永久性）→ non_retryable
     """
+    # v0.5 COST-STOP-LOSS-001：限频/quota evidence 优先于通用分类（429 常常表现为
+    # exit=0 + 空 stdout 或非零退出 + stderr 文案——都先做限频识别）
+    evidence_kind, evidence_detail = stop_loss_mod.detect_rate_limit_evidence(
+        f"{stdout}\n{stderr}"
+    )
+    if evidence_kind is not None:
+        cls = (
+            FailureClass.QUOTA
+            if evidence_kind == stop_loss_mod.STOP_REASON_QUOTA
+            else FailureClass.RATE_LIMIT
+        )
+        return cls, evidence_detail or evidence_kind.lower()
     if timed_out:
         return FailureClass.RETRYABLE_TRANSIENT, "TimeoutExpired"
     if returncode == 0 and not (stdout or "").strip():
@@ -645,6 +699,10 @@ def _run_single_attempt(
     timed_out = False
     spawn_error: str | None = None
     cleanup: CleanupResult | None = None
+    # v0.5 COST-STOP-LOSS-001：timeout attempt 的 tool/test-activity markers 与
+    # rate-limit reset 窗口（attempt 级 evidence；orchestrator/终态分类消费）
+    timeout_activity_markers = False
+    rate_limit_reset_seconds: float | None = None
     try:
         _assert_no_active_children()
         try:
@@ -733,6 +791,12 @@ def _run_single_attempt(
         cls, reason, stdout_empty_flag = (
             FailureClass.RETRYABLE_TRANSIENT, "TimeoutExpired", False,
         )
+        # v0.5 COST-STOP-LOSS-001：timeout 清理排出的 partial output 含明确
+        # tool/test 活动 markers → attempt 级 evidence（TOOL_OR_TEST_STILL_ACTIVE
+        # 判定用；absent → ATTEMPT_TIMEOUT，绝不把无证据 timeout 猜成 tool 活动）
+        timeout_activity_markers = stop_loss_mod.timeout_shows_tool_activity(
+            f"{stdout}\n{stderr}"
+        )
     elif exit_code != 0:
         cls, reason = classify_failure(
             timed_out=False, returncode=exit_code, stdout=stdout, stderr=stderr
@@ -745,6 +809,13 @@ def _run_single_attempt(
         stdout_empty_flag = True
     else:
         cls, reason, stdout_empty_flag = None, None, False
+
+    # v0.5 COST-STOP-LOSS-001：限频 attempt 解析 reset 窗口（单位明确才解析；
+    # None = 无法证明可等 → orchestrator 尽早 fail closed，不空等到 budget）
+    if cls in (FailureClass.RATE_LIMIT, FailureClass.QUOTA):
+        rate_limit_reset_seconds = stop_loss_mod.parse_rate_limit_reset(
+            f"{stdout}\n{stderr}"
+        )
 
     record = AttemptRecord(
         attempt_index=0,  # orchestrator 回填
@@ -764,6 +835,8 @@ def _run_single_attempt(
         cleanup_tree_confirmed=cleanup_tree_confirmed,
         taskkill_attempted=taskkill_attempted,
         taskkill_success=taskkill_success,
+        rate_limit_reset_seconds=rate_limit_reset_seconds,
+        timeout_activity_markers=timeout_activity_markers,
     )
     return AttemptOutcome(stdout if cls is None else None, record)
 
@@ -785,6 +858,10 @@ def _build_telemetry(
     stage_deadline: float | None = None,
     cleanup_failure_occurred: bool = False,
     retry_suppressed_reason: str | None = None,
+    # v0.5 COST-STOP-LOSS-001：机器可读 terminal reason（vocabulary 见
+    # stop_loss.TERMINAL_STOP_REASONS）+ 限频 evidence 标志
+    terminal_reason: str | None = None,
+    rate_limit_occurred: bool = False,
 ) -> dict:
     return {
         "agent": "workbuddy",
@@ -813,6 +890,9 @@ def _build_telemetry(
         "cleanup_failure_occurred": cleanup_failure_occurred,
         "retry_suppressed_reason": retry_suppressed_reason,
         "retry_reasons": retry_reasons,
+        # v0.5 COST-STOP-LOSS-001：机器可读 terminal stop reason（stop-loss 词汇）
+        "terminal_reason": terminal_reason,
+        "rate_limit_occurred": rate_limit_occurred,
         "last_failure": last_failure.to_dict() if last_failure is not None else None,
         "attempts": [a.to_dict() for a in attempts],
     }
@@ -830,6 +910,11 @@ def _render_failure_message(telemetry: dict) -> str:
         f'per-attempt timeout {policy.get("per_attempt_timeout", 0.0):.0f}s; '
         f'overall stage budget {policy.get("overall_stage_budget", 0.0):.0f}s)'
     ]
+    # v0.5 COST-STOP-LOSS-001：机器可读 terminal stop reason（REPORT/result 可见）
+    if telemetry.get("terminal_reason"):
+        lines.append(f'terminal stop reason: {telemetry["terminal_reason"]}')
+    if telemetry.get("rate_limit_occurred"):
+        lines.append("rate limit / quota evidence: yes")
     for a in telemetry.get("attempts", []):
         lines.append(
             f'- attempt {a.get("attempt_index")}: {a.get("status")} '
@@ -874,6 +959,8 @@ def permanent_stage_error(message: str, retry_reason: str) -> WorkBuddyPermanent
         "cleanup_failure_occurred": False,
         "retry_suppressed_reason": None,
         "retry_reasons": [],
+        "terminal_reason": None,
+        "rate_limit_occurred": False,
         "last_failure": {
             "attempt_index": 0,
             "status": "FAILED",
@@ -927,14 +1014,52 @@ def run_workbuddy_with_retry(
     retry_reasons: list[str] = []
     cleanup_failure_occurred = False
     retry_suppressed_reason: str | None = None
+    # v0.5 COST-STOP-LOSS-001：attempt 级 no-progress / 限频 evidence 累计
+    consecutive_empty = 0
+    consecutive_identical = 0
+    prev_retry_reason: str | None = None
+    gateway_evidence_occurred = False
+    rate_limit_occurred = False
 
-    def telemetry(outcome: str, last: AttemptRecord | None) -> dict:
+    def _is_gateway_reason(reason: str | None) -> bool:
+        return bool(reason) and any(p.search(reason) for p in _PLACEHOLDER_GATEWAY_RES)
+
+    def _terminal_reason_for(last: AttemptRecord | None) -> str:
+        """stop-loss 终态机器可读原因（raise 点调用；确定性映射，evidence-based）。"""
+        if last is None:
+            return stop_loss_mod.STOP_REASON_RETRIES_EXHAUSTED
+        if last.failure_class == FAILURE_CLASS_QUOTA:
+            return stop_loss_mod.STOP_REASON_QUOTA
+        if last.failure_class == FAILURE_CLASS_RATE_LIMIT:
+            return stop_loss_mod.STOP_REASON_RATE_LIMIT
+        if last.timed_out:
+            return (
+                stop_loss_mod.STOP_REASON_TOOL_OR_TEST_STILL_ACTIVE
+                if last.timeout_activity_markers
+                else stop_loss_mod.STOP_REASON_ATTEMPT_TIMEOUT
+            )
+        if gateway_evidence_occurred:
+            return stop_loss_mod.STOP_REASON_PROVIDER_FAILURE
+        if consecutive_empty >= 2 or consecutive_identical >= 2:
+            return stop_loss_mod.STOP_REASON_NO_PROGRESS
+        return stop_loss_mod.STOP_REASON_RETRIES_EXHAUSTED
+
+    def telemetry(outcome: str, last: AttemptRecord | None,
+                  terminal_reason: str | None = None) -> dict:
         return _build_telemetry(
             policy, attempts, outcome, last,
             timed_out_occurred, empty_occurred, retry_reasons,
             time.monotonic() - stage_start, stage_deadline,
             cleanup_failure_occurred, retry_suppressed_reason,
+            terminal_reason=terminal_reason,
+            rate_limit_occurred=rate_limit_occurred,
         )
+
+    def _exhausted_raise(last: AttemptRecord | None) -> None:
+        """统一 RETRIES_EXHAUSTED raise（terminal reason 由 attempt evidence 映射）。"""
+        terminal = _terminal_reason_for(last)
+        tm = telemetry(OUTCOME_RETRIES_EXHAUSTED, last, terminal)
+        raise WorkBuddyRetriesExhausted(_render_failure_message(tm), tm)
 
     for attempt_index in range(1, policy.max_attempts + 1):
         now = time.monotonic()
@@ -1003,6 +1128,57 @@ def run_workbuddy_with_retry(
                 _render_failure_message(telemetry(OUTCOME_CLEANUP_FAILURE, record)),
                 telemetry(OUTCOME_CLEANUP_FAILURE, record),
             )
+        # v0.5 COST-STOP-LOSS-001：no-progress 簿记——只消费"已完成的失败 attempt"
+        # 的 evidence，绝不在 attempt 执行中打断（合规长跑 tool/test 不被误杀）。
+        if record.stdout_empty:
+            consecutive_empty += 1
+        else:
+            consecutive_empty = 0
+        if record.retry_reason and record.retry_reason == prev_retry_reason:
+            consecutive_identical += 1
+        else:
+            consecutive_identical = 1
+        prev_retry_reason = record.retry_reason
+        if _is_gateway_reason(record.retry_reason) or (
+            record.stderr_tail and _is_placeholder_gateway(record.stderr_tail)
+        ):
+            gateway_evidence_occurred = True
+        if record.failure_class in (FAILURE_CLASS_RATE_LIMIT, FAILURE_CLASS_QUOTA):
+            # v0.5 COST-STOP-LOSS-001：限频/quota 感知（audit：429 此前被误归为
+            # empty output、重试未等 reset → 徒劳）。reset 窗口可解析且在剩余
+            # budget 内 → 有界等待一次（provider/model wait 可接受）；否则**尽早
+            # fail closed**——绝不烧掉剩余 attempts 或空转到 stage budget。
+            rate_limit_occurred = True
+            if record.retry_reason:
+                retry_reasons.append(record.retry_reason)
+            remaining_attempts = policy.max_attempts - attempt_index
+            if remaining_attempts <= 0:
+                break
+            reset_s = record.rate_limit_reset_seconds
+            now2 = time.monotonic()
+            remaining2 = max(0.0, stage_deadline - now2)
+            if reset_s is None or reset_s <= 0 or remaining2 <= effective_reserve:
+                if not retry_suppressed_reason:
+                    retry_suppressed_reason = (
+                        "rate limit/quota evidence without a reachable reset "
+                        "window (reset "
+                        + (f"{reset_s:.0f}s" if reset_s is not None else "unknown")
+                        + f", remaining budget {remaining2:.0f}s) — no reasonable "
+                        "success signal; early stop-loss (RESUME after reset)"
+                    )
+                _exhausted_raise(record)
+            wait = min(reset_s, remaining2)
+            if remaining2 - wait <= effective_reserve + MIN_ATTEMPT_RUNTIME:
+                if not retry_suppressed_reason:
+                    retry_suppressed_reason = (
+                        f"rate limit reset window ({reset_s:.0f}s) not reachable "
+                        f"within remaining safe budget ({remaining2:.0f}s) — "
+                        "early stop-loss (RESUME after reset)"
+                    )
+                _exhausted_raise(record)
+            # 有界 provider/model wait：等到 reset 后再试一次（不 tight loop）
+            time.sleep(max(0.0, wait))
+            continue
         if record.failure_class == FailureClass.RETRYABLE_TRANSIENT.value:
             if record.retry_reason:
                 retry_reasons.append(record.retry_reason)
@@ -1010,6 +1186,20 @@ def run_workbuddy_with_retry(
                 timed_out_occurred = True
             if record.stdout_empty:
                 empty_occurred = True
+            # v0.5 COST-STOP-LOSS-001：repeated no-progress（连续 empty-output /
+            # 相同失败原因达到阈值）→ 提前终止，不烧掉剩余 attempts / budget。
+            if (
+                consecutive_empty >= NO_PROGRESS_EARLY_STOP_EMPTY_SEQUENCE
+                or consecutive_identical >= NO_PROGRESS_EARLY_STOP_IDENTICAL_SEQUENCE
+            ):
+                if not retry_suppressed_reason:
+                    retry_suppressed_reason = (
+                        f"repeated no-progress failure "
+                        f"({consecutive_empty} consecutive empty-output, "
+                        f"{consecutive_identical} consecutive identical reason "
+                        f"{record.retry_reason!r}) — early stop-loss"
+                    )
+                _exhausted_raise(record)
             continue
         # NON_RETRYABLE：快速失败，不无意义重试
         raise WorkBuddyPermanentError(
@@ -1018,7 +1208,4 @@ def run_workbuddy_with_retry(
         )
 
     # retryable failures 用尽（bounded）/ budget 不足 → fail closed
-    raise WorkBuddyRetriesExhausted(
-        _render_failure_message(telemetry(OUTCOME_RETRIES_EXHAUSTED, last_failure)),
-        telemetry(OUTCOME_RETRIES_EXHAUSTED, last_failure),
-    )
+    _exhausted_raise(last_failure)

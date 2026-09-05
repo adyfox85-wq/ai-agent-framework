@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .context_packet import read_stage_result
 from . import cost_guard as cost_guard_mod
+from . import stop_loss as stop_loss_mod
 from .subprocess_utils import no_console_kwargs
 from .task_validation import parse_task_fields
 from .workbuddy_retry import (
@@ -483,10 +484,18 @@ def _workbuddy_invocation(prompt: str, env: dict, model: str | None = None) -> t
     return args, stdin_data, env
 
 
-def run_agent(agent: str, prompt: str, workspace: Path, timeout: int = 3600) -> str:
+def run_agent(agent: str, prompt: str, workspace: Path, timeout: float | None = None) -> str:
     global _workbuddy_telemetry
     _workbuddy_telemetry = None  # 每次调用重置（单线程 runner 内安全）
     workspace = workspace.resolve()
+    # v0.5 COST-STOP-LOSS-001：显式 timeout 参数优先（既有调用方/test 语义不变）；
+    # None → env override 或按 agent 的有界默认（hermes 无 Risk 上下文 = 保守
+    # 1800s，Risk 分级档 1200–2400s；codex 600s——evidence-based，见
+    # stop_loss.resolve_agent_attempt_timeout；runner 在 Hermes stage 会以
+    # AAF_HERMES_ATTEMPT_TIMEOUT env 注入 Risk 分级值，此处解析生效）。
+    # WorkBuddy 不消费该 timeout（retry 层以 AAF_WORKBUDDY_* 自管）。
+    if timeout is None:
+        timeout = stop_loss_mod.resolve_agent_attempt_timeout(agent)
     # 子进程统一使用 Windows 新会话 PATH；workbuddy 额外禁用后台任务
     env = {**os.environ, 'PATH': _windows_path()}
     if agent == 'hermes':

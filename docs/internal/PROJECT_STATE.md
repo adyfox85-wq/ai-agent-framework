@@ -2,6 +2,31 @@
 
 > Project: AI Agent Framework\
 > Current Version: **v0.4（FROZEN / RELEASE READY — 2026-08-29 AAF-v0.4-FREEZE-001 正式冻结；Final Acceptance = PASS（AAF-v0.4-FINAL-ACCEPTANCE-002，Codex APPROVE，Unresolved Issues = None）；accepted implementation baseline = `1d3771fe8220e1b2e21c774840d680ec9f2dce61`；final freeze metadata commit = docs-only 提交（见本文件 §0 顶部与 git tag `v0.4`）；Release Closure Matrix 全项 COMPLETE / CLOSED / IMPLEMENTED / SOLVED / ACCEPTED；Automatic Model Routing 与 Cost Gate = NOT IMPLEMENTED（future scope）；下一开发线 post-v0.4 / v0.5 仅在用户显式启动时开启。以下为 v0.4 开发全程历史记录（IN PROGRESS 时期，保留不删除）：Phase A/B/C/D COMPLETE；Phase E COMPLETE（E-Core / Soft Cancel COMPLETE — 005-A + FIX-001/002/003；E-Ownership / Force Cancel 已交付 — 005-B + 005-B-FIX-001（canonical force authority + successful termination proof，Codex 两个 blocker 已闭合）；005-C Status Window Cancel UX + Real Windows E2E Closure 已交付——实现 + 测试 + 真实 Windows 正负 E2E 全量通过，Phase E 正式标记 COMPLETE；005-C-FIX-001（Cancel Timestamp Timezone Compatibility Fix）已交付——canonical UTC/aware elapsed contract 统一 cancel elapsed 计算，合法 offset-aware（+08:00 / +00:00 / Z）与 legacy naive 均不再因 naive/aware 混算而破坏 Cancel UI / force eligibility，malformed fail closed，Codex 原 timezone blocker 已闭合；route 阶段 WorkBuddy / Codex 独立复核按项目惯例由 route 执行并记录于任务 REPORT，若发现 blocking 则按惯例开 FIX）；Phase F IMPLEMENTATION DELIVERED（AAF-v0.4-TASK-006：Project Switching + Duplicate Task UX 实现 + 72 项新测试（63 单元 + 9 真实 Windows E2E A–I）+ 760 passed；RW-003 / RW-016 / RW-006 按真实交付证据收口 SOLVED；正式 COMPLETE 判定留待 WorkBuddy 独立验证 + Codex 审查后由 Planner 确认，本任务不自行宣布 Phase F COMPLETE）；Phase F FIX-001（Atomic Config Persistence + Real UX Closure）已交付——config.save_config 统一 atomic contract（同目录 tmp + flush/fsync + os.replace，失败清理 tmp 且旧 config 原样保留，无 write_text 旁路）；真实 Bridge UI 交互 harness（真实 Tk 弹窗 + 真实按钮 invoke + 真实剪贴板）覆盖 Known switch 确认/拒绝/Unknown fail-safe/Invalid fail closed/Duplicate running 卡片+无第二 runner/Duplicate terminal 卡片+不覆盖/restart 恢复；顺带修复 duplicate 卡片 [打开 REPORT] 死按钮（Tk 按钮 invoke 不带参数 → 闭包捕获 report_path）；780 passed（760 + 20 新增，零下降）；WorkBuddy 独立验证 + Codex 复审由 route 执行（本任务不自行宣布 COMPLETE））；Model Observability / Discovery Foundation 已交付（AAF-v0.4-TASK-010：只读模型观测 + 发现事实层——model_observation.json 单一 machine authority、每 stage stage_timing、REPORT 紧凑 Model Observation 摘要、30 项定向测试；Automatic Model Routing 未实现，仅登记未来 policy（backlog §5.5 CAP-003））；WorkBuddy Stage Reliability 已交付（AAF-v0.4-TASK-011 + FIX-001 + FIX-002：bounded transient retry / confirmed-dead-before-retry / single absolute stage deadline / Windows tree cleanup authority / safe cleanup reserve / attempt admission / telemetry）；当前状态 = FROZEN（见下方 §0））**\
+> Last Updated: 2026-09-05（AAF-v0.5-PH1-PORTABILITY-CLOSE-001 — **v0.5 PH-1 Portability Hardening 正式收口 =
+> CLOSED / COMPLETE（docs-only closure record；parent = ac6c489，新 commit 未 amend 未 push；final route
+> acceptance = PENDING——WorkBuddy 独立验证 + Codex review 按 route 阶段执行，不超前声称 route verdicts）**：
+> 依已同步的 Planner Bootstrap / Role Contracts（ac6c489；route legs 已执行并接受——WorkBuddy =
+> PASS_WITH_WARNING 非阻断 + Codex = APPROVE，证据 .aaf/AAF-v0.5-PH1-PLANNER-BOOTSTRAP-ROLE-CONTRACTS-001/
+> REPORT.md；SYNC-001 已同步 origin/main）+ AAF-v0.5-PH1-ROLE-REPLACEMENT-GAP-AUDIT-001（只读源码审计 =
+> **PH1_RUNTIME_GAPS_NOT_BLOCKING**——GAP-PH1-01/02/03 全部属实且描述准确、non-blocking，无需 runtime
+> hardening 即可收口）正式收口 PH-1：记录 = Planner **CONTRACT_REPLACEABLE_NOW**（框架外角色，零 runtime
+> 变更即可替换；新 Planner 从仓库权威 bootstrap，**不要求恢复旧 ChatGPT 对话历史**；AAF 不托管在
+> ChatGPT 内）/ Executor = **REPLACEABLE_WITH_ADAPTER**（当前实现 Hermes）/ Validator =
+> **REPLACEABLE_WITH_ADAPTER**（当前实现 WorkBuddy）/ Reviewer = **REPLACEABLE_WITH_ADAPTER**（当前实现
+> Codex）；ChatGPT / Hermes / WorkBuddy / Codex = current implementations only，替换满足同一角色契约不
+> 重定义 AAF；替换路径（高层）= 角色契约 -> 集中单点 adapter 编辑 -> 全量回归 + fresh-runner 兼容性验证
+> -> 沿用既有 AAF TASK / stage / REPORT 权威；**3 项 PORTABILITY_GAP 定义原文保留**（不删除不弱化，仍 =
+> non-blocking portability gaps，与 required runtime work 显式区分）；**无 PH-1 runtime 实现任务**；
+> 静态 role→adapter 注册表 / 重构 = FUTURE_CONVENIENCE_ONLY（非当前必需，不升级为 blocker）；
+> Portability Hardening 整体状态 = PH-1 CLOSED / COMPLETE / PH-2 = NOT STARTED / PH-3 = NOT STARTED
+> （本任务未启动 PH-2/PH-3，不重开 A6/A4+，frozen MVP 保持 intact）；out of scope 保持（plugin
+> marketplace / 动态任意 Agent 发现 / 动态包安装 / 大型通用 Agent registry / Agent OS-platform 扩张 /
+> Memory system / DAG engine / A6 / A4+）；closure record = docs/internal/AAF-v0.5-PH1-PORTABILITY-CLOSE-
+> 001-REPORT.md；改动 = PROJECT_STATE.md（Last Updated + v0.5 块 PH-1 CLOSED 条目块）+
+> AAF_MASTER_BACKLOG.md（Last Updated + §7 Summary PH-001 行转 CLOSED / COMPLETE）+
+> START_HERE_FOR_NEW_PLANNER.md（当前状态句刷新：PH-1 CLOSED / PH-2·PH-3 NOT STARTED）+ 上述 closure
+> record 新增；docs-only——零 runtime/code/test/registry/economics/qualification 变化；
+> PRE_ALLOWED_UNTRACKED 保留；no push。此前更新：
 > Last Updated: 2026-09-05（AAF-v0.5-PH1-PLANNER-BOOTSTRAP-ROLE-CONTRACTS-001 — **v0.5 PH-1 Portability
 > Hardening = STARTED（docs-only deliverable 备妥；用户显式批准的 PH-1 scope；parent = 0c5dfad，新
 > commit 未 amend 未 push；final route acceptance = PENDING——WorkBuddy 独立验证 + Codex review 按 route
@@ -1420,6 +1445,33 @@ PH-1 Portability Hardening（2026-09-05，AAF-v0.5-PH1-PLANNER-BOOTSTRAP-ROLE-CO
   - record = docs/internal/AAF-v0.5-PH1-PLANNER-BOOTSTRAP-ROLE-CONTRACTS-001-REPORT.md；改动 =
     PROJECT_STATE.md / AAF_MASTER_BACKLOG.md / README.md（Last Updated + 状态行）+ 上述 3 个新增文档；
     docs-only——零 runtime/code/test/registry/economics/qualification 变化；PRE_ALLOWED_UNTRACKED
+
+PH-1 Portability Hardening CLOSE（2026-09-05，AAF-v0.5-PH1-PORTABILITY-CLOSE-001 closure record——依上方
+  PH-1 条目（Planner Bootstrap / Role Contracts，route legs = WorkBuddy PASS_WITH_WARNING 非阻断 + Codex
+  APPROVE，已接受）+ AAF-v0.5-PH1-ROLE-REPLACEMENT-GAP-AUDIT-001（只读源码审计）正式收口）:
+  - **状态：PH-1 = CLOSED / COMPLETE**（docs-only closure record 备妥——本 executor leg = 权威状态更新 +
+    closure record + 一个 docs commit，未 amend 未 push；final route acceptance = PENDING——WorkBuddy 独立
+    验证 + Codex review 按 route 阶段执行，不超前声称 route verdicts）
+  - 决策记录 = **PH1_RUNTIME_GAPS_NOT_BLOCKING**（Gap Audit 唯一决策）：3 项 PORTABILITY_GAP（GAP-PH1-01/
+    02/03）仍属实且 non-blocking——non-blocking portability gap ≠ required runtime work，**无 PH-1
+    runtime 实现任务**；静态 role→adapter 注册表 / 重构 = FUTURE_CONVENIENCE_ONLY，非当前必需
+  - 替换分类记录：Planner = **CONTRACT_REPLACEABLE_NOW**（当前实现 ChatGPT；替换零 runtime 变更；新
+    Planner 从仓库权威 bootstrap，不依赖旧 ChatGPT 对话历史；AAF 不托管在 ChatGPT 内）/ Executor =
+    **REPLACEABLE_WITH_ADAPTER**（当前实现 Hermes）/ Validator = **REPLACEABLE_WITH_ADAPTER**（当前实现
+    WorkBuddy）/ Reviewer = **REPLACEABLE_WITH_ADAPTER**（当前实现 Codex）；ChatGPT / Hermes / WorkBuddy /
+    Codex = current implementations only，替换满足同一角色契约不重定义 AAF
+  - 替换路径（高层）：角色契约 -> 集中单点 adapter 编辑 -> 全量回归 + fresh-runner 兼容性验证 -> 沿用既有
+    AAF TASK / stage / REPORT 权威
+  - Portability Hardening 整体状态：PH-1 = CLOSED / COMPLETE；PH-2 = NOT STARTED；PH-3 = NOT STARTED
+    （本任务未启动 PH-2/PH-3；不重开 A6/A4+；frozen MVP 保持 intact——post-freeze opt-in 不变）
+  - out of scope 保持：plugin marketplace / 动态任意 Agent 发现 / 动态包安装 / 大型通用 Agent registry /
+    Agent OS-platform 扩张 / Memory system / DAG engine / A6 / A4+（v0.5 non-MVP 列表不变，均须用户显式
+    scope 批准）
+  - closure record = docs/internal/AAF-v0.5-PH1-PORTABILITY-CLOSE-001-REPORT.md；改动 = PROJECT_STATE.md /
+    AAF_MASTER_BACKLOG.md / START_HERE_FOR_NEW_PLANNER.md（Last Updated + 状态行）+ 上述 record 新增；
+    docs-only——零 runtime/code/test/registry/economics/qualification 变化；PRE_ALLOWED_UNTRACKED 保留；
+    no push（route 后同步）
+
     保留；no push（route 后同步）
 Maintenance branch（2026-08-30，AAF-v0.5-RUNTIME-UX-CONSOLE-FLASH-001 — 临时 UX 维护，已收口）:
   - 修复确认的 Windows helper 子进程瞬时 console 闪现（cosmetic/UX only，非功能失败）：

@@ -5,8 +5,8 @@
 > 目标：即使旧 ChatGPT 账号 / 旧对话 / 旧 Project 全部失效，只凭本仓库即可恢复上下文并继续规划。
 > **不需要任何旧聊天历史。Git 仓库 + runtime = framework authority（不是任何聊天窗口）。**
 >
-> 更新：2026-09-05（AAF-v0.5-PH1-PLANNER-BOOTSTRAP-ROLE-CONTRACTS-001；v0.5 PERSONAL MVP FROZEN 期间 docs-only 新增）
-> 角色契约权威细节：`docs/internal/AAF_ROLE_CONTRACTS.md`；任务记录：`docs/internal/AAF-v0.5-PH1-PLANNER-BOOTSTRAP-ROLE-CONTRACTS-001-REPORT.md`
+> 更新：2026-09-05（AAF-v0.5-PH1-PLANNER-BOOTSTRAP-ROLE-CONTRACTS-001；v0.5 PERSONAL MVP FROZEN 期间 docs-only 新增；2026-09-05 AAF-v0.5-PH1-PORTABILITY-CLOSE-001：PH-1 = CLOSED / COMPLETE 收口，PH-2/PH-3 = NOT STARTED）
+> 角色契约权威细节：`docs/internal/AAF_ROLE_CONTRACTS.md`；任务记录：`docs/internal/AAF-v0.5-PH1-PLANNER-BOOTSTRAP-ROLE-CONTRACTS-001-REPORT.md`；PH-1 收口记录：`docs/internal/AAF-v0.5-PH1-PORTABILITY-CLOSE-001-REPORT.md`
 
 ## 0. 一分钟结论
 
@@ -17,7 +17,7 @@
   调本地 Agent CLI（`hermes` / `codebuddy` / `codex`）。Planner 永远在框架外部，通过 TASK 文本参与。
 - **当前状态**：v0.5 = PERSONAL MVP FROZEN / CLOSED / COMPLETE / SYNCED（2026-09-05 冻结；
   baseline = `0c5dfad`；恢复分支 `backup/2026-09-05-v0.5-mvp-frozen`）。A0–A5 = CLOSED / COMPLETE /
-  SYNCED；v0.4 = FROZEN 基线。当前正进行 = v0.5 PH-1 Portability Hardening（docs-only，即本套文档）。
+  SYNCED；v0.4 = FROZEN 基线。v0.5 PH-1 Portability Hardening = CLOSED / COMPLETE（2026-09-05 AAF-v0.5-PH1-PORTABILITY-CLOSE-001 收口；docs-only；Gap Audit 判定 = PH1_RUNTIME_GAPS_NOT_BLOCKING；PH-2 / PH-3 = NOT STARTED，无自动激活）。当前无进行中 PH 任务。
 - **你的角色（Planner）**：规划者 + 最终决策者。你输出标准 AAF TASK；框架按 Route 调度
   Executor → Validator → Reviewer；REPORT 交回给你，你决定下一步。框架**不**自动创建下一 TASK、
   不自动写回 ChatGPT（交接需要一次人工 copy/paste——这是 MVP 的显式边界，不是缺陷）。

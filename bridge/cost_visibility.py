@@ -1,0 +1,629 @@
+"""AAF Bridge — Cost / Model 可见性（display-only 归一化层）。
+
+TASK: AAF-v0.5-UX-COST-VISIBILITY-IMPLEMENT-001（基于只读审计
+AAF-v0.5-UX-COST-VISIBILITY-AUDIT-001 的结论）。本模块 = 概念流中间层：
+
+    既有 authoritative runtime artifacts（task output_dir 内）
+    -> display-only 归一化 cost/model view（本模块，纯函数只读）
+    -> 既有 Bridge 状态窗口（bridge/status_window.py 渲染）
+
+权威与显示边界（本模块不改任何 authority）：
+- 零模型选择 / 零路由 / 零资格化 / 零 fallback 资格 / 零 Paid Guard /
+  零 Cost Guard / 零付费授权变化（不 import 任何决策执行路径；只按 artifact
+  token 值做 whitelist 归一化显示）。
+- 绝不从模型名推断 FREE/PAID（Requirement 2）。
+- model_observation.json 单独不作经济权威（Requirement 3/4）：cost_class
+  显示必须 join 既有 artifact —— cost_guard.json（A0 准入镜像，Hermes 前置）+
+  active_routing.json（A3）+ workbuddy_active_routing.json（A4）+
+  fallback_runtime.json / paid_escalation_gate.json / paid_fallback_runtime.json
+  （A5，仅真实 Hermes 失败路径存在）。零新建经济权威。
+- 无法证明 → UNKNOWN（绝不猜 FREE，也不猜 PAID）；paid authorization ≠
+  paid invocation：授权存在但无执行证据绝不显示 USED_PAID（Requirement 12）。
+- 缺失 / 损坏的 optional artifact -> 相应字段 UNKNOWN / NOT_USED，绝不抛异常
+  （Requirement 14/15，fail-soft per row）。
+
+显示词汇（Requirement/audit 定义；技术 token 保留英文）：
+Cost Class: FREE / LOCAL_FREE / PAID / UNKNOWN / BLOCKED
+Fallback:   NOT_USED / USED_FREE / USED_PAID / FAILED / UNKNOWN
+模型 / provider 缺失显示 "—"（既有状态窗口约定）。
+
+每字段权威源（audit 三/四节；全部 read-only join，只读 output_dir）：
+- role/stage：route.json agents（调用方传入 route_agents）
+- Hermes actual model/provider：model_observation.json observations.hermes
+  （post-hoc，env overlay 还原前观测 = final actual）-> 缺失时
+  cost_guard.json model/provider（pre-invocation 准入镜像）
+- Hermes cost class：paid_fallback_runtime.json（真实 paid 执行）>
+  cost_guard.json decision（BLOCKED_COST_APPROVAL -> BLOCKED /
+  ALLOWED_AUTHORIZED_PAID -> PAID / ALLOWED_FREE -> LOCAL_FREE）>
+  active_routing.json routing_applied=true（A1 registry label：FREE / LOCAL_FREE）>
+  observation cost_class=LOCAL_FREE（端点证据）> UNKNOWN
+- WorkBuddy model：routing_applied=true -> routed_model（A4 决策 =
+  pre-invocation 精确 --model）；否则 observation（CodeBuddy CLI 通常不可观测
+  -> UNKNOWN/"—"）。provider：仅 observation 有证据时显示（架构性通常 UNKNOWN）。
+- WorkBuddy cost class：仅当 A4 权威可证 —— routing_applied=true 且 routed
+  winner 的 economic fact（artifact economic_facts.<winner>.cheapness_rank==0 +
+  promotion_status=="free"）-> FREE（free promo 附注）；否则 UNKNOWN
+  （A4 只做经济择优，不产出统一 cost_class；LOW/MEDIUM economic routing 存在
+  绝不自动 = FREE —— Requirement 9）。
+- Codex model/provider：仅 observation 有证据（model_source=config）时显示；
+  cost 恒 UNKNOWN（CLI/config 零成本元数据暴露）。
+- fallback（仅 Hermes）：A5 artifact 存在时按真实记录显示
+  （USED_FREE / USED_PAID / FAILED）；paid gate AUTHORIZED 但无 paid runtime
+  artifact -> NOT_USED（授权 != 执行，绝不 USED_PAID）；无 A5 artifact ->
+  NOT_USED（缺 artifact = 无 A5 上下文）。WorkBuddy/Codex 架构性无模型级
+  fallback -> NOT_USED（A4 record fallback_used=false；Codex 无模型 fallback
+  机制）。
+
+渲染（Requirement 15/16）：调用方（status_window）把每行渲染为
+  "<Agent>  <Cost>  <model> (provider)"，仅当 fallback != NOT_USED 或存在
+  短 reason/detail 时才附加一行小字 detail；不新建 dashboard。
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable
+
+# 本模块允许的路由 stage agents（既有 status_window 六阶段条中的三个 agent 阶段）
+ROUTE_AGENTS = ("hermes", "workbuddy", "codex")
+
+# ---- 显示词汇（技术 token；authority = artifact 既有 token，不另造） ----
+COST_FREE = "FREE"
+COST_LOCAL_FREE = "LOCAL_FREE"
+COST_PAID = "PAID"
+COST_UNKNOWN = "UNKNOWN"
+COST_BLOCKED = "BLOCKED"
+COST_CLASSES_DISPLAY = (COST_FREE, COST_LOCAL_FREE, COST_PAID, COST_UNKNOWN, COST_BLOCKED)
+
+FALLBACK_NOT_USED = "NOT_USED"
+FALLBACK_USED_FREE = "USED_FREE"
+FALLBACK_USED_PAID = "USED_PAID"
+FALLBACK_FAILED = "FAILED"
+FALLBACK_UNKNOWN = "UNKNOWN"
+FALLBACK_DISPLAY_VALUES = (
+    FALLBACK_NOT_USED,
+    FALLBACK_USED_FREE,
+    FALLBACK_USED_PAID,
+    FALLBACK_FAILED,
+    FALLBACK_UNKNOWN,
+)
+
+# 模型 / provider 缺失显示（既有状态窗口 UNKNOWN 常量 "—"）
+DISPLAY_UNKNOWN = "—"
+
+# ---- A0 guard artifact token（cost_guard.json；值域 = 既有权威词汇） ----
+_GUARD_DECISION_ALLOWED_FREE = "ALLOWED_FREE"
+_GUARD_DECISION_ALLOWED_AUTHORIZED_PAID = "ALLOWED_AUTHORIZED_PAID"
+_GUARD_DECISION_BLOCKED = "BLOCKED_COST_APPROVAL"
+
+# A5 paid escalation gate token（paid_escalation_gate.json）
+_GATE_AUTHORIZED = "AUTHORIZED"
+_GATE_BLOCKED = "BLOCKED"
+_GATE_FAIL_CLOSED = "FAIL_CLOSED"
+
+# artifact 文件名（与 ai_agent_framework 各 authority 模块常量一致；只读引用）
+ARTIFACT_MODEL_OBSERVATION = "model_observation.json"
+ARTIFACT_COST_GUARD = "cost_guard.json"
+ARTIFACT_ACTIVE_ROUTING = "active_routing.json"
+ARTIFACT_WORKBUDDY_ROUTING = "workbuddy_active_routing.json"
+ARTIFACT_FALLBACK_RUNTIME = "fallback_runtime.json"
+ARTIFACT_PAID_GATE = "paid_escalation_gate.json"
+ARTIFACT_PAID_RUNTIME = "paid_fallback_runtime.json"
+
+
+@dataclass(frozen=True)
+class CostRow:
+    """单个 route agent 的 display-only Cost / Model 行（全部为展示就绪事实）。
+
+    - agent: 'hermes' | 'workbuddy' | 'codex'（原始 token；显示名由渲染层映射）
+    - model / provider: 显示文本（无可证证据 -> DISPLAY_UNKNOWN "—"）
+    - cost_class: COST_* 显示词汇（可证则证；不可证 -> UNKNOWN）
+    - fallback: FALLBACK_* 显示词汇（默认 NOT_USED）
+    - detail: 可选一行短 detail（fallback 上下文 / 短 reason；无则空串）
+    """
+
+    agent: str
+    model: str = DISPLAY_UNKNOWN
+    provider: str = DISPLAY_UNKNOWN
+    cost_class: str = COST_UNKNOWN
+    fallback: str = FALLBACK_NOT_USED
+    detail: str = ""
+
+
+def read_json(output_dir: Path | str | None, filename: str) -> dict | None:
+    """只读 artifact JSON；缺失 / 损坏 / 非 dict -> None（绝不抛异常）。
+
+    显示层的统一 fail-soft 读取口（Requirement 14/15/I：损坏 optional
+    evidence 必须 degrade 而非崩溃 UI）。
+    """
+    if output_dir is None:
+        return None
+    path = Path(output_dir) / filename
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def load_observation(output_dir: Path | str | None, agent: str) -> dict | None:
+    """model_observation.json observations.<agent>（dict 校验后返回）。"""
+    registry = read_json(output_dir, ARTIFACT_MODEL_OBSERVATION)
+    if registry is None:
+        return None
+    entry = registry.get("observations") or {}
+    obs = entry.get(agent) if isinstance(entry, dict) else None
+    return obs if isinstance(obs, dict) else None
+
+
+def _s(value: object) -> str:
+    """非空 str -> 原值；其余 -> ''（类型安全 echo）。"""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return ""
+
+
+def _is_true(value: object) -> bool:
+    return value is True
+
+
+def _model_provider_from_observation(obs: dict | None) -> tuple[str, str]:
+    """observation 的 model/provider（仅作实际观测回显；缺失 -> "—"）。"""
+    if not obs:
+        return DISPLAY_UNKNOWN, DISPLAY_UNKNOWN
+    model = _s(obs.get("model"))
+    provider = _s(obs.get("provider"))
+    return (model or DISPLAY_UNKNOWN), (provider or DISPLAY_UNKNOWN)
+
+
+def _registry_cost_label(routed_model: str | None, routed_provider: str | None) -> str | None:
+    """A1 baseline registry 的 cost label（A3 routing_applied=true 时的证据回显）。
+
+    只读回显决策时同一 registry 的 cost_class；FREE_PROMO 归 FREE（附 promo
+    说明由 detail 承担——audit 词汇：不另造）。无匹配 / 非 FREE 集合 -> None
+    （调用方 fall back 到 UNKNOWN；绝不猜）。
+    """
+    from ai_agent_framework import model_registry as _mr  # 纯 dataclass 模块（零 I/O）
+
+    if not routed_model:
+        return None
+    key = _mr.canonical_key(routed_model, routed_provider or None)
+    entry = _mr.baseline_registry().get(key)
+    if entry is None:
+        return None
+    label = getattr(entry, "cost_class", None)
+    if label == "LOCAL_FREE":
+        return COST_LOCAL_FREE
+    if label == "FREE":
+        return COST_FREE
+    if label == "FREE_PROMO":
+        return COST_FREE  # FREE_PROMO 归一 FREE（audit 词汇；promo 事实进 detail）
+    return None
+
+
+def _guard_display(guard: dict | None) -> str:
+    """cost_guard.json decision -> cost 显示词汇。
+
+    - BLOCKED_COST_APPROVAL -> BLOCKED（权威阻断证据：Hermes 未执行）
+    - ALLOWED_AUTHORIZED_PAID -> PAID（显式精确授权 + admission 消费 =
+      paid-class 执行证据；reason detail 注明 explicitly authorized paid）
+    - ALLOWED_FREE -> LOCAL_FREE（A0 LOCAL_FREE 端点证据）
+    - 其余 / 未知 token -> ''（调用方继续降级；不猜）
+    """
+    if not guard:
+        return ""
+    decision = _s(guard.get("decision"))
+    if decision == _GUARD_DECISION_BLOCKED:
+        return COST_BLOCKED
+    if decision == _GUARD_DECISION_ALLOWED_AUTHORIZED_PAID:
+        return COST_PAID
+    if decision == _GUARD_DECISION_ALLOWED_FREE:
+        return COST_LOCAL_FREE
+    return ""
+
+
+def _normalize_agent_token(value: object) -> str:
+    """artifact token -> 显示词汇；未知 / 非 str -> UNKNOWN（不猜）。"""
+    token = _s(value)
+    if token in COST_CLASSES_DISPLAY:
+        return token
+    return COST_UNKNOWN
+
+
+def _normalize_fallback_token(value: object, default: str = FALLBACK_NOT_USED) -> str:
+    """artifact token -> fallback 显示词汇；未知 -> 默认（不猜）。"""
+    token = _s(value)
+    if token in FALLBACK_DISPLAY_VALUES:
+        return token
+    return default
+
+
+def _hermes_model_provider(
+    obs: dict | None,
+    guard: dict | None,
+    active: dict | None,
+    fb_free: dict | None,
+    fb_paid: dict | None,
+    gate: dict | None,
+) -> tuple[str, str]:
+    """Hermes actual model/provider 显示（最强可证当前证据）。
+
+    优先序：A5 真实 paid/免费兜底 final actual（authoritative audit；仅
+    used=true 时）-> observation（post-hoc final actual）-> guard（pre-
+    invocation 准入镜像）-> active routing routed_model -> "—"。
+    """
+    if fb_paid is not None and _is_true(fb_paid.get("fallback_used")):
+        m = _s(fb_paid.get("paid_candidate_model") or fb_paid.get("final_actual_model"))
+        p = _s(fb_paid.get("paid_candidate_provider") or fb_paid.get("final_actual_provider"))
+        if m:
+            return m, (p or DISPLAY_UNKNOWN)
+    if fb_free is not None and _is_true(fb_free.get("fallback_used")):
+        m = _s(fb_free.get("final_actual_model"))
+        p = _s(fb_free.get("final_actual_provider"))
+        if m:
+            return m, (p or DISPLAY_UNKNOWN)
+    obs_model, obs_provider = _model_provider_from_observation(obs)
+    if obs_model != DISPLAY_UNKNOWN:
+        return obs_model, obs_provider
+    if guard is not None:
+        m = _s(guard.get("model"))
+        p = _s(guard.get("provider"))
+        if m:
+            return m, (p or DISPLAY_UNKNOWN)
+    if active is not None and _is_true(active.get("routing_applied")):
+        m = _s(active.get("routed_model"))
+        p = _s(active.get("routed_provider"))
+        if m:
+            return m, (p or DISPLAY_UNKNOWN)
+    return DISPLAY_UNKNOWN, DISPLAY_UNKNOWN
+
+
+def _hermes_cost_class(
+    guard: dict | None,
+    obs: dict | None,
+    active: dict | None,
+    fb_free: dict | None,
+    fb_paid: dict | None,
+) -> str:
+    """Hermes cost class 显示（最强可证；audit 五节映射；绝不猜）。"""
+    if fb_paid is not None:
+        return COST_PAID  # 真实 paid-class invocation 已执行（AUTHORIZED gate 证据内嵌）
+    guard_disp = _guard_display(guard)
+    if guard_disp:
+        return guard_disp
+    if fb_free is not None and _is_true(fb_free.get("fallback_used")):
+        # A5 免费兜底被接受：最终 actual = A0 ALLOWED_FREE（LOCAL_FREE 端点证据）。
+        # 注：若 guard 存在且为 ALLOWED_AUTHORIZED_PAID（付费原调用发生过），
+        # 上面的 guard_disp 优先 -> 显示 PAID + fallback USED_FREE（原付费尝试与
+        # 免费兜底都真实发生，两段证据都不隐藏）。
+        return COST_LOCAL_FREE
+    if active is not None and _is_true(active.get("routing_applied")):
+        label = _registry_cost_label(
+            _s(active.get("routed_model")) or None,
+            _s(active.get("routed_provider")) or None,
+        )
+        if label:
+            return label
+    if obs is not None:
+        obs_cost = _s(obs.get("cost_class"))
+        if obs_cost == "LOCAL_FREE":
+            return COST_LOCAL_FREE  # 端点证据（observation/registry LOCAL_FREE）
+        if obs_cost == "FREE" or obs_cost == "FREE_PROMO":
+            return COST_FREE
+    return COST_UNKNOWN
+
+
+def _hermes_fallback(
+    fb_free: dict | None,
+    gate: dict | None,
+    fb_paid: dict | None,
+) -> str:
+    """Hermes fallback 显示（audit 五节；represent at minimum 全语义覆盖）。"""
+    if fb_paid is not None:
+        # A5 paid runtime audit：真实 paid invocation 结果（used 如实）
+        return FALLBACK_USED_PAID if _is_true(fb_paid.get("fallback_used")) else FALLBACK_FAILED
+    if gate is not None:
+        decision = _s(gate.get("gate_decision"))
+        if decision == _GATE_AUTHORIZED:
+            # 授权存在但无 paid runtime artifact = 无 paid invocation 证据
+            # （Requirement 12：绝不 USED_PAID；无执行即 NOT_USED + detail）
+            return FALLBACK_NOT_USED
+        if decision in (_GATE_BLOCKED, _GATE_FAIL_CLOSED):
+            return FALLBACK_FAILED  # gate 阻断付费兜底 -> 原失败保留
+        return FALLBACK_UNKNOWN
+    if fb_free is not None:
+        if _is_true(fb_free.get("fallback_used")):
+            return FALLBACK_USED_FREE
+        return FALLBACK_FAILED  # attempted-not-used / no-attempt：原失败保留
+    return FALLBACK_NOT_USED
+
+
+def _short_guard_reason(guard: dict | None, active: dict | None, fb_free: dict | None) -> str:
+    """cost class 的短 reason（Requirement 7 词汇；无则空串）。"""
+    if guard is not None:
+        decision = _s(guard.get("decision"))
+        if decision == _GUARD_DECISION_BLOCKED:
+            return "blocked: cost approval required"
+        if decision == _GUARD_DECISION_ALLOWED_AUTHORIZED_PAID:
+            return "explicitly authorized paid"
+        if decision == _GUARD_DECISION_ALLOWED_FREE:
+            return "local free candidate"
+    if fb_free is not None and _is_true(fb_free.get("fallback_used")):
+        return "free fallback used"
+    if active is not None and _is_true(active.get("routing_applied")):
+        return "qualified free candidate"
+    return ""
+
+
+def _hermes_detail(
+    model: str,
+    provider: str,
+    cost_class: str,
+    fallback: str,
+    guard: dict | None,
+    active: dict | None,
+    fb_free: dict | None,
+    gate: dict | None,
+    fb_paid: dict | None,
+    obs: dict | None = None,
+) -> str:
+    """Hermes 行 detail（仅 fallback 上下文 / 需说明的 reason；保持一行短）。"""
+    if fb_paid is not None:
+        orig = _s(fb_paid.get("original_model")) or DISPLAY_UNKNOWN
+        paid = _s(fb_paid.get("paid_candidate_model")) or model
+        if fallback == FALLBACK_USED_PAID:
+            return f"original {orig} failed → authorized paid fallback {paid} used"
+        return f"original {orig} failed → authorized paid fallback {paid} attempted but not accepted"
+    if gate is not None:
+        decision = _s(gate.get("gate_decision"))
+        orig = _s((fb_free or {}).get("original_model")) or DISPLAY_UNKNOWN
+        if decision == _GATE_AUTHORIZED:
+            return "paid escalation AUTHORIZED but no invocation evidence (not USED_PAID)"
+        if decision in (_GATE_BLOCKED, _GATE_FAIL_CLOSED):
+            base = f"original {orig} failed; free fallback unavailable"
+            if fb_free is not None:
+                reason = _s(fb_free.get("decision_reason"))
+                if reason and len(reason) < 120:
+                    base = f"{base} ({reason})"
+            return f"{base}; paid fallback blocked ({decision})"
+        return "paid escalation gate evaluated (unknown gate decision)"
+    if fb_free is not None:
+        orig = _s(fb_free.get("original_model")) or DISPLAY_UNKNOWN
+        if fallback == FALLBACK_USED_FREE:
+            fb_model = _s(fb_free.get("final_actual_model")) or DISPLAY_UNKNOWN
+            return f"original {orig} failed → free fallback {fb_model} used"
+        reason = _s(fb_free.get("decision_reason"))
+        suffix = f" ({reason})" if reason and len(reason) < 140 else ""
+        return f"original {orig} failed; no usable free fallback; original failure preserved{suffix}"
+    # 无 A5 上下文：只对需说明的 cost class 给短 reason
+    if cost_class == COST_FREE and active is not None and _is_true(active.get("routing_applied")):
+        return "qualified free candidate"
+    if cost_class == COST_BLOCKED:
+        return "blocked: cost approval required"
+    if cost_class == COST_PAID:
+        return "explicitly authorized paid"
+    if cost_class == COST_LOCAL_FREE and guard is None:
+        return "local free candidate"
+    if cost_class == COST_UNKNOWN:
+        if guard is None and active is None and obs is None:
+            # 零 evidence：无可说明（行本身只在该 stage 已开始时显示）
+            return ""
+        return "no proven free evidence"
+    return ""
+
+
+def derive_hermes_row(
+    output_dir: Path | str | None = None,
+    *,
+    guard: dict | None = None,
+    obs: dict | None = None,
+    active: dict | None = None,
+    fb_free: dict | None = None,
+    gate: dict | None = None,
+    fb_paid: dict | None = None,
+) -> CostRow:
+    """Hermes（executor）行的 display-only 归一化（纯函数；全参数可注入）。
+
+    未注入的 artifact 参数在 output_dir 提供时按文件名只读加载（fail-soft）；
+    显式注入优先（测试确定性）。
+    """
+    if guard is None and output_dir is not None:
+        guard = read_json(output_dir, ARTIFACT_COST_GUARD)
+    if obs is None and output_dir is not None:
+        obs = load_observation(output_dir, "hermes")
+    if active is None and output_dir is not None:
+        active = read_json(output_dir, ARTIFACT_ACTIVE_ROUTING)
+    if fb_free is None and output_dir is not None:
+        fb_free = read_json(output_dir, ARTIFACT_FALLBACK_RUNTIME)
+    if gate is None and output_dir is not None:
+        gate = read_json(output_dir, ARTIFACT_PAID_GATE)
+    if fb_paid is None and output_dir is not None:
+        fb_paid = read_json(output_dir, ARTIFACT_PAID_RUNTIME)
+    model, provider = _hermes_model_provider(obs, guard, active, fb_free, fb_paid, gate)
+    cost_class = _hermes_cost_class(guard, obs, active, fb_free, fb_paid)
+    fallback = _hermes_fallback(fb_free, gate, fb_paid)
+    detail = _hermes_detail(
+        model, provider, cost_class, fallback, guard, active, fb_free, gate, fb_paid,
+        obs=obs,
+    )
+    if not detail:
+        detail = _short_guard_reason(guard, active, fb_free)
+    return CostRow(
+        agent="hermes", model=model, provider=provider,
+        cost_class=cost_class, fallback=fallback, detail=detail,
+    )
+
+
+def _workbuddy_winner_fact(wb: dict | None, routed_model: str | None) -> dict | None:
+    """A4 artifact economic_facts.<winner> 摘要（可证免费促销判断只消费它）。"""
+    if not wb or not routed_model:
+        return None
+    facts = wb.get("economic_facts")
+    if not isinstance(facts, dict):
+        return None
+    fact = facts.get(routed_model)
+    return fact if isinstance(fact, dict) else None
+
+
+def _workbuddy_free_promo(wb: dict | None, routed_model: str | None) -> bool:
+    """WorkBuddy FREE 唯一可证路径：A4 routing_applied=true + winner 经济事实
+    cheapness_rank==0（RANK_AUTHORITATIVE_CHEAP = FRESH + 显式免费 + multiplier
+    0.0 + factor 0.0）且 promotion_status=="free"。其余一律 UNKNOWN——
+    绝不因 LOW/MEDIUM economic routing 存在而标 FREE（Requirement 9）。"""
+    if not (wb is not None and _is_true(wb.get("routing_applied")) and routed_model):
+        return False
+    fact = _workbuddy_winner_fact(wb, routed_model)
+    if fact is None:
+        return False
+    return fact.get("cheapness_rank") == 0 and _s(fact.get("promotion_status")) == "free"
+
+
+def derive_workbuddy_row(
+    output_dir: Path | str | None = None,
+    *,
+    wb: dict | None = None,
+    obs: dict | None = None,
+) -> CostRow:
+    """WorkBuddy（validator）行的 display-only 归一化（纯函数；全参数可注入）。"""
+    if wb is None and output_dir is not None:
+        wb = read_json(output_dir, ARTIFACT_WORKBUDDY_ROUTING)
+    if obs is None and output_dir is not None:
+        obs = load_observation(output_dir, "workbuddy")
+
+    model = DISPLAY_UNKNOWN
+    provider = DISPLAY_UNKNOWN
+    routed_model: str | None = None
+    if wb is not None and _is_true(wb.get("routing_applied")):
+        routed_model = _s(wb.get("routed_model")) or None
+        if routed_model:
+            model = routed_model
+    if model == DISPLAY_UNKNOWN:
+        obs_model, obs_provider = _model_provider_from_observation(obs)
+        model = obs_model
+        provider = obs_provider
+    if model == DISPLAY_UNKNOWN:
+        provider = DISPLAY_UNKNOWN
+
+    free_promo = _workbuddy_free_promo(wb, routed_model)
+    cost_class = COST_FREE if free_promo else COST_UNKNOWN
+
+    detail = ""
+    if wb is not None and _is_true(wb.get("routing_applied")) and model != DISPLAY_UNKNOWN:
+        if free_promo:
+            detail = "qualified free candidate (free promo, A4 economic routing)"
+        else:
+            detail = "no proven free evidence (A4 economic routing winner only)"
+    return CostRow(
+        agent="workbuddy", model=model, provider=provider,
+        cost_class=cost_class, fallback=FALLBACK_NOT_USED, detail=detail,
+    )
+
+
+def derive_codex_row(
+    output_dir: Path | str | None = None,
+    *,
+    obs: dict | None = None,
+) -> CostRow:
+    """Codex（reviewer）行的 display-only 归一化（纯函数；全参数可注入）。
+
+    模型仅在有 config 证据（observation model_source=config）时显示；provider /
+    cost 无运行时可证来源 -> UNKNOWN（Requirement 10）。fallback = 架构性
+    NOT_USED（AAF 无 Codex 模型级 fallback 机制）。
+    """
+    if obs is None and output_dir is not None:
+        obs = load_observation(output_dir, "codex")
+    model, provider = _model_provider_from_observation(obs)
+    return CostRow(
+        agent="codex", model=model, provider=provider,
+        cost_class=COST_UNKNOWN, fallback=FALLBACK_NOT_USED,
+    )
+
+
+_DERIVERS = {
+    "hermes": derive_hermes_row,
+    "workbuddy": derive_workbuddy_row,
+    "codex": derive_codex_row,
+}
+
+
+def build_cost_rows(
+    output_dir: Path | str | None,
+    route_agents: Iterable[str] | None = None,
+) -> list[CostRow]:
+    """output_dir 内既有 artifact -> 每 route agent 一行的 display-only view。
+
+    - route_agents 缺省 / None：按既有 evidence 判定（model_observation
+      observations 键 ∩ ROUTE_AGENTS；仍无 -> 空列表——不扫描猜测）。
+    - 每个 agent 行内部 fail-soft：任何异常只让该行降级为全 UNKNOWN 行，
+      绝不向调用方抛错（Requirement 14/15：缺失/损坏 evidence 不崩溃 UI）。
+    - 行序固定 = ROUTE_AGENTS 序（渲染层与 Stage Strip 同序）。
+    """
+    if output_dir is None:
+        return []
+    if route_agents is None:
+        registry = read_json(output_dir, ARTIFACT_MODEL_OBSERVATION)
+        entries = (registry or {}).get("observations") or {}
+        agents = [a for a in ROUTE_AGENTS if isinstance(entries.get(a), dict)]
+    else:
+        wanted = [a for a in ROUTE_AGENTS if a in set(str(a) for a in route_agents)]
+        if not wanted:
+            return []
+        agents = wanted
+    rows: list[CostRow] = []
+    for agent in agents:
+        try:
+            row = _DERIVERS[agent](output_dir)
+        except Exception:  # noqa: BLE001 —— display-only fail-soft（绝不影响 UI）
+            row = CostRow(agent=agent)
+        rows.append(row)
+    return rows
+
+
+def row_visible(output_dir: Path | str | None, row: CostRow) -> bool:
+    """该行是否有任何可证 evidence（stage 未开始且零 artifact 时不显示）。
+
+    显示过滤（调用方可选）：只依据真实 evidence（artifact 存在 / 非 UNKNOWN
+    显示值 / 非默认 fallback）——自动生成的 UNKNOWN detail 文本不构成 evidence
+    （Requirement 17：不把 unproven future selection 当 actual 显示）。
+    """
+    if row.cost_class != COST_UNKNOWN:
+        return True
+    if row.fallback not in (FALLBACK_NOT_USED, FALLBACK_UNKNOWN):
+        return True
+    if row.model != DISPLAY_UNKNOWN or row.provider != DISPLAY_UNKNOWN:
+        return True
+    if row.agent == "hermes" and read_json(output_dir, ARTIFACT_COST_GUARD) is not None:
+        return True
+    if row.agent == "workbuddy" and read_json(output_dir, ARTIFACT_WORKBUDDY_ROUTING) is not None:
+        return True
+    if row.agent == "codex" and load_observation(output_dir, "codex") is not None:
+        return True
+    return False
+
+
+def render_row_line(row: CostRow, agent_display: str) -> str:
+    """单行紧凑文本（Requirement 16 target density；测试/终端复用处）。
+
+    格式：<Agent>  <Cost Class>  <model> (<provider>)
+    provider 缺失时不输出括号段；模型缺失 -> "—"。
+    """
+    model_part = row.model
+    if row.provider != DISPLAY_UNKNOWN and model_part != DISPLAY_UNKNOWN:
+        model_part = f"{model_part} ({row.provider})"
+    return f"{agent_display:<10} {row.cost_class:<10} {model_part}"
+
+
+def normalize_row_for_test(row: CostRow) -> dict[str, Any]:
+    """测试辅助：把 CostRow 转 dict（断言友好；非 UI 路径）。"""
+    return {
+        "agent": row.agent,
+        "model": row.model,
+        "provider": row.provider,
+        "cost_class": row.cost_class,
+        "fallback": row.fallback,
+        "detail": row.detail,
+    }

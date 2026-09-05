@@ -3,6 +3,25 @@
 > Project: AI Agent Framework
 > Document Type: **Living Long-Term Backlog / 长期问题与恢复登记**
 > Established: 2026-08-27（AAF-MAINT-001-FIX-002）
+> Last Updated: 2026-09-05（AAF-v0.5-UX-COST-VISIBILITY-IMPLEMENT-001 — **v0.5 Bridge Cost / Model
+> Visibility 最小 live 可见性实现交付（display-only；依据已接受只读审计 AAF-v0.5-UX-COST-VISIBILITY-
+> AUDIT-001 = COST_VISIBILITY_UI_READY_WITH_EXISTING_EVIDENCE；parent = 02e1b11，新 commit 未 amend
+> 未 push；final route acceptance = PENDING——WorkBuddy 独立验证 + Codex review 按 route 阶段执行；
+> FRESH_RUNNER_VALIDATION_REQUIRED 已记录，本实现 run 不自行声称 final closure）**：现有 Bridge 状态
+> 窗口新增最小 display-only Cost / Model 区（无新 dashboard / 无 billing/payment authority 变化）——
+> 新模块 bridge/cost_visibility.py（只读 join 归一化：model_observation / cost_guard / A3 active_routing /
+> A4 workbuddy_active_routing / A5 fallback_runtime·paid_escalation_gate·paid_fallback_runtime ->
+> per-route-agent CostRow：Cost Class FREE/LOCAL_FREE/PAID/UNKNOWN/BLOCKED + Fallback NOT_USED/USED_FREE/
+> USED_PAID/FAILED/UNKNOWN + actual model/provider + 一行短 detail；零第二经济权威、绝不从模型名推断、
+> paid authorization ≠ invocation（gate AUTHORIZED 无执行证据绝不 USED_PAID）、WorkBuddy 不因 LOW/
+> MEDIUM 经济路由标 FREE、缺失/损坏 artifact fail-soft -> UNKNOWN）+ bridge/status_window.py
+> （StatusSnapshot.cost_rows + collect_status join + Stage Strip 下紧凑渲染 + reopen 从持久化 artifact
+> 重建）；ai_agent_framework/* 零修改（零 authority 变更）；UI 字段语义与权威规则 =
+> docs/internal/AAF-v0.5-UX-COST-VISIBILITY-IMPLEMENT-001-REPORT.md §5；测试 = test_cost_visibility.py
+> 32 项（Req 22 A–K）+ test_status_window.py +5；回归 = Bridge/status/recovery 173 passed + 分块全量
+> non-GUI 2181 passed / 1 skipped 零失败（RW-029 单进程 0x80000003 环境 flake 隔离）；frozen MVP /
+> PH-1 CLOSED / PH-2·PH-3 NOT STARTED 边界保持；PRE_ALLOWED_UNTRACKED 保留；no push (TASK:
+> AAF-v0.5-UX-COST-VISIBILITY-IMPLEMENT-001)。此前更新：
 > Last Updated: 2026-09-05（AAF-v0.5-PH1-PORTABILITY-CLOSE-001 — **v0.5 PH-1 Portability Hardening =
 > CLOSED / COMPLETE（docs-only closure record；parent = ac6c489；final route acceptance = PENDING——
 > WorkBuddy 独立验证 + Codex review 按 route 阶段执行）**：依已接受的 Planner Bootstrap / Role Contracts

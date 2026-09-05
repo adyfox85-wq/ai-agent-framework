@@ -54,6 +54,7 @@ from . import launch_registry as reg_mod
 from . import task_io
 from . import progress as progress_mod
 from . import stuck as stuck_mod
+from . import cost_visibility as cost_vis_mod
 from ai_agent_framework import cancel as cancel_mod
 from ai_agent_framework import runtime_health as runtime_health_mod
 from ai_agent_framework import runtime_state as runtime_state_mod
@@ -639,6 +640,9 @@ class StatusSnapshot:
     health_detail: str = ""
     health_diagnostics: list = field(default_factory=list)
     resume_hint: str = ""
+    # v0.5 UX Cost Visibility（IMPLEMENT-001）：Cost / Model 显示行
+    # （display-only；bridge/cost_visibility.py 归一化；空 = 无可显示证据）
+    cost_rows: list = field(default_factory=list)
 
 
 def _empty_stage_strip() -> dict:
@@ -674,6 +678,34 @@ def unknown_snapshot() -> StatusSnapshot:
         report_path=None,
         empty_hint="状态读取失败，请稍后重试。",
     )
+
+
+def _cost_rows_for(output_dir, route, strip) -> list:
+    """Cost / Model 显示行（display-only；只读 join 既有 artifact；fail-soft）。
+
+    - route agents 缺失 -> []（无权威 stage 信息不猜测、不显示）
+    - 每 agent 行来自 bridge/cost_visibility.build_cost_rows（纯归一化；
+      任何异常 -> 空行列表，绝不影响状态窗口）
+    - 只显示「已开始 / 已完成 stage」或「已有可证 evidence」的 agent
+      （Requirement 17：不把 unproven future selection 显示成 actual；
+      未开始且零 evidence 的 agent 行隐藏，保持紧凑）
+    """
+    if output_dir is None or not route:
+        return []
+    try:
+        rows = cost_vis_mod.build_cost_rows(output_dir, route)
+    except Exception:  # noqa: BLE001 —— display-only：任何异常不得破坏状态窗口
+        return []
+    if not rows:
+        return []
+    agent_stage = {"hermes": "HERMES", "workbuddy": "WORKBUDDY", "codex": "CODEX"}
+    out = []
+    for row in rows:
+        stage = agent_stage.get(row.agent)
+        state = strip.get(stage) if stage else None
+        if state not in (None, "PENDING") or cost_vis_mod.row_visible(output_dir, row):
+            out.append(row)
+    return out
 
 
 def collect_status(cfg: dict, health: tuple, launcher) -> StatusSnapshot:
@@ -736,6 +768,11 @@ def collect_status(cfg: dict, health: tuple, launcher) -> StatusSnapshot:
     strip = stage_states(runtime, ref.output_dir, route)
     log_dir = _log_target(runtime, ref)
     task_dir = str(ref.output_dir) if ref.output_dir is not None else None
+
+    # --- v0.5 UX Cost Visibility（IMPLEMENT-001）：display-only join 既有 ---
+    # artifact（cost_guard / model_observation / active_routing / A4 / A5）——
+    # 零 authority 变更；缺失/损坏 fail-soft 为空（Requirement 14/15）。
+    cost_rows = _cost_rows_for(ref.output_dir, route, strip)
 
     # --- Phase D：进度估算 + suspected-stuck 提示（只读；确定性；不写任何 artifact） ---
     status = runtime.status if runtime is not None else None
@@ -818,6 +855,7 @@ def collect_status(cfg: dict, health: tuple, launcher) -> StatusSnapshot:
         health_detail=health.warning_detail,
         health_diagnostics=list(health.diagnostics),
         resume_hint=health.resume_hint,
+        cost_rows=cost_rows,
     )
 
 
@@ -993,6 +1031,50 @@ class StatusWindow(tk.Toplevel):
             self._cells[stage] = cell
             self._cell_default_bg[stage] = str(cell.cget("bg"))
 
+        # --- v0.5 UX Cost Visibility（IMPLEMENT-001）：Cost / Model 区 ---
+        # display-only（bridge/cost_visibility.py 只读归一化既有 artifact；
+        # 零 authority 变更）。Stage Strip 下方紧凑 3 行上限；无行时整区隐藏。
+        self._cost_frame = tk.Frame(self._task_frame)
+        self._cost_frame.grid(row=14, column=0, columnspan=6, sticky="ew", padx=8, pady=(2, 0))
+        self._cost_header = tk.Label(
+            self._cost_frame, text="Cost / Model", font=("Segoe UI", 8, "bold")
+        )
+        self._cost_header.grid(row=0, column=0, columnspan=4, sticky="w", padx=2)
+        self._cost_agent_lbls = []
+        self._cost_cost_lbls = []
+        self._cost_model_lbls = []
+        self._cost_detail_lbls = []
+        for i in range(len(cost_vis_mod.ROUTE_AGENTS)):
+            line = 1 + i * 2
+            agent_lbl = tk.Label(
+                self._cost_frame, text="", font=("Segoe UI", 8, "bold"),
+                anchor="w", width=10,
+            )
+            agent_lbl.grid(row=line, column=0, sticky="w", padx=(2, 4))
+            agent_lbl.grid_remove()
+            cost_lbl = tk.Label(
+                self._cost_frame, text="", font=("Segoe UI", 8), anchor="w", width=10
+            )
+            cost_lbl.grid(row=line, column=1, sticky="w", padx=(0, 4))
+            cost_lbl.grid_remove()
+            model_lbl = tk.Label(
+                self._cost_frame, text="", font=("Segoe UI", 8), anchor="w",
+                justify="left", wraplength=300,
+            )
+            model_lbl.grid(row=line, column=2, columnspan=2, sticky="w", padx=(0, 4))
+            model_lbl.grid_remove()
+            detail_lbl = tk.Label(
+                self._cost_frame, text="", font=("Segoe UI", 8), fg="#666666",
+                anchor="w", justify="left", wraplength=420,
+            )
+            detail_lbl.grid(row=line + 1, column=0, columnspan=4, sticky="w", padx=(2, 4))
+            detail_lbl.grid_remove()
+            self._cost_agent_lbls.append(agent_lbl)
+            self._cost_cost_lbls.append(cost_lbl)
+            self._cost_model_lbls.append(model_lbl)
+            self._cost_detail_lbls.append(detail_lbl)
+        self._cost_frame.grid_remove()
+
         # --- 空状态区（无任务时显示） ---
         self._empty_frame = tk.Frame(self)
         self._empty_lbl = tk.Label(
@@ -1161,6 +1243,63 @@ class StatusWindow(tk.Toplevel):
             symbol, label = stage_state_label(state)
             cell.config(text=f"{STAGE_DISPLAY.get(stage, stage)}\n{symbol} {label}")
             cell.config(bg=STAGE_RUNNING_BG if state == "RUNNING" else self._cell_default_bg.get(stage, ""))
+
+        # --- v0.5 UX Cost Visibility（IMPLEMENT-001）：Cost / Model 区 ---
+        # display-only（只读；防御性 getattr 兼容旧 provider 快照）
+        self._render_cost_rows(getattr(snap, "cost_rows", None) or [])
+
+    def _render_cost_rows(self, rows: list) -> None:
+        """渲染 Cost / Model 显示行（display-only；空 -> 整区隐藏）。
+
+        行序 = cost_visibility.ROUTE_AGENTS（Hermes / WorkBuddy / Codex）；
+        每行主文本 = Agent | Cost Class | model (provider)；仅当 fallback !=
+        NOT_USED 或存在短 detail 时附加一行灰色小字（Requirement 15/16 紧凑）。
+        """
+        if not rows:
+            try:
+                self._cost_frame.grid_remove()
+            except tk.TclError:
+                pass
+            return
+        try:
+            self._cost_frame.grid()
+        except tk.TclError:
+            return
+        for i, agent_lbl in enumerate(self._cost_agent_lbls):
+            row = rows[i] if i < len(rows) else None
+            cost_lbl = self._cost_cost_lbls[i]
+            model_lbl = self._cost_model_lbls[i]
+            detail_lbl = self._cost_detail_lbls[i]
+            if row is None:
+                for lbl in (agent_lbl, cost_lbl, model_lbl, detail_lbl):
+                    try:
+                        lbl.grid_remove()
+                    except tk.TclError:
+                        pass
+                continue
+            agent_lbl.config(text=agent_label(row.agent))
+            cost_lbl.config(text=row.cost_class)
+            model_text = row.model
+            if row.provider and row.provider != cost_vis_mod.DISPLAY_UNKNOWN and model_text != cost_vis_mod.DISPLAY_UNKNOWN:
+                model_text = f"{model_text} ({row.provider})"
+            model_lbl.config(text=model_text)
+            detail = getattr(row, "detail", "") or ""
+            for lbl in (agent_lbl, cost_lbl, model_lbl):
+                try:
+                    lbl.grid()
+                except tk.TclError:
+                    pass
+            if detail:
+                detail_lbl.config(text=detail)
+                try:
+                    detail_lbl.grid()
+                except tk.TclError:
+                    pass
+            else:
+                try:
+                    detail_lbl.grid_remove()
+                except tk.TclError:
+                    pass
 
     def _draw_progress_bar(self, percent: int) -> None:
         """重绘进度条填充（0% → 空；100% → 全宽）。"""

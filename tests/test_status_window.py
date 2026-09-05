@@ -29,6 +29,7 @@ from ai_agent_framework import runtime_health as rh_mod
 from bridge import main as bridge_main
 from bridge import status_window as sw
 from bridge import tray as tray_mod
+from bridge import cost_visibility as cv
 from bridge.status_window import (
     StatusWindow,
     StatusWindowController,
@@ -922,3 +923,173 @@ def test_collect_status_terminal_no_health_warning(tmp_path):
     )
     assert snap.health == "NOT_APPLICABLE"
     assert snap.health_warning == ""
+
+
+# ---------------------------------------------------------------------------
+# M. v0.5 UX Cost Visibility（display-only；IMPLEMENT-001）
+# ---------------------------------------------------------------------------
+
+
+def _cv_completed_dir(tmp_path, task_id="AAF-CV-1"):
+    """完成态任务目录：canonical task.json（phases SUCCESS）+ route + 经济 artifact。"""
+    out = tmp_path / task_id
+    out.mkdir()
+    started = (datetime.now() - timedelta(minutes=10)).isoformat(timespec="seconds")
+    (out / "task.json").write_text(
+        dumps({
+            "task_id": task_id, "status": "SUCCESS", "stage": "COMPLETED", "agent": None,
+            "updated_at": started, "task_path": str(tmp_path / "TASK.md"),
+            "workspace": str(tmp_path), "report_path": str(out / "REPORT.md"),
+            "started_at": started, "last_activity_at": started,
+            "phases": {
+                "VALIDATION": {"state": "SUCCESS"},
+                "BOUNDARY": {"state": "SUCCESS"},
+                "HERMES": {"state": "SUCCESS"},
+                "WORKBUDDY": {"state": "SUCCESS"},
+                "CODEX": {"state": "SUCCESS"},
+                "REPORT": {"state": "SUCCESS"},
+            },
+        }),
+        encoding="utf-8",
+    )
+    (out / "route.json").write_text(
+        dumps({"agents": ["hermes", "workbuddy", "codex"], "reason": "explicit route"}),
+        encoding="utf-8",
+    )
+    (out / cv.ARTIFACT_COST_GUARD).write_text(
+        dumps({
+            "decision": "ALLOWED_AUTHORIZED_PAID", "cost_class": "PAID_OR_UNKNOWN",
+            "model": "deepseek-v4-flash", "provider": "deepseek",
+            "authorization_present": True, "authorization_matched": True,
+            "authorization_consumed": True,
+        }),
+        encoding="utf-8",
+    )
+    (out / cv.ARTIFACT_MODEL_OBSERVATION).write_text(
+        dumps({"observations": {
+            "hermes": {"agent": "hermes", "model": "deepseek-v4-flash",
+                       "provider": "deepseek", "cost_class": "UNKNOWN"},
+        }}),
+        encoding="utf-8",
+    )
+    (out / "REPORT.md").write_text("# REPORT\n", encoding="utf-8")
+    return out
+
+
+def test_snapshot_cost_rows_completed_reopen(tmp_path):
+    """Requirement 18：终端/窗口 reopen 完成态任务 -> 从持久化 artifact
+    重建 Cost / Model 显示（collect_status 只读 output_dir artifacts）。"""
+    out = _cv_completed_dir(tmp_path)
+    snap = collect_status(
+        {"hotkey": "ctrl+alt+a", "current_project": "P", "current_workspace": "W"},
+        ("OK", "正常运行"),
+        _launcher_with_last(out, "AAF-CV-1"),
+    )
+    assert snap.has_task is True
+    rows = snap.cost_rows
+    assert len(rows) == 3  # hermes + workbuddy + codex（route agents，已完成阶段）
+    hermes = next(r for r in rows if r.agent == "hermes")
+    assert hermes.cost_class == cv.COST_PAID
+    assert hermes.model == "deepseek-v4-flash"
+    assert hermes.provider == "deepseek"
+    assert hermes.fallback == cv.FALLBACK_NOT_USED
+    wb = next(r for r in rows if r.agent == "workbuddy")
+    assert wb.cost_class == cv.COST_UNKNOWN  # 无 A4/观测证据 -> UNKNOWN（不猜）
+    codex = next(r for r in rows if r.agent == "codex")
+    assert codex.cost_class == cv.COST_UNKNOWN
+
+
+def test_snapshot_cost_rows_missing_artifacts_unknown_no_crash(tmp_path):
+    """Requirement 14/I：经济 artifact 缺失/损坏 -> UNKNOWN 行，快照不崩溃。"""
+    out = tmp_path / "AAF-CV-2"
+    out.mkdir()
+    started = datetime.now().isoformat(timespec="seconds")
+    (out / "task.json").write_text(
+        dumps({
+            "task_id": "AAF-CV-2", "status": "SUCCESS", "stage": "COMPLETED", "agent": None,
+            "task_path": str(tmp_path / "TASK.md"), "workspace": str(tmp_path),
+            "report_path": str(out / "REPORT.md"),
+            "started_at": started, "last_activity_at": started,
+            "phases": {s: {"state": "SUCCESS"} for s in ("VALIDATION", "BOUNDARY", "HERMES",
+                                                          "WORKBUDDY", "CODEX", "REPORT")},
+        }),
+        encoding="utf-8",
+    )
+    (out / "route.json").write_text(dumps({"agents": ["hermes"]}), encoding="utf-8")
+    (out / cv.ARTIFACT_COST_GUARD).write_text("{broken", encoding="utf-8")  # 损坏
+    snap = collect_status(
+        {"hotkey": "ctrl+alt+a", "current_project": "P", "current_workspace": "W"},
+        ("OK", "正常运行"),
+        _launcher_with_last(out, "AAF-CV-2"),
+    )
+    assert snap.has_task is True
+    assert snap.cost_rows and all(r.cost_class == cv.COST_UNKNOWN for r in snap.cost_rows)
+
+
+def test_snapshot_cost_rows_empty_when_no_task():
+    snap = collect_status({}, ("OK", "正常运行"), None)
+    assert snap.cost_rows == []
+
+
+def test_window_cost_rows_rendered(tk_root, tmp_path):
+    """真实 Tk：完成态任务 reopen -> Cost / Model 区显示（Hermes PAID 行）。"""
+    out = _cv_completed_dir(tmp_path)
+    ctl = StatusWindowController(
+        tk_root,
+        provider=lambda: collect_status(
+            {"hotkey": "ctrl+alt+a", "current_project": "P", "current_workspace": "W"},
+            ("OK", "正常运行"),
+            _launcher_with_last(out, "AAF-CV-1"),
+        ),
+    )
+    w = ctl.open()
+    try:
+        # Cost / Model 区标题 + Hermes 行内容（display-only 文本）
+        assert w._cost_header.cget("text") == "Cost / Model"
+        assert w._cost_agent_lbls[0].cget("text") == "Hermes"
+        assert w._cost_cost_lbls[0].cget("text") == cv.COST_PAID
+        assert "deepseek-v4-flash" in w._cost_model_lbls[0].cget("text")
+        assert w._cost_detail_lbls[0].cget("text") == "explicitly authorized paid"
+    finally:
+        w.close()
+
+
+def test_window_cost_rows_hide_pending_future_stages(tk_root, tmp_path):
+    """Requirement 17：未开始的 future stage（PENDING + 零 evidence）不显示；
+    已开始 stage 显示诚实 UNKNOWN（evidence 未落盘前不猜）。"""
+    out = tmp_path / "AAF-CV-3"
+    out.mkdir()
+    started = datetime.now().isoformat(timespec="seconds")
+    (out / "task.json").write_text(
+        dumps({
+            "task_id": "AAF-CV-3", "status": "RUNNING", "stage": "WORKBUDDY", "agent": "workbuddy",
+            "task_path": str(tmp_path / "TASK.md"), "workspace": str(tmp_path),
+            "report_path": None, "started_at": started, "last_activity_at": started,
+            "phases": {
+                "VALIDATION": {"state": "SUCCESS"}, "BOUNDARY": {"state": "SUCCESS"},
+                "HERMES": {"state": "SUCCESS"}, "WORKBUDDY": {"state": "RUNNING"},
+            },
+        }),
+        encoding="utf-8",
+    )
+    (out / "route.json").write_text(
+        dumps({"agents": ["hermes", "workbuddy", "codex"]}), encoding="utf-8",
+    )
+    # 零经济 artifact（guard 未写盘窗口期）：hermes/workbuddy 行 UNKNOWN 诚实显示
+    ctl = StatusWindowController(
+        tk_root,
+        provider=lambda: collect_status(
+            {"hotkey": "ctrl+alt+a", "current_project": "P", "current_workspace": "W"},
+            ("OK", "正常运行"),
+            _launcher_with_last(out, "AAF-CV-3", result="RUNNING"),
+        ),
+    )
+    w = ctl.open()
+    try:
+        assert w._cost_agent_lbls[0].cget("text") == "Hermes"  # 已开始阶段显示
+        assert w._cost_cost_lbls[0].cget("text") == cv.COST_UNKNOWN
+        assert w._cost_agent_lbls[1].cget("text") == "WorkBuddy"
+        assert w._cost_agent_lbls[2].cget("text") == ""  # Codex PENDING：行隐藏
+        assert w._cost_cost_lbls[2].cget("text") == ""
+    finally:
+        w.close()

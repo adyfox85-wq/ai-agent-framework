@@ -2,6 +2,27 @@
 
 > Project: AI Agent Framework\
 > Current Version: **v0.4（FROZEN / RELEASE READY — 2026-08-29 AAF-v0.4-FREEZE-001 正式冻结；Final Acceptance = PASS（AAF-v0.4-FINAL-ACCEPTANCE-002，Codex APPROVE，Unresolved Issues = None）；accepted implementation baseline = `1d3771fe8220e1b2e21c774840d680ec9f2dce61`；final freeze metadata commit = docs-only 提交（见本文件 §0 顶部与 git tag `v0.4`）；Release Closure Matrix 全项 COMPLETE / CLOSED / IMPLEMENTED / SOLVED / ACCEPTED；Automatic Model Routing 与 Cost Gate = NOT IMPLEMENTED（future scope）；下一开发线 post-v0.4 / v0.5 仅在用户显式启动时开启。以下为 v0.4 开发全程历史记录（IN PROGRESS 时期，保留不删除）：Phase A/B/C/D COMPLETE；Phase E COMPLETE（E-Core / Soft Cancel COMPLETE — 005-A + FIX-001/002/003；E-Ownership / Force Cancel 已交付 — 005-B + 005-B-FIX-001（canonical force authority + successful termination proof，Codex 两个 blocker 已闭合）；005-C Status Window Cancel UX + Real Windows E2E Closure 已交付——实现 + 测试 + 真实 Windows 正负 E2E 全量通过，Phase E 正式标记 COMPLETE；005-C-FIX-001（Cancel Timestamp Timezone Compatibility Fix）已交付——canonical UTC/aware elapsed contract 统一 cancel elapsed 计算，合法 offset-aware（+08:00 / +00:00 / Z）与 legacy naive 均不再因 naive/aware 混算而破坏 Cancel UI / force eligibility，malformed fail closed，Codex 原 timezone blocker 已闭合；route 阶段 WorkBuddy / Codex 独立复核按项目惯例由 route 执行并记录于任务 REPORT，若发现 blocking 则按惯例开 FIX）；Phase F IMPLEMENTATION DELIVERED（AAF-v0.4-TASK-006：Project Switching + Duplicate Task UX 实现 + 72 项新测试（63 单元 + 9 真实 Windows E2E A–I）+ 760 passed；RW-003 / RW-016 / RW-006 按真实交付证据收口 SOLVED；正式 COMPLETE 判定留待 WorkBuddy 独立验证 + Codex 审查后由 Planner 确认，本任务不自行宣布 Phase F COMPLETE）；Phase F FIX-001（Atomic Config Persistence + Real UX Closure）已交付——config.save_config 统一 atomic contract（同目录 tmp + flush/fsync + os.replace，失败清理 tmp 且旧 config 原样保留，无 write_text 旁路）；真实 Bridge UI 交互 harness（真实 Tk 弹窗 + 真实按钮 invoke + 真实剪贴板）覆盖 Known switch 确认/拒绝/Unknown fail-safe/Invalid fail closed/Duplicate running 卡片+无第二 runner/Duplicate terminal 卡片+不覆盖/restart 恢复；顺带修复 duplicate 卡片 [打开 REPORT] 死按钮（Tk 按钮 invoke 不带参数 → 闭包捕获 report_path）；780 passed（760 + 20 新增，零下降）；WorkBuddy 独立验证 + Codex 复审由 route 执行（本任务不自行宣布 COMPLETE））；Model Observability / Discovery Foundation 已交付（AAF-v0.4-TASK-010：只读模型观测 + 发现事实层——model_observation.json 单一 machine authority、每 stage stage_timing、REPORT 紧凑 Model Observation 摘要、30 项定向测试；Automatic Model Routing 未实现，仅登记未来 policy（backlog §5.5 CAP-003））；WorkBuddy Stage Reliability 已交付（AAF-v0.4-TASK-011 + FIX-001 + FIX-002：bounded transient retry / confirmed-dead-before-retry / single absolute stage deadline / Windows tree cleanup authority / safe cleanup reserve / attempt admission / telemetry）；当前状态 = FROZEN（见下方 §0））**\
+> Last Updated: 2026-09-05（AAF-v0.5-UX-COST-VISIBILITY-IMPLEMENT-001 — **v0.5 Bridge Cost / Model
+> Visibility 最小 live 可见性实现交付（display-only；依据已接受只读审计 AAF-v0.5-UX-COST-VISIBILITY-
+> AUDIT-001 = COST_VISIBILITY_UI_READY_WITH_EXISTING_EVIDENCE；parent = 02e1b11，新 commit 未 amend
+> 未 push；final route acceptance = PENDING——WorkBuddy 独立验证 + Codex review 按 route 阶段执行，
+> 不超前声称 route verdicts；FRESH_RUNNER_VALIDATION_REQUIRED 已记录，本实现 run 不自行声称 final
+> closure）**：现有 Bridge 状态窗口新增最小 display-only Cost / Model 区——不建新 dashboard、无
+> billing/payment/routing authority 变化；新模块 bridge/cost_visibility.py = 只读 join + display
+> 归一化层（既有 artifact -> per-route-agent 显示行：Role/Stage · actual Model · Provider · Cost
+> Class（FREE/LOCAL_FREE/PAID/UNKNOWN/BLOCKED）· Fallback（NOT_USED/USED_FREE/USED_PAID/FAILED/
+> UNKNOWN）· 可选一行短 detail；零第二经济权威；缺失/损坏 artifact fail-soft -> UNKNOWN 不崩溃；
+> 绝不从模型名猜 FREE/PAID；paid authorization ≠ paid invocation——gate AUTHORIZED 无执行证据绝不
+> USED_PAID；WorkBuddy 不因 LOW/MEDIUM 经济路由存在而标 FREE——仅 A4 权威可证 free-promo 时 FREE；
+> Codex 仅 config 证据回显 + cost UNKNOWN）；bridge/status_window.py = StatusSnapshot.cost_rows +
+> collect_status join + Stage Strip 下紧凑渲染（仅显示已开始/已有 evidence 的 stage；Req 17 不显示
+> unproven future stage；reopen 从持久化 artifact 重建显示）；ai_agent_framework/* 零修改（零
+> authority 变更；router/runner/adapters/cost_guard/fallback/A0/A3/A4 保持）；frozen MVP / PH-1
+> CLOSED / PH-2·PH-3 NOT STARTED 边界保持；测试 = tests/test_cost_visibility.py 32 项（Req 22 A–K）
+> + tests/test_status_window.py +5 项；回归 = Bridge/status/recovery 173 passed + 分块全量 non-GUI
+> 2181 passed / 1 skipped 零失败（RW-029 单进程 0x80000003 环境 flake 隔离）；UI 字段语义与权威规则
+> = docs/internal/AAF-v0.5-UX-COST-VISIBILITY-IMPLEMENT-001-REPORT.md §5（UNKNOWN 而非猜测）；
+> PRE_ALLOWED_UNTRACKED 保留；no push。此前更新：
 > Last Updated: 2026-09-05（AAF-v0.5-PH1-PORTABILITY-CLOSE-001 — **v0.5 PH-1 Portability Hardening 正式收口 =
 > CLOSED / COMPLETE（docs-only closure record；parent = ac6c489，新 commit 未 amend 未 push；final route
 > acceptance = PENDING——WorkBuddy 独立验证 + Codex review 按 route 阶段执行，不超前声称 route verdicts）**：
@@ -1473,6 +1494,39 @@ PH-1 Portability Hardening CLOSE（2026-09-05，AAF-v0.5-PH1-PORTABILITY-CLOSE-0
     no push（route 后同步）
 
     保留；no push（route 后同步）
+Bridge Cost / Model Visibility（2026-09-05，AAF-v0.5-UX-COST-VISIBILITY-IMPLEMENT-001 — display-only
+  实现交付；依据已接受只读审计 AAF-v0.5-UX-COST-VISIBILITY-AUDIT-001（唯一决策 =
+  COST_VISIBILITY_UI_READY_WITH_EXISTING_EVIDENCE）；parent = 02e1b11，新 commit 未 amend 未 push；
+  final route acceptance = PENDING——WorkBuddy 独立验证 + Codex review 按 route 阶段执行，不超前声称
+  route verdicts；FRESH_RUNNER_VALIDATION_REQUIRED 已记录——本实现 run 不自行声称 final closure）:
+  - 现有 Bridge 状态窗口新增最小 **display-only Cost / Model 可见性**（用户无需打开 REPORT.md 即可
+    看到每个已实际执行 route stage 的 Role/Stage · actual Model · Provider · Cost Class
+    （FREE / LOCAL_FREE / PAID / UNKNOWN / BLOCKED）· Fallback（NOT_USED / USED_FREE / USED_PAID /
+    FAILED / UNKNOWN）· 可选一行短 detail）——不建新 dashboard、无 billing/payment/routing
+    authority 变化；UI 字段语义与权威规则（UNKNOWN 而非猜测；paid authorization ≠ paid
+    invocation；BLOCKED 只来自权威阻断证据；缺失/损坏 artifact -> UNKNOWN 不崩溃；不显示 unproven
+    future stage）= docs/internal/AAF-v0.5-UX-COST-VISIBILITY-IMPLEMENT-001-REPORT.md §5
+  - 新模块 bridge/cost_visibility.py = 只读 join + display 归一化层（既有 artifact：
+    model_observation.json + cost_guard.json + active_routing.json +
+    workbuddy_active_routing.json + fallback_runtime.json / paid_escalation_gate.json /
+    paid_fallback_runtime.json -> per-route-agent CostRow；零第二经济权威；绝不从模型名推断；
+    Hermes = guard 准入镜像优先（BLOCKED/PAID/LOCAL_FREE）+ observation（post-hoc actual）+
+    A3 registry + A5 三件套；WorkBuddy = A4 routing_applied -> routed_model，cost 仅 A4 权威可证
+    free-promo（rank 0 + promotion_status=free）-> FREE，其余 UNKNOWN——LOW/MEDIUM 经济路由存在
+    绝不等于 FREE；Codex = 仅 config 证据回显 model，cost 恒 UNKNOWN）
+  - bridge/status_window.py = StatusSnapshot.cost_rows + collect_status join（只读 output_dir 既有
+    artifact；fail-soft）+ Stage Strip 下紧凑 Cost / Model 区渲染（1s 刷新随 evidence 更新；窗口/
+    终端 reopen 从持久化 artifact 重建显示）；bridge/main.py 零修改
+  - 测试：tests/test_cost_visibility.py 32 项（Req 22 A–K 全矩阵：FREE/LOCAL_FREE/PAID 可证渲染 /
+    UNKNOWN 不猜 / BLOCKED 仅权威 / USED_FREE / USED_PAID / 授权未执行不 USED_PAID / 损坏 artifact
+    不崩溃 / reopen 重建 / 只读零突变锁定）+ tests/test_status_window.py +5（snapshot reopen /
+    missing artifact UNKNOWN / no-task 空 / 真实 Tk 渲染 / pending future stage 隐藏）
+  - 回归：Bridge/status/recovery 173 passed + 分块全量 non-GUI 2181 passed / 1 skipped 零失败
+    （单进程整跑命中既有 RW-029 Windows 0x80000003 环境 flake -> 按项目惯例分块隔离复跑全绿）
+  - 零 authority 变更：ai_agent_framework/* 全部零修改（router/runner/adapters/cost_guard/
+    fallback/A0/A3/A4 保持）；frozen MVP / PH-1 CLOSED / PH-2·PH-3 NOT STARTED 边界保持；
+    PRE_ALLOWED_UNTRACKED 保留；no push（route 后同步）
+
 Maintenance branch（2026-08-30，AAF-v0.5-RUNTIME-UX-CONSOLE-FLASH-001 — 临时 UX 维护，已收口）:
   - 修复确认的 Windows helper 子进程瞬时 console 闪现（cosmetic/UX only，非功能失败）：
     context_packet.py 6 处 git 调用 + git_status._git() + model_observation._run_readonly()

@@ -1,7 +1,9 @@
 """AAF Bridge — Cost / Model 可见性 display-only 归一化测试。
 
 TASK: AAF-v0.5-UX-COST-VISIBILITY-IMPLEMENT-001（Requirements 22 A–K）
-+ FIX-001 truth semantics（planned/authorized ≠ actual invocation）。
++ FIX-001 truth semantics（planned/authorized ≠ actual invocation）
++ FIX-002 paid fallback evidence validation（损坏/字段不完整/非权威 paid
+fallback artifact ≠ 真实 paid invocation——Requirement 11 A–H）。
 
 覆盖（FIX-001 主线，Requirement 18 A–K）：
 A. cost_guard ALLOWED_AUTHORIZED_PAID without invocation -> Actual UNKNOWN,
@@ -48,6 +50,14 @@ from bridge.cost_visibility import (
     FALLBACK_USED_PAID,
     DISPLAY_UNKNOWN,
 )
+
+# FIX-002：valid paid runtime record 只由既有权威模块产生/校验（display 测试
+# 不重实现 paid runtime schema——与 Requirement 2 复用权威 validator 一致）
+from ai_agent_framework import cost_guard as _cg
+from ai_agent_framework import fallback_contract as _fc
+from ai_agent_framework import fallback_paid_gate as _fpg
+from ai_agent_framework import fallback_runtime as _fr
+from ai_agent_framework.risk_contract import RISK_LOW, ROLE_EXECUTOR
 
 
 def _dump(dirpath: Path, name: str, payload: dict) -> Path:
@@ -103,24 +113,55 @@ def _gate(decision: str) -> dict:
     return {"decision_kind": "paid_escalation_gate_audit", "gate_decision": decision}
 
 
-def _fb_paid(used: bool, outcome: str = "success") -> dict:
-    return {
-        "decision_kind": "paid_fallback_runtime_audit",
-        "original_model": "deepseek-v4-flash",
-        "original_provider": "deepseek",
-        "paid_candidate": "glm-5.2@zhipu",
-        "paid_candidate_model": "glm-5.2",
-        "paid_candidate_provider": "zhipu",
-        "fallback_attempted": True,
-        "fallback_used": used,
-        "paid_invocation_outcome": outcome,
-        "final_actual_model": "glm-5.2",
-        "final_actual_provider": "zhipu",
-        "paid_gate_decision": "AUTHORIZED",
+def _fb_paid(used: bool, outcome: str | None = None) -> dict:
+    """FIX-002：schema-valid authoritative paid runtime audit record。
+
+    合法 JSON dict ≠ 合法 evidence——valid case 的 fixture 走既有权威组装器
+    ``fallback_runtime.assemble_paid_runtime_audit_record``（组装即
+    fail-closed 校验，含 decision_kind / authority / attempted=true /
+    全 required 字段 / AUTHORIZED gate + exact scope / candidates / final /
+    outcome 一致性不变量），与真实 paid fallback 执行后落盘的 record 同构。
+    """
+    if outcome is None:
+        outcome = "success" if used else "failed"
+    task_id = "AAF-CV-FIX002-T"
+    paid_candidate = "glm-5.2@zhipu"
+    gate_record = {
+        "paid_candidate": paid_candidate,
+        "contract_candidates": [paid_candidate],
+        "paid_candidates": [paid_candidate],
+        "gate_decision": _fpg.GATE_DECISION_AUTHORIZED,
+        "required_scope": _cg.scope_string(task_id, "hermes", "glm-5.2", "zhipu"),
+        "guard_decision": _cg.DECISION_ALLOWED_AUTHORIZED_PAID,
         "authorization_present": True,
         "authorization_matched": True,
         "authorization_consumed": True,
     }
+    decision_record = {
+        "failure_class": _fc.FAILURE_INVOCATION,
+        "failure_label": _fc.FAILURE_LABELS[_fc.FAILURE_INVOCATION],
+        "trigger": "RuntimeError: original invocation failed (simulated)",
+        "trigger_evidence": ["original invocation raised RuntimeError (simulated)"],
+    }
+    return _fr.assemble_paid_runtime_audit_record(
+        decision_record=decision_record,
+        original_identity={"model": "deepseek-v4-flash", "provider": "deepseek"},
+        task_id=task_id,
+        stage_agent="hermes",
+        role=ROLE_EXECUTOR,
+        risk_class=RISK_LOW,
+        risk_source="task_risk",
+        gate_record=gate_record,
+        transport_retry_count=0,
+        automatic_fallback_count_used=0,
+        free_fallback_unavailable_reason="no eligible FREE/LOCAL_FREE fallback candidate",
+        attempted=True,
+        used=used,
+        paid_invocation_outcome=outcome,
+        invocation_evidence=[
+            f"paid fallback invocation of {paid_candidate!r} (simulated display fixture)",
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -587,6 +628,192 @@ def test_k_guard_only_row_visible_with_planned(tmp_path):
     rows = cv.build_cost_rows(out, ["hermes"])
     assert rows and cv.row_visible(out, rows[0])
     assert rows[0].planned != ""
+
+
+# ---------------------------------------------------------------------------
+# FIX-002（TASK: AAF-v0.5-UX-COST-VISIBILITY-IMPLEMENT-001-FIX-002）
+# paid fallback evidence validation：损坏/非权威 artifact ≠ actual paid usage
+# ---------------------------------------------------------------------------
+
+
+def test_fix002_a_empty_paid_dict_is_not_paid_evidence():
+    # A. fb_paid = {}（可解析 JSON 但零字段）-> 绝不 PAID / USED_PAID
+    row = cv.derive_hermes_row(fb_paid={})
+    assert row.cost_class == COST_UNKNOWN
+    assert row.cost_class != COST_PAID
+    assert row.fallback == FALLBACK_NOT_USED
+    assert row.fallback != FALLBACK_USED_PAID
+    assert row.model == DISPLAY_UNKNOWN
+
+
+def test_fix002_a_empty_paid_dict_output_dir_not_paid(tmp_path):
+    # A（output_dir 路径）：paid_fallback_runtime.json = {} -> 不 PAID/USED_PAID
+    out = tmp_path / "t"
+    out.mkdir()
+    _dump(out, cv.ARTIFACT_PAID_RUNTIME, {})
+    row = cv.derive_hermes_row(output_dir=out)
+    assert row.cost_class == COST_UNKNOWN
+    assert row.fallback == FALLBACK_NOT_USED
+    rows = cv.build_cost_rows(out, ["hermes"])
+    assert rows[0].cost_class == COST_UNKNOWN
+    assert rows[0].fallback != FALLBACK_USED_PAID
+
+
+def test_fix002_b_missing_required_fields_is_unknown():
+    # B. schema-valid record 缺 required 字段 -> UNKNOWN（不 PAID/USED_PAID）
+    base = _fb_paid(used=True)
+    for key in ("authority", "no_silent_paid_evidence", "paid_required_scope",
+                "decision_kind"):
+        broken = dict(base)
+        del broken[key]
+        row = cv.derive_hermes_row(fb_paid=broken)
+        assert row.cost_class == COST_UNKNOWN, key
+        assert row.cost_class != COST_PAID, key
+        assert row.fallback != FALLBACK_USED_PAID, key
+        assert row.fallback == FALLBACK_NOT_USED, key
+
+
+def test_fix002_b_missing_required_fields_output_dir_unknown(tmp_path):
+    # B（output_dir 路径）：合法但字段不全的 JSON record -> UNKNOWN
+    out = tmp_path / "t"
+    out.mkdir()
+    _dump(out, cv.ARTIFACT_PAID_RUNTIME, {"decision_kind": "paid_fallback_runtime_audit"})
+    rows = cv.build_cost_rows(out, ["hermes"])
+    assert rows[0].cost_class == COST_UNKNOWN
+    assert rows[0].fallback != FALLBACK_USED_PAID
+
+
+def test_fix002_c_wrong_decision_kind_is_unknown():
+    # C. decision_kind ≠ paid_fallback_runtime_audit -> UNKNOWN
+    wrong = dict(_fb_paid(used=True), decision_kind="fallback_runtime_audit")
+    row = cv.derive_hermes_row(fb_paid=wrong)
+    assert row.cost_class == COST_UNKNOWN
+    assert row.cost_class != COST_PAID
+    assert row.fallback == FALLBACK_NOT_USED
+    assert row.fallback != FALLBACK_USED_PAID
+
+
+def test_fix002_d_fallback_attempted_false_is_not_paid():
+    # D. fallback_attempted=false（含 used=false）-> 不是真实 paid invocation
+    not_attempted = dict(
+        _fb_paid(used=False),
+        fallback_attempted=False,
+        fallback_used=False,
+        paid_invocation_outcome="failed",
+    )
+    row = cv.derive_hermes_row(fb_paid=not_attempted)
+    assert row.cost_class == COST_UNKNOWN
+    assert row.cost_class != COST_PAID
+    assert row.fallback == FALLBACK_NOT_USED
+    assert row.fallback != FALLBACK_USED_PAID
+
+
+def test_fix002_d_attempted_false_never_used_paid_with_other_evidence():
+    # D': attempted=false 的 paid artifact 与 guard/gate 组合也不产生 USED_PAID
+    not_attempted = dict(
+        _fb_paid(used=False),
+        fallback_attempted=False,
+        fallback_used=False,
+        paid_invocation_outcome="failed",
+    )
+    row = cv.derive_hermes_row(
+        fb_paid=not_attempted,
+        guard=_guard("ALLOWED_AUTHORIZED_PAID"),
+        gate=_gate("AUTHORIZED"),
+        result_md="FRAMEWORK_ERROR\noriginal failed",
+    )
+    assert row.fallback != FALLBACK_USED_PAID
+    assert row.fallback == FALLBACK_NOT_USED
+    # cost 不可证 -> UNKNOWN（guard AUTH + 无效 result ≠ 实际 paid invocation）
+    assert row.cost_class == COST_UNKNOWN
+
+
+def test_fix002_e_schema_invalid_contradictory_is_unknown():
+    # E. schema-invalid / 矛盾 record -> UNKNOWN（绝不 PAID/USED_PAID）
+    contradictions = (
+        dict(_fb_paid(used=True), paid_invocation_outcome="failed"),       # used↔outcome 矛盾
+        dict(_fb_paid(used=False), paid_invocation_outcome="success"),
+        dict(_fb_paid(used=True), paid_gate_decision=_fpg.GATE_DECISION_BLOCKED),
+        dict(_fb_paid(used=True), authorization_consumed=False),
+        dict(_fb_paid(used=True), authoritative=False),
+        dict(_fb_paid(used=True), final_actual_model="other-model"),        # final ≠ candidate
+    )
+    for broken in contradictions:
+        row = cv.derive_hermes_row(fb_paid=broken)
+        assert row.cost_class != COST_PAID, broken
+        assert row.fallback != FALLBACK_USED_PAID, broken
+        assert row.cost_class == COST_UNKNOWN, broken
+        assert row.fallback == FALLBACK_NOT_USED, broken
+
+
+def test_fix002_f_valid_paid_used_still_renders_paid_used_paid():
+    # F. schema-valid paid used -> PAID + USED_PAID（valid case 保持）
+    row = cv.derive_hermes_row(fb_paid=_fb_paid(used=True))
+    assert row.cost_class == COST_PAID
+    assert row.fallback == FALLBACK_USED_PAID
+    assert row.model == "glm-5.2"
+    assert row.provider == "zhipu"
+    assert row.planned == ""
+
+
+def test_fix002_f_valid_paid_output_dir_renders(tmp_path):
+    # F（output_dir 路径）：真实权威 record 文件 -> PAID/USED_PAID
+    out = tmp_path / "t"
+    out.mkdir()
+    _dump(out, cv.ARTIFACT_PAID_RUNTIME, _fb_paid(used=True))
+    row = cv.derive_hermes_row(output_dir=out)
+    assert row.cost_class == COST_PAID
+    assert row.fallback == FALLBACK_USED_PAID
+    assert row.model == "glm-5.2"
+
+
+def test_fix002_g_valid_paid_attempted_but_failed_not_inventing_usage():
+    # G. attempted=true / used=false -> FAILED（真实 paid attempt 已发生；
+    #    不捏造成功 usage——绝不 USED_PAID）
+    row = cv.derive_hermes_row(fb_paid=_fb_paid(used=False))
+    assert row.fallback == FALLBACK_FAILED
+    assert row.fallback != FALLBACK_USED_PAID
+    assert "attempted but not accepted" in row.detail
+
+
+def test_fix002_h_gate_authorized_without_paid_runtime_not_used_paid():
+    # H. gate AUTHORIZED 无（或只有损坏的）paid runtime -> 不 USED_PAID
+    for fb in (None, {}):
+        row = cv.derive_hermes_row(gate=_gate("AUTHORIZED"), fb_paid=fb)
+        assert row.fallback != FALLBACK_USED_PAID
+        assert row.fallback == FALLBACK_NOT_USED
+        assert "not USED_PAID" in row.detail
+        assert row.cost_class == COST_UNKNOWN
+
+
+def test_fix002_corrupt_paid_file_never_crashes_bridge(tmp_path):
+    # fail-soft：损坏 paid artifact（不可解析 / 非 dict / 空文件）绝不 crash UI
+    out = tmp_path / "t"
+    out.mkdir()
+    (out / cv.ARTIFACT_PAID_RUNTIME).write_text("{broken json", encoding="utf-8")
+    rows = cv.build_cost_rows(out, ["hermes"])
+    assert rows[0].cost_class == COST_UNKNOWN
+    (out / cv.ARTIFACT_PAID_RUNTIME).write_text("[]", encoding="utf-8")
+    rows = cv.build_cost_rows(out, ["hermes"])
+    assert rows[0].cost_class == COST_UNKNOWN
+    (out / cv.ARTIFACT_PAID_RUNTIME).write_text("", encoding="utf-8")
+    rows = cv.build_cost_rows(out, ["hermes"])
+    assert rows[0].cost_class == COST_UNKNOWN
+    assert rows[0].fallback != FALLBACK_USED_PAID
+
+
+def test_fix002_display_reuses_authoritative_validator():
+    # Requirement 2：显示层复用既有权威 validator，不重实现第二份 paid schema
+    source = Path(cv.__file__).read_text(encoding="utf-8")
+    assert "validate_paid_fallback_runtime_record" in source
+    assert "from ai_agent_framework import fallback_runtime" in source
+    # 独立于显示层的权威拒绝语义（{} / attempted=false）由 A5 validator 保证：
+    with pytest.raises(ValueError):
+        _fr.validate_paid_fallback_runtime_record({})
+    with pytest.raises(ValueError):
+        _fr.validate_paid_fallback_runtime_record(
+            dict(_fb_paid(used=False), fallback_attempted=False)
+        )
 
 
 # ---------------------------------------------------------------------------

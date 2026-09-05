@@ -2,7 +2,9 @@
 
 TASK: AAF-v0.5-UX-COST-VISIBILITY-IMPLEMENT-001（基于只读审计
 AAF-v0.5-UX-COST-VISIBILITY-AUDIT-001 的结论）+ FIX-001（truth semantics：
-planned/authorized ≠ actual invocation）。本模块 = 概念流中间层：
+planned/authorized ≠ actual invocation）+ FIX-002（paid fallback evidence
+validation：损坏 / 非权威 paid runtime artifact ≠ 真实 paid invocation）。
+本模块 = 概念流中间层：
 
     既有 authoritative runtime artifacts（task output_dir 内）
     -> display-only 归一化 cost/model view（本模块，纯函数只读）
@@ -47,6 +49,20 @@ planned/authorized ≠ actual invocation）。本模块 = 概念流中间层：
    - USED_PAID：paid fallback invocation 真实发生（attempted=true 恒真）。
    - AUTHORIZED（paid_escalation_gate）无执行 -> 绝不 USED_PAID。
    - BLOCKED 仅当权威 guard/gate 证明 execution 被阻断（Requirement 15）。
+
+*** FIX-002（TASK: AAF-v0.5-UX-COST-VISIBILITY-IMPLEMENT-001-FIX-002 —
+paid fallback evidence validation）***
+fb_paid 存在 ≠ paid invocation 证据。只有 schema-valid authoritative record
+（decision_kind=paid_fallback_runtime_audit、authoritative=true、
+fallback_attempted=true、全 required 字段——经既有权威 validator
+ai_agent_framework.fallback_runtime.validate_paid_fallback_runtime_record
+fail-closed 接受；Bridge 延迟 import 复用该 validator，零重实现第二份 paid
+schema）才可产生 PAID / USED_PAID / FAILED（attempted-not-used）。{} /
+缺字段 / wrong decision_kind / fallback_attempted=false / 矛盾 / 任何 schema
+违例 = 损坏或非权威 evidence -> fail-soft UNKNOWN / 无 actual paid usage
+（可解析 JSON dict 本身不构成证据；绝不 crash UI）。guard /
+<agent>_result.md / gate 等既有证据路径与 planned/authorized ≠ actual
+invocation truth rule 零变化（不改 routing/payment authority、不改经济行为）。
 
 显示词汇（Requirement/audit 定义；技术 token 保留英文）：
 Cost Class: FREE / LOCAL_FREE / PAID / UNKNOWN / BLOCKED
@@ -256,6 +272,30 @@ def _registry_cost_label(routed_model: str | None, routed_provider: str | None) 
     return None
 
 
+def _validated_paid_runtime(fb_paid: dict | None) -> dict | None:
+    """FIX-002：paid runtime artifact 的权威 evidence gate（单点、fail-soft）。
+
+    只有 schema-valid authoritative paid fallback runtime record 才算 actual
+    paid invocation evidence：复用既有权威 validator
+    （``ai_agent_framework.fallback_runtime.validate_paid_fallback_runtime_record``
+    ——fail-closed schema / decision_kind / attempted / 授权 / 一致性校验；
+    Bridge 延迟 import 复用，不重实现第二份 paid schema）。可解析 JSON dict
+    本身不构成证据：``{}`` / 缺 required 字段 / wrong decision_kind /
+    fallback_attempted=false / 矛盾 / 任何 schema 违例 -> None（显示层按
+    UNKNOWN / 无 actual paid usage 处理；绝不抛异常——display fail-soft）。
+    """
+    if not isinstance(fb_paid, dict):
+        return None
+    try:
+        # 延迟 import：validator 纯只读 fail-closed schema 检查（零决策执行）
+        from ai_agent_framework import fallback_runtime as _fbr
+
+        _fbr.validate_paid_fallback_runtime_record(fb_paid)
+    except Exception:  # noqa: BLE001 —— 损坏/非权威 evidence fail-soft（与行级降级一致）
+        return None
+    return fb_paid
+
+
 def _guard_decision(guard: dict | None) -> str:
     """guard decision token -> 显示词汇（仅作为已证 invocation 的 cost 分类）。
 
@@ -297,7 +337,9 @@ def _hermes_actual_model_provider(
 ) -> tuple[str, str]:
     """Hermes **actual** model/provider（仅 actual invocation 证据可填充）。
 
-    FIX-001 优先序（全部为 post-invocation / invocation-grounded 证据）：
+    FIX-001 优先序（全部为 post-invocation / invocation-grounded 证据；
+    FIX-002：fb_paid 已由调用方经既有权威 validator 校验——本 helper 只
+    收到 schema-valid record）：
     1) A5 paid fallback runtime（paid invocation 真实发生后才持久化；
        attempted=true 恒真）-> paid candidate / final actual model。
     2) A5 free fallback used=true（free fallback invocation 真实发生并被接受）
@@ -370,7 +412,8 @@ def _hermes_actual_cost_class(
 ) -> str:
     """Hermes **actual** cost class（仅 actual invocation 证据可证时填充）。
 
-    FIX-001 优先序：
+    FIX-001 优先序（FIX-002：fb_paid 已由调用方经权威 validator 校验——仅
+    schema-valid record 到达本 helper；损坏/非权威 -> None 绝不产生 PAID）：
     1) A5 paid fallback runtime 存在（真实 paid-class invocation 审计）
        -> PAID。
     2) guard BLOCKED_COST_APPROVAL -> BLOCKED（权威阻断；Hermes 未执行，
@@ -420,7 +463,9 @@ def _hermes_fallback(
 ) -> str:
     """Hermes fallback 显示（audit 五节；represent at minimum 全语义覆盖）。
 
-    FIX-001 语义（Requirement 14/18-G/H/I）：
+    FIX-001/FIX-002 语义（Requirement 14/18-G/H/I；FIX-002：本 helper 只
+    收到 schema-valid authoritative paid record——derive_hermes_row 单点经
+    既有权威 validator 校验，损坏/非权威 -> None 不进入本 helper）：
     - fb_paid 存在 = paid fallback invocation 真实发生（attempted=true 恒真）：
       used=true -> USED_PAID；否则 FAILED（attempted-not-used）。
     - gate AUTHORIZED 但无 fb_paid -> NOT_USED（authorized != invocation，
@@ -531,6 +576,11 @@ def derive_hermes_row(
         gate = read_json(output_dir, ARTIFACT_PAID_GATE)
     if fb_paid is None and output_dir is not None:
         fb_paid = read_json(output_dir, ARTIFACT_PAID_RUNTIME)
+    # FIX-002：fb_paid 存在 ≠ paid evidence——只有经既有权威 validator 接受的
+    # schema-valid record 才作为 actual paid invocation 证据；损坏/非权威
+    # artifact（{}、缺字段、wrong decision_kind、attempted=false、矛盾…）
+    # -> None，下游 helper 一律 fail-soft UNKNOWN / 无 actual paid usage。
+    fb_paid = _validated_paid_runtime(fb_paid)
     model, provider = _hermes_actual_model_provider(result_valid, obs, fb_free, fb_paid)
     cost_class = _hermes_actual_cost_class(
         result_valid, guard, obs, active, fb_free, fb_paid

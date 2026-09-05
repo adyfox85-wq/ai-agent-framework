@@ -931,7 +931,12 @@ def test_collect_status_terminal_no_health_warning(tmp_path):
 
 
 def _cv_completed_dir(tmp_path, task_id="AAF-CV-1"):
-    """完成态任务目录：canonical task.json（phases SUCCESS）+ route + 经济 artifact。"""
+    """完成态任务目录：canonical task.json（phases SUCCESS）+ route + 经济 artifact。
+
+    FIX-001：完成态任务目录必然含 <agent>_result.md（runner 在 run_agent 返回后
+    写盘）——reopen 重建时它就是 actual invocation 的既有运行时证据
+    （cost_guard 单独存在绝不产生 actual PAID）。
+    """
     out = tmp_path / task_id
     out.mkdir()
     started = (datetime.now() - timedelta(minutes=10)).isoformat(timespec="seconds")
@@ -972,6 +977,11 @@ def _cv_completed_dir(tmp_path, task_id="AAF-CV-1"):
         }}),
         encoding="utf-8",
     )
+    # FIX-001：actual invocation 证据（runner 在真实 Hermes 执行后写盘；
+    # 缺失时 guard 单独不产生 actual）
+    (out / "hermes_result.md").write_text("SUCCESS\nreal executor output\n", encoding="utf-8")
+    (out / "workbuddy_result.md").write_text("SUCCESS\nok\n", encoding="utf-8")
+    (out / "codex_result.md").write_text("SUCCESS\nok\n", encoding="utf-8")
     (out / "REPORT.md").write_text("# REPORT\n", encoding="utf-8")
     return out
 
@@ -1049,7 +1059,8 @@ def test_window_cost_rows_rendered(tk_root, tmp_path):
         assert w._cost_agent_lbls[0].cget("text") == "Hermes"
         assert w._cost_cost_lbls[0].cget("text") == cv.COST_PAID
         assert "deepseek-v4-flash" in w._cost_model_lbls[0].cget("text")
-        assert w._cost_detail_lbls[0].cget("text") == "explicitly authorized paid"
+        # FIX-001：actual PAID 需要 invocation 证据（guard + valid result.md）
+        assert w._cost_detail_lbls[0].cget("text") == "authorized paid invocation"
     finally:
         w.close()
 

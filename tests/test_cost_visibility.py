@@ -1,20 +1,31 @@
 """AAF Bridge — Cost / Model 可见性 display-only 归一化测试。
 
-TASK: AAF-v0.5-UX-COST-VISIBILITY-IMPLEMENT-001（Requirements 22 A–K）。
+TASK: AAF-v0.5-UX-COST-VISIBILITY-IMPLEMENT-001（Requirements 22 A–K）
++ FIX-001 truth semantics（planned/authorized ≠ actual invocation）。
 
-覆盖：
-A. proven FREE renders FREE（A4 authoritative free-promo 证据路径）
-B. proven LOCAL_FREE renders LOCAL_FREE（A0 ALLOWED_FREE / registry 端点证据）
-C. proven PAID renders PAID（A0 ALLOWED_AUTHORIZED_PAID + 真实 paid runtime）
-D. unavailable/ambiguous evidence renders UNKNOWN（绝不猜）
-E. blocked paid state renders BLOCKED only when authoritative（guard BLOCKED；
-   gate BLOCKED 不把 cost 误标 BLOCKED）
-F. free fallback renders USED_FREE（A5 fallback_runtime used=true）
-G. actual authorized paid fallback renders USED_PAID（paid runtime used=true）
-H. authorized-but-not-invoked paid gate does NOT render USED_PAID
-I. missing/corrupt optional artifact does not crash -> UNKNOWN
-J. completed-task reopen（持久化 artifact 重读）deterministically reconstructs
-K. no routing/payment authority is mutated（只读；文件字节零变化）
+覆盖（FIX-001 主线，Requirement 18 A–K）：
+A. cost_guard ALLOWED_AUTHORIZED_PAID without invocation -> Actual UNKNOWN,
+   not PAID
+B. cost_guard ALLOWED_FREE without invocation -> Actual UNKNOWN,
+   not FREE/LOCAL_FREE
+C. routing-selected candidate without invocation -> Actual UNKNOWN
+D. proven actual FREE invocation -> FREE
+E. proven actual LOCAL_FREE invocation -> LOCAL_FREE
+F. proven actual PAID invocation -> PAID
+G. authorized paid fallback without invocation -> not USED_PAID
+H. actual paid fallback invocation -> USED_PAID
+I. actual free fallback invocation -> USED_FREE
+J. missing evidence -> UNKNOWN
+K. completed-task reopen preserves the same truth semantics
+
+另覆盖：
+- guard BLOCKED 仅权威阻断时显示 BLOCKED（Requirement 15）
+- observation 单独存在（无 invocation）不制造 actual model（blocked 场景防幻影）
+- planned/authorized 信息以显式 "Planned:" 文本呈现、不进入 actual 字段
+- 缺失/损坏 optional artifact fail-soft（Requirement 14/15）
+- 只读：多次 build 文件字节零变化/零新文件 + 无 subprocess/os.environ/
+  guard 决策 import
+- 词汇闭集 / 行序确定性 / 渲染行格式
 
 全部为 display-only 断言：只验证归一化输出，绝不触碰 routing/payment 代码路径。
 """
@@ -46,7 +57,11 @@ def _dump(dirpath: Path, name: str, payload: dict) -> Path:
 
 
 def _guard(decision: str, model: str = "deepseek-v4-flash", provider: str = "deepseek") -> dict:
-    """A0 cost_guard.json 形状的最小 record（decision token = 既有权威词汇）。"""
+    """A0 cost_guard.json 形状的最小 record（decision token = 既有权威词汇）。
+
+    FIX-001：guard decision/model/provider 是 pre-invocation 准入证据
+    （planned/authorized），单独出现绝不等于 actual invocation。
+    """
     cost = "LOCAL_FREE" if decision == "ALLOWED_FREE" else "PAID_OR_UNKNOWN"
     return {
         "decision": decision,
@@ -109,13 +124,99 @@ def _fb_paid(used: bool, outcome: str = "success") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# A. proven FREE renders FREE
+# A. ALLOWED_AUTHORIZED_PAID without invocation -> Actual UNKNOWN, not PAID
 # ---------------------------------------------------------------------------
 
 
-def test_a_workbuddy_free_promo_renders_free():
-    # A4 authoritative：routing_applied=true + winner economic fact
-    # cheapness_rank==0 + promotion_status=="free"（RANK_AUTHORITATIVE_CHEAP）
+def test_a_guard_auth_paid_alone_is_never_actual_paid():
+    # guard 授权单独存在（无 <agent>_result.md / 无 A5 invocation 证据）
+    # -> Actual UNKNOWN，绝不 PAID（FIX-001 Requirement 6）
+    row = cv.derive_hermes_row(guard=_guard("ALLOWED_AUTHORIZED_PAID"))
+    assert row.cost_class == COST_UNKNOWN
+    assert row.model == DISPLAY_UNKNOWN
+    assert row.provider == DISPLAY_UNKNOWN
+    assert row.fallback == FALLBACK_NOT_USED
+    assert COST_PAID not in (row.cost_class,)
+
+
+def test_a_guard_auth_paid_invalid_result_still_unknown():
+    # FRAMEWORK_ERROR result（guard 后启动失败/崩溃）-> actual 仍不可证
+    row = cv.derive_hermes_row(
+        guard=_guard("ALLOWED_AUTHORIZED_PAID"),
+        result_md="FRAMEWORK_ERROR\nstartup failed",
+    )
+    assert row.cost_class == COST_UNKNOWN
+    assert row.model == DISPLAY_UNKNOWN
+
+
+def test_a_guard_auth_paid_without_invocation_shows_planned_label():
+    # Requirement 9/10：planned/authorized 信息保留但显式标签、不冒充 actual
+    row = cv.derive_hermes_row(guard=_guard("ALLOWED_AUTHORIZED_PAID"))
+    assert row.planned != ""
+    assert "deepseek-v4-flash" in row.planned
+    assert "PAID" in row.planned
+    assert "AUTHORIZED" in row.planned
+    assert row.cost_class != COST_PAID  # planned 文本绝不进入 actual cost
+
+
+# ---------------------------------------------------------------------------
+# B. ALLOWED_FREE without invocation -> Actual UNKNOWN, not FREE/LOCAL_FREE
+# ---------------------------------------------------------------------------
+
+
+def test_b_guard_allowed_free_alone_is_never_actual_local_free():
+    # ALLOWED_FREE 单独存在 -> Actual UNKNOWN，绝不 LOCAL_FREE/FREE
+    # （FIX-001 Requirement 7）
+    row = cv.derive_hermes_row(guard=_guard("ALLOWED_FREE", "qwen3:4b", "ollama"))
+    assert row.cost_class == COST_UNKNOWN
+    assert row.model == DISPLAY_UNKNOWN
+    assert row.cost_class not in (COST_LOCAL_FREE, COST_FREE)
+
+
+def test_b_guard_allowed_free_without_invocation_planned_label():
+    row = cv.derive_hermes_row(guard=_guard("ALLOWED_FREE", "qwen3:4b", "ollama"))
+    assert row.planned != ""
+    assert "qwen3:4b" in row.planned
+    assert "LOCAL_FREE" in row.planned
+
+
+def test_b_guard_allowed_free_output_dir_no_result(tmp_path):
+    # output_dir 只有 guard（无 hermes_result.md）-> Actual UNKNOWN
+    out = tmp_path / "t"
+    out.mkdir()
+    _dump(out, cv.ARTIFACT_COST_GUARD, _guard("ALLOWED_FREE", "qwen3:4b", "custom"))
+    row = cv.derive_hermes_row(output_dir=out)
+    assert row.cost_class == COST_UNKNOWN
+    assert row.model == DISPLAY_UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# C. routing-selected candidate without invocation -> Actual UNKNOWN
+# ---------------------------------------------------------------------------
+
+
+def test_c_hermes_active_routing_without_invocation_unknown():
+    # A3 routing_applied=true（registry LOCAL_FREE 候选）但无 invocation
+    # -> Actual UNKNOWN（FIX-001 Requirement 8/18-C）
+    active = _active_routing(True, "qwen3:4b", "custom")
+    row = cv.derive_hermes_row(active=active)
+    assert row.cost_class == COST_UNKNOWN
+    assert row.model == DISPLAY_UNKNOWN
+
+
+def test_c_hermes_active_routing_output_dir_no_result(tmp_path):
+    out = tmp_path / "t"
+    out.mkdir()
+    _dump(out, cv.ARTIFACT_ACTIVE_ROUTING, _active_routing(True, "qwen3:4b", "custom"))
+    row = cv.derive_hermes_row(output_dir=out)
+    assert row.cost_class == COST_UNKNOWN
+    assert row.model == DISPLAY_UNKNOWN
+    assert "qwen3:4b" in row.planned  # 候选信息只进 planned 标签
+
+
+def test_c_workbuddy_routing_without_invocation_unknown():
+    # A4 economic routing winner 存在但无 workbuddy_result.md
+    # -> Actual UNKNOWN（routing candidate ≠ actual）
     wb = {
         "routing_applied": True,
         "routed_model": "hy4-preview",
@@ -123,86 +224,154 @@ def test_a_workbuddy_free_promo_renders_free():
             "hy4-preview": {"cheapness_rank": 0, "promotion_status": "free"},
         },
     }
-    row = cv.derive_workbuddy_row(wb=wb, obs=_obs(None))
+    row = cv.derive_workbuddy_row(wb=wb)
+    assert row.cost_class == COST_UNKNOWN
+    assert row.model == DISPLAY_UNKNOWN
+    assert "hy4-preview" in row.planned
+
+
+def test_c_workbuddy_routing_free_promo_without_invocation_not_actual_free():
+    # 即使 A4 free-promo 经济事实存在，无 invocation 也绝不 actual FREE
+    wb = {
+        "routing_applied": True,
+        "routed_model": "hy4-preview",
+        "economic_facts": {
+            "hy4-preview": {"cheapness_rank": 0, "promotion_status": "free"},
+        },
+    }
+    row = cv.derive_workbuddy_row(wb=wb)
+    assert row.cost_class != COST_FREE
+    assert row.cost_class == COST_UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# D. proven actual FREE invocation -> FREE
+# ---------------------------------------------------------------------------
+
+
+def test_d_hermes_observation_free_with_invocation_renders_free():
+    # observation 端点证据 FREE + <agent>_result.md valid（invocation 已证）
+    # -> actual FREE
+    row = cv.derive_hermes_row(
+        obs=_obs("free-model", "free-provider", "FREE"),
+        result_md="SUCCESS\nreal executor output",
+    )
+    assert row.cost_class == COST_FREE
+    assert row.model == "free-model"
+
+
+def test_d_workbuddy_free_promo_with_invocation_renders_free():
+    # A4 free-promo winner + workbuddy_result.md valid（invocation 已证）
+    # -> actual FREE
+    wb = {
+        "routing_applied": True,
+        "routed_model": "hy4-preview",
+        "economic_facts": {
+            "hy4-preview": {"cheapness_rank": 0, "promotion_status": "free"},
+        },
+    }
+    row = cv.derive_workbuddy_row(wb=wb, result_md="SUCCESS\nvalidator output")
     assert row.cost_class == COST_FREE
     assert row.model == "hy4-preview"
     assert "free promo" in row.detail
 
 
-def test_a_free_promo_without_authoritative_rank_is_not_free():
-    # cheapness_rank==1（discount）或 promotion_status != free -> 绝不自称 FREE
+def test_d_workbuddy_free_promo_without_authoritative_rank_is_not_free():
+    # 即使 invocation 已证，经济事实不足（rank!=0 / promo!=free）仍不 FREE
     for fact in (
         {"cheapness_rank": 1, "promotion_status": "free"},
         {"cheapness_rank": 0, "promotion_status": "discount"},
         {"cheapness_rank": 2, "promotion_status": "discount"},
     ):
         wb = {"routing_applied": True, "routed_model": "m1", "economic_facts": {"m1": fact}}
-        row = cv.derive_workbuddy_row(wb=wb, obs=_obs(None))
+        row = cv.derive_workbuddy_row(wb=wb, result_md="SUCCESS\nok")
         assert row.cost_class == COST_UNKNOWN
 
 
-def test_a_low_medium_economic_routing_alone_never_labels_free():
-    # Requirement 9：LOW/MEDIUM economic routing 存在 ≠ FREE（无 free-promo 证据）
+def test_d_low_medium_economic_routing_never_labels_free():
+    # LOW/MEDIUM economic routing 存在（已证 invocation）≠ FREE
     wb = {
         "routing_applied": True,
         "routed_model": "deepseek-v4-flash",
         "economic_facts": {"deepseek-v4-flash": {"cheapness_rank": 1, "promotion_status": "discount"}},
     }
-    row = cv.derive_workbuddy_row(wb=wb, obs=_obs(None))
+    row = cv.derive_workbuddy_row(wb=wb, result_md="SUCCESS\nok")
     assert row.cost_class == COST_UNKNOWN
-    assert row.model == "deepseek-v4-flash"
-
-
-def test_a_hermes_free_observation_echo():
-    # 显示层词汇映射：observation/registry 显式 FREE 证据 -> FREE（仅回显不推断）
-    row = cv.derive_hermes_row(obs=_obs("free-model", "free-provider", "FREE"))
-    assert row.cost_class == COST_FREE
-    assert row.model == "free-model"
 
 
 # ---------------------------------------------------------------------------
-# B. proven LOCAL_FREE renders LOCAL_FREE
+# E. proven actual LOCAL_FREE invocation -> LOCAL_FREE
 # ---------------------------------------------------------------------------
 
 
-def test_b_guard_allowed_free_renders_local_free():
-    row = cv.derive_hermes_row(guard=_guard("ALLOWED_FREE", "qwen3:4b", "ollama"))
+def test_e_guard_allowed_free_with_invocation_renders_local_free():
+    # guard ALLOWED_FREE + <agent>_result.md valid（local-free model 实际执行）
+    # -> actual LOCAL_FREE
+    row = cv.derive_hermes_row(
+        guard=_guard("ALLOWED_FREE", "qwen3:4b", "ollama"),
+        obs=_obs("qwen3:4b", "custom", "LOCAL_FREE"),
+        result_md="SUCCESS\nreal output",
+    )
     assert row.cost_class == COST_LOCAL_FREE
     assert row.model == "qwen3:4b"
-    assert row.detail == "local free candidate"
 
 
-def test_b_observation_local_free_endpoint_evidence():
-    # 端点证据（observation LOCAL_FREE）-> LOCAL_FREE
+def test_e_observation_local_free_with_invocation_renders_local_free():
+    # observation 端点证据 LOCAL_FREE + invocation 已证 -> LOCAL_FREE
     row = cv.derive_hermes_row(
         obs=_obs("qwen3:4b", "custom", "LOCAL_FREE"),
+        result_md="SUCCESS\nreal output",
     )
     assert row.cost_class == COST_LOCAL_FREE
 
 
-def test_b_active_routing_registry_local_free(tmp_path):
-    # A3 routing_applied=true 且 registry 条目 LOCAL_FREE（qwen3:4b@custom）
+def test_e_active_routing_registry_local_free_with_invocation(tmp_path):
+    # A3 routing_applied=true + registry LOCAL_FREE + invocation 已证
+    # -> LOCAL_FREE（registry 端点证据 + 实际执行）
     out = tmp_path / "t"
     out.mkdir()
     _dump(out, cv.ARTIFACT_ACTIVE_ROUTING, _active_routing(True, "qwen3:4b", "custom"))
     _dump(out, cv.ARTIFACT_COST_GUARD, _guard("ALLOWED_FREE", "qwen3:4b", "custom"))
+    (out / "hermes_result.md").write_text("SUCCESS\nreal output", encoding="utf-8")
     row = cv.derive_hermes_row(output_dir=out)
     assert row.cost_class == COST_LOCAL_FREE
 
 
 # ---------------------------------------------------------------------------
-# C. proven PAID renders PAID
+# F. proven actual PAID invocation -> PAID
 # ---------------------------------------------------------------------------
 
 
-def test_c_guard_allowed_authorized_paid_renders_paid():
-    row = cv.derive_hermes_row(guard=_guard("ALLOWED_AUTHORIZED_PAID"))
+def test_f_guard_auth_paid_with_invocation_renders_paid():
+    # guard ALLOWED_AUTHORIZED_PAID + <agent>_result.md valid
+    # （已授权 paid-class model 实际执行）-> actual PAID
+    row = cv.derive_hermes_row(
+        guard=_guard("ALLOWED_AUTHORIZED_PAID"),
+        obs=_obs("deepseek-v4-flash", "deepseek", "UNKNOWN"),
+        result_md="SUCCESS\nreal executor output",
+    )
     assert row.cost_class == COST_PAID
     assert row.model == "deepseek-v4-flash"
-    assert row.detail == "explicitly authorized paid"
+    assert row.provider == "deepseek"
+    assert row.fallback == FALLBACK_NOT_USED
+    assert row.planned == ""  # actual 已证，不需要 planned 标签
 
 
-def test_c_paid_fallback_runtime_renders_paid():
+def test_f_output_dir_full_proven_paid(tmp_path):
+    # 真实形状 output_dir：guard + obs + valid result.md -> actual PAID
+    out = tmp_path / "t"
+    out.mkdir()
+    _dump(out, cv.ARTIFACT_COST_GUARD, _guard("ALLOWED_AUTHORIZED_PAID"))
+    _dump(out, cv.ARTIFACT_MODEL_OBSERVATION, {"observations": {"hermes": _obs(
+        "deepseek-v4-flash", "deepseek", "UNKNOWN")}})
+    (out / "hermes_result.md").write_text("SUCCESS\nreal output", encoding="utf-8")
+    row = cv.derive_hermes_row(output_dir=out)
+    assert row.cost_class == COST_PAID
+    assert row.model == "deepseek-v4-flash"
+
+
+def test_f_paid_fallback_runtime_is_paid():
+    # A5 paid runtime audit（真实 paid-class invocation）-> PAID
     row = cv.derive_hermes_row(fb_paid=_fb_paid(used=True))
     assert row.cost_class == COST_PAID
     assert row.fallback == FALLBACK_USED_PAID
@@ -210,11 +379,82 @@ def test_c_paid_fallback_runtime_renders_paid():
 
 
 # ---------------------------------------------------------------------------
-# D. unavailable / ambiguous evidence renders UNKNOWN
+# G. authorized paid fallback without invocation -> not USED_PAID
 # ---------------------------------------------------------------------------
 
 
-def test_d_no_evidence_renders_unknown():
+def test_g_gate_authorized_without_invocation_is_not_used_paid():
+    # Requirement 12/14/18-G：gate AUTHORIZED（授权）无 paid runtime invocation
+    # 证据 -> 绝不 USED_PAID（= NOT_USED + detail）
+    row = cv.derive_hermes_row(gate=_gate("AUTHORIZED"))
+    assert row.fallback != FALLBACK_USED_PAID
+    assert row.fallback == FALLBACK_NOT_USED
+    assert "not USED_PAID" in row.detail
+
+
+def test_g_gate_authorized_with_guard_but_no_paid_runtime_is_not_paid():
+    # guard AUTH_PAID + gate AUTHORIZED，但无 paid_fallback_runtime.json
+    # （原 invocation 失败、paid fallback 未真实执行）-> cost 不是 PAID
+    row = cv.derive_hermes_row(
+        guard=_guard("ALLOWED_AUTHORIZED_PAID"),
+        gate=_gate("AUTHORIZED"),
+        fb_free=_fb_free(used=False),
+        result_md="FRAMEWORK_ERROR\noriginal failed",
+    )
+    assert row.fallback != FALLBACK_USED_PAID
+    assert row.cost_class != COST_PAID
+    assert row.cost_class == COST_UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# H. actual paid fallback invocation -> USED_PAID
+# ---------------------------------------------------------------------------
+
+
+def test_h_paid_fallback_used_renders_used_paid():
+    row = cv.derive_hermes_row(fb_paid=_fb_paid(used=True))
+    assert row.fallback == FALLBACK_USED_PAID
+    assert row.cost_class == COST_PAID
+    assert "authorized paid fallback" in row.detail
+
+
+def test_h_paid_fallback_attempt_failed_renders_failed():
+    # attempted=true / used=false（paid invocation 真实发生但输出未被接受）
+    # -> fallback FAILED（绝不 USED_PAID），cost PAID（真实 paid 尝试）
+    row = cv.derive_hermes_row(fb_paid=_fb_paid(used=False, outcome="failed"))
+    assert row.fallback == FALLBACK_FAILED
+    assert row.fallback != FALLBACK_USED_PAID
+    assert row.cost_class == COST_PAID
+    assert row.model == "glm-5.2"
+
+
+# ---------------------------------------------------------------------------
+# I. actual free fallback invocation -> USED_FREE
+# ---------------------------------------------------------------------------
+
+
+def test_i_free_fallback_used_renders_used_free():
+    # fallback_runtime.json used=true（free fallback invocation 真实发生且被接受）
+    row = cv.derive_hermes_row(fb_free=_fb_free(used=True))
+    assert row.fallback == FALLBACK_USED_FREE
+    assert row.cost_class == COST_LOCAL_FREE
+    assert "free fallback" in row.detail
+
+
+def test_i_free_fallback_attempt_failed_renders_failed():
+    # attempted-not-used -> FAILED（绝不 USED_FREE）
+    row = cv.derive_hermes_row(fb_free=_fb_free(used=False))
+    assert row.fallback == FALLBACK_FAILED
+    assert row.fallback != FALLBACK_USED_FREE
+    assert "original failure preserved" in row.detail
+
+
+# ---------------------------------------------------------------------------
+# J. missing evidence -> UNKNOWN
+# ---------------------------------------------------------------------------
+
+
+def test_j_no_evidence_renders_unknown():
     for row in (
         cv.derive_hermes_row(),
         cv.derive_workbuddy_row(),
@@ -224,99 +464,137 @@ def test_d_no_evidence_renders_unknown():
         assert row.model == DISPLAY_UNKNOWN
         assert row.provider == DISPLAY_UNKNOWN
         assert row.fallback == FALLBACK_NOT_USED
+        assert row.planned == ""
 
 
-def test_d_guard_paid_or_unknown_without_auth_is_not_paid():
-    # guard cost_class=PAID_OR_UNKNOWN 无授权 -> 既不是 PAID 也不是 FREE
-    # （真实运行时该 guard 会是 BLOCKED；此处直接构造 guard 缺失场景 = 无证据）
+def test_j_observation_without_invocation_does_not_make_actual_model():
+    # FIX-001 关键场景：observation 存在（blocked stage 也会写 observation）
+    # 但无 invocation -> model/provider 不得回显（防幻影 actual）
     row = cv.derive_hermes_row(obs=_obs("deepseek-v4-flash", "deepseek", "UNKNOWN"))
+    assert row.model == DISPLAY_UNKNOWN
+    assert row.provider == DISPLAY_UNKNOWN
     assert row.cost_class == COST_UNKNOWN
-    assert row.fallback == FALLBACK_NOT_USED
 
 
-def test_d_workbuddy_auto_preserved_is_unknown():
-    # Auto 保留（routing_applied=false）时 actual model/cost 不可观测 -> UNKNOWN
+def test_j_workbuddy_auto_preserved_is_unknown():
+    # Auto 保留（routing_applied=false）-> actual model/cost UNKNOWN
     wb = {"routing_applied": False, "routed_model": None, "reason": "RISK_OUTSIDE_ACTIVE_SLICE: x"}
-    row = cv.derive_workbuddy_row(wb=wb, obs=_obs(None))
+    row = cv.derive_workbuddy_row(wb=wb, result_md="SUCCESS\nok")
     assert row.cost_class == COST_UNKNOWN
     assert row.model == DISPLAY_UNKNOWN
 
 
 # ---------------------------------------------------------------------------
-# E. blocked renders BLOCKED only when authoritative
+# BLOCKED（Requirement 15）+ gate 语义
 # ---------------------------------------------------------------------------
 
 
-def test_e_guard_blocked_renders_blocked():
+def test_guard_blocked_renders_blocked():
+    # guard BLOCKED_COST_APPROVAL = 权威阻断证据（Hermes 未执行）-> BLOCKED
     row = cv.derive_hermes_row(guard=_guard("BLOCKED_COST_APPROVAL"))
     assert row.cost_class == COST_BLOCKED
     assert row.detail == "blocked: cost approval required"
     assert row.fallback == FALLBACK_NOT_USED
+    assert row.planned == ""
 
 
-def test_e_paid_gate_blocked_alone_does_not_label_cost_blocked():
-    # gate BLOCKED = 付费兜底被阻断（fallback FAILED），但 cost 显示不是
-    # BLOCKED——BLOCKED 只来自权威 guard 阻断证据（Requirement 13）
-    row = cv.derive_hermes_row(gate=_gate("BLOCKED"), obs=_obs("deepseek-v4-flash", "deepseek"))
+def test_guard_blocked_with_observation_model_still_unknown_model():
+    # blocked stage：即使 observation 有 model 也不得显示为 actual model
+    row = cv.derive_hermes_row(
+        guard=_guard("BLOCKED_COST_APPROVAL"),
+        obs=_obs("deepseek-v4-flash", "deepseek", "UNKNOWN"),
+    )
+    assert row.cost_class == COST_BLOCKED
+    assert row.model == DISPLAY_UNKNOWN
+
+
+def test_paid_gate_blocked_alone_does_not_label_cost_blocked():
+    # gate BLOCKED = 付费兜底被阻断（fallback FAILED），cost 显示不是 BLOCKED
+    # ——BLOCKED 只来自权威 guard 阻断证据（Requirement 13/15）
+    row = cv.derive_hermes_row(
+        gate=_gate("BLOCKED"),
+        obs=_obs("deepseek-v4-flash", "deepseek"),
+        result_md="FRAMEWORK_ERROR\noriginal failed",
+    )
     assert row.cost_class == COST_UNKNOWN
     assert row.fallback == FALLBACK_FAILED
 
 
-# ---------------------------------------------------------------------------
-# F. free fallback renders USED_FREE
-# ---------------------------------------------------------------------------
-
-
-def test_f_free_fallback_used_renders_used_free():
-    row = cv.derive_hermes_row(fb_free=_fb_free(used=True))
-    assert row.fallback == FALLBACK_USED_FREE
-    assert row.cost_class == COST_LOCAL_FREE  # 最终 actual = A0 ALLOWED_FREE 证据
-    assert "free fallback" in row.detail
-
-
-def test_f_free_fallback_attempt_failed_renders_failed():
-    row = cv.derive_hermes_row(fb_free=_fb_free(used=False))
+def test_paid_gate_fail_closed_fallback_failed():
+    row = cv.derive_hermes_row(gate=_gate("FAIL_CLOSED"))
     assert row.fallback == FALLBACK_FAILED
-    assert "original failure preserved" in row.detail
 
 
 # ---------------------------------------------------------------------------
-# G. actual authorized paid fallback renders USED_PAID
+# K. completed-task reopen preserves the same truth semantics
 # ---------------------------------------------------------------------------
 
 
-def test_g_paid_fallback_used_renders_used_paid():
-    row = cv.derive_hermes_row(fb_paid=_fb_paid(used=True))
-    assert row.fallback == FALLBACK_USED_PAID
-    assert row.cost_class == COST_PAID
-    assert "authorized paid fallback" in row.detail
+def _completed_task_dir(tmp_path: Path, with_result: bool = True) -> Path:
+    out = tmp_path / "AAF-REOPEN-1"
+    out.mkdir()
+    _dump(out, "route.json", {"agents": ["hermes", "workbuddy", "codex"]})
+    _dump(out, cv.ARTIFACT_COST_GUARD, _guard("ALLOWED_AUTHORIZED_PAID"))
+    _dump(
+        out, cv.ARTIFACT_MODEL_OBSERVATION,
+        {"observations": {"hermes": _obs("deepseek-v4-flash", "deepseek", "UNKNOWN")}},
+    )
+    _dump(out, cv.ARTIFACT_ACTIVE_ROUTING, _active_routing(False, None))
+    if with_result:
+        (out / "hermes_result.md").write_text("SUCCESS\nreal executor output", encoding="utf-8")
+    (out / "REPORT.md").write_text("# REPORT", encoding="utf-8")
+    return out
 
 
-def test_g_paid_fallback_attempt_failed_renders_failed():
-    row = cv.derive_hermes_row(fb_paid=_fb_paid(used=False, outcome="failed"))
-    assert row.fallback == FALLBACK_FAILED
-    assert row.cost_class == COST_PAID  # paid-class invocation 已尝试（证据存在）
+def test_k_reopen_reconstructs_same_rows(tmp_path):
+    out = _completed_task_dir(tmp_path)
+    first = [(r.agent, r.cost_class, r.model, r.fallback, r.planned) for r in cv.build_cost_rows(out, ["hermes", "workbuddy", "codex"])]
+    # 第二次读取（模拟窗口/终端 reopen：只读持久化 artifact）= 同一显示
+    second = [(r.agent, r.cost_class, r.model, r.fallback, r.planned) for r in cv.build_cost_rows(out, ["hermes", "workbuddy", "codex"])]
+    assert first == second
+    hermes = [r for r in cv.build_cost_rows(out, ["hermes", "workbuddy", "codex"]) if r.agent == "hermes"][0]
+    assert hermes.cost_class == COST_PAID  # guard AUTH + valid result -> actual PAID
+    assert hermes.model == "deepseek-v4-flash"
+    assert hermes.planned == ""
+
+
+def test_k_reopen_guard_only_dir_keeps_unknown_semantics(tmp_path):
+    # Reopen 一个只有 guard（无 result.md）的目录：truth 语义保持一致
+    # ——actual UNKNOWN + planned 标签，而不是把 authorization 当 actual
+    out = _completed_task_dir(tmp_path, with_result=False)
+    rows_a = [(r.cost_class, r.model, r.planned) for r in cv.build_cost_rows(out, ["hermes"])]
+    rows_b = [(r.cost_class, r.model, r.planned) for r in cv.build_cost_rows(out, ["hermes"])]
+    assert rows_a == rows_b
+    cost_class, model, planned = rows_a[0]
+    assert cost_class == COST_UNKNOWN
+    assert model == DISPLAY_UNKNOWN
+    assert planned != "" and "AUTHORIZED" in planned
+
+
+def test_k_row_visible_filters_unstarted_stages(tmp_path):
+    out = tmp_path / "t"
+    out.mkdir()
+    _dump(out, "route.json", {"agents": ["hermes", "workbuddy", "codex"]})
+    rows = cv.build_cost_rows(out, ["hermes", "workbuddy", "codex"])
+    assert all(not cv.row_visible(out, r) for r in rows)  # 零 evidence -> 不显示
+
+
+def test_k_guard_only_row_visible_with_planned(tmp_path):
+    # guard 存在（stage 已开始/崩溃但无 result）-> 行可见（planned 信息）
+    out = tmp_path / "t"
+    out.mkdir()
+    _dump(out, cv.ARTIFACT_COST_GUARD, _guard("ALLOWED_AUTHORIZED_PAID"))
+    rows = cv.build_cost_rows(out, ["hermes"])
+    assert rows and cv.row_visible(out, rows[0])
+    assert rows[0].planned != ""
 
 
 # ---------------------------------------------------------------------------
-# H. authorized-but-not-invoked paid gate does NOT render USED_PAID
+# 只读 / fail-soft / 词汇 / 渲染辅助
 # ---------------------------------------------------------------------------
 
 
-def test_h_gate_authorized_without_invocation_is_not_used_paid():
-    # Requirement 12：授权存在 ≠ 执行发生 -> 绝不 USED_PAID
-    row = cv.derive_hermes_row(gate=_gate("AUTHORIZED"))
-    assert row.fallback != FALLBACK_USED_PAID
-    assert row.fallback == FALLBACK_NOT_USED
-    assert "not USED_PAID" in row.detail
-
-
-# ---------------------------------------------------------------------------
-# I. missing / corrupt optional artifact -> UNKNOWN, no crash
-# ---------------------------------------------------------------------------
-
-
-def test_i_missing_artifacts_no_crash(tmp_path):
+def test_missing_artifacts_no_crash(tmp_path):
     out = tmp_path / "t"
     out.mkdir()
     _dump(out, "route.json", {"agents": ["hermes", "workbuddy", "codex"]})
@@ -328,7 +606,7 @@ def test_i_missing_artifacts_no_crash(tmp_path):
         assert row.fallback == FALLBACK_NOT_USED
 
 
-def test_i_corrupt_artifacts_no_crash_and_unknown(tmp_path):
+def test_corrupt_artifacts_no_crash_and_unknown(tmp_path):
     out = tmp_path / "t"
     out.mkdir()
     (out / cv.ARTIFACT_COST_GUARD).write_text("{broken json", encoding="utf-8")
@@ -342,7 +620,7 @@ def test_i_corrupt_artifacts_no_crash_and_unknown(tmp_path):
         assert row.model == DISPLAY_UNKNOWN
 
 
-def test_i_wrong_type_observation_entry(tmp_path):
+def test_wrong_type_observation_entry(tmp_path):
     out = tmp_path / "t"
     out.mkdir()
     _dump(out, cv.ARTIFACT_MODEL_OBSERVATION, {"observations": {"hermes": "not-a-dict"}})
@@ -351,7 +629,7 @@ def test_i_wrong_type_observation_entry(tmp_path):
     assert row.model == DISPLAY_UNKNOWN
 
 
-def test_i_build_never_raises(tmp_path):
+def test_build_never_raises(tmp_path):
     out = tmp_path / "t"
     out.mkdir()
     (out / cv.ARTIFACT_MODEL_OBSERVATION).write_text("\x00\x01\x02", encoding="latin-1")
@@ -359,53 +637,7 @@ def test_i_build_never_raises(tmp_path):
     assert rows and all(r.cost_class == COST_UNKNOWN for r in rows)
 
 
-# ---------------------------------------------------------------------------
-# J. completed-task reopen deterministically reconstructs from persisted artifacts
-# ---------------------------------------------------------------------------
-
-
-def _completed_task_dir(tmp_path: Path) -> Path:
-    out = tmp_path / "AAF-REOPEN-1"
-    out.mkdir()
-    _dump(out, "route.json", {"agents": ["hermes", "workbuddy", "codex"]})
-    _dump(out, cv.ARTIFACT_COST_GUARD, _guard("ALLOWED_AUTHORIZED_PAID"))
-    _dump(
-        out, cv.ARTIFACT_MODEL_OBSERVATION,
-        {"observations": {"hermes": _obs("deepseek-v4-flash", "deepseek", "UNKNOWN")}},
-    )
-    _dump(out, cv.ARTIFACT_ACTIVE_ROUTING, _active_routing(False, None))
-    (out / "REPORT.md").write_text("# REPORT", encoding="utf-8")
-    (out / "hermes_result.md").write_text("ok", encoding="utf-8")
-    (out / "workbuddy_result.md").write_text("ok", encoding="utf-8")
-    (out / "codex_result.md").write_text("ok", encoding="utf-8")
-    return out
-
-
-def test_j_reopen_reconstructs_same_rows(tmp_path):
-    out = _completed_task_dir(tmp_path)
-    first = [(r.agent, r.cost_class, r.model, r.fallback) for r in cv.build_cost_rows(out, ["hermes", "workbuddy", "codex"])]
-    # 第二次读取（模拟窗口/终端 reopen：只读持久化 artifact）= 同一显示
-    second = [(r.agent, r.cost_class, r.model, r.fallback) for r in cv.build_cost_rows(out, ["hermes", "workbuddy", "codex"])]
-    assert first == second
-    hermes = [r for r in cv.build_cost_rows(out, ["hermes", "workbuddy", "codex"]) if r.agent == "hermes"][0]
-    assert hermes.cost_class == COST_PAID
-    assert hermes.model == "deepseek-v4-flash"
-
-
-def test_j_row_visible_filters_unstarted_stages(tmp_path):
-    out = tmp_path / "t"
-    out.mkdir()
-    _dump(out, "route.json", {"agents": ["hermes", "workbuddy", "codex"]})
-    rows = cv.build_cost_rows(out, ["hermes", "workbuddy", "codex"])
-    assert all(not cv.row_visible(out, r) for r in rows)  # 零 evidence -> 不显示
-
-
-# ---------------------------------------------------------------------------
-# K. no routing / payment authority is mutated（只读）
-# ---------------------------------------------------------------------------
-
-
-def test_k_build_does_not_mutate_artifacts(tmp_path):
+def test_build_does_not_mutate_artifacts(tmp_path):
     out = _completed_task_dir(tmp_path)
     before = {
         name: (p.read_bytes() if p.exists() else None)
@@ -427,7 +659,7 @@ def test_k_build_does_not_mutate_artifacts(tmp_path):
     assert sorted(p.name for p in out.iterdir()) == files_before
 
 
-def test_k_display_module_has_no_payment_side_effect_imports():
+def test_display_module_has_no_payment_side_effect_imports():
     # 显示层只读回显既有 token：零 subprocess / 零环境变量读取 / 零 guard
     # 决策代码 import（唯一框架 import = 函数内延迟的只读 model_registry）
     source = Path(cv.__file__).read_text(encoding="utf-8")
@@ -441,11 +673,6 @@ def test_k_display_module_has_no_payment_side_effect_imports():
     assert def_idx < registry_import_idx  # 只读 registry import 仅存在于函数体内
 
 
-# ---------------------------------------------------------------------------
-# 词汇 / 渲染辅助
-# ---------------------------------------------------------------------------
-
-
 def test_vocabularies_are_closed_sets():
     assert set(cv.COST_CLASSES_DISPLAY) == {COST_FREE, COST_LOCAL_FREE, COST_PAID, COST_UNKNOWN, COST_BLOCKED}
     assert set(cv.FALLBACK_DISPLAY_VALUES) == {
@@ -453,13 +680,31 @@ def test_vocabularies_are_closed_sets():
     }
 
 
-def test_render_row_line_compact_format():
-    row = cv.derive_hermes_row(guard=_guard("ALLOWED_AUTHORIZED_PAID"))
+def test_render_row_line_proven_paid_compact_format():
+    # 已证 invocation -> 主行 = actual（cost PAID + model）
+    row = cv.derive_hermes_row(
+        guard=_guard("ALLOWED_AUTHORIZED_PAID"),
+        obs=_obs("deepseek-v4-flash", "deepseek", "UNKNOWN"),
+        result_md="SUCCESS\nok",
+    )
     line = cv.render_row_line(row, "Hermes")
     assert line.startswith("Hermes")
     assert COST_PAID in line
     assert "deepseek-v4-flash" in line
     assert "(deepseek)" in line
+    assert "Planned:" not in line  # actual 已证，无 planned 标签
+
+
+def test_render_row_line_planned_labeled(tmp_path):
+    # actual 不可证 -> planned 信息显式 "Planned:" 标签（Requirement 9/10）
+    row = cv.derive_hermes_row(
+        guard=_guard("ALLOWED_AUTHORIZED_PAID"),
+        result_md="",
+    )
+    line = cv.render_row_line(row, "Hermes")
+    assert COST_UNKNOWN in line
+    assert "Planned:" in line
+    assert "PAID / AUTHORIZED" in line
 
 
 def test_render_row_line_unknown_model_no_parens():

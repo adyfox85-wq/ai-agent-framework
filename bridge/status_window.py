@@ -1252,8 +1252,11 @@ class StatusWindow(tk.Toplevel):
         """渲染 Cost / Model 显示行（display-only；空 -> 整区隐藏）。
 
         行序 = cost_visibility.ROUTE_AGENTS（Hermes / WorkBuddy / Codex）；
-        每行主文本 = Agent | Cost Class | model (provider)；仅当 fallback !=
-        NOT_USED 或存在短 detail 时附加一行灰色小字（Requirement 15/16 紧凑）。
+        每行主文本 = Agent | Cost Class | model (provider)（**Actual** 列）；
+        仅当存在 planned/authorized 信息（actual 不可证、guard/routing 证据在）
+        时灰字行以显式 "Planned:" 标签呈现，与 actual 列视觉区分
+        （FIX-001 Requirement 9/10）；否则显示 fallback 上下文/短 reason detail
+        （Requirement 15/16 紧凑）。
         """
         if not rows:
             try:
@@ -1283,14 +1286,22 @@ class StatusWindow(tk.Toplevel):
             if row.provider and row.provider != cost_vis_mod.DISPLAY_UNKNOWN and model_text != cost_vis_mod.DISPLAY_UNKNOWN:
                 model_text = f"{model_text} ({row.provider})"
             model_lbl.config(text=model_text)
+            planned = getattr(row, "planned", "") or ""
             detail = getattr(row, "detail", "") or ""
+            if planned:
+                # FIX-001：planned/authorized 信息显式标签 + 灰字，与 actual 区分
+                detail_text = f"Planned: {planned}"
+                if detail:
+                    detail_text = f"{detail_text} · {detail}"
+            else:
+                detail_text = detail
             for lbl in (agent_lbl, cost_lbl, model_lbl):
                 try:
                     lbl.grid()
                 except tk.TclError:
                     pass
-            if detail:
-                detail_lbl.config(text=detail)
+            if detail_text:
+                detail_lbl.config(text=detail_text)
                 try:
                     detail_lbl.grid()
                 except tk.TclError:

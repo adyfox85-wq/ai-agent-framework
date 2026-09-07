@@ -42,11 +42,15 @@ Acceptance:
 2. 
 
 Route:
-（canonical machine 字段：显式声明执行链，如 `hermes -> workbuddy -> codex`。
-声明后 Router 以此为准，不再靠全文关键词推断；可选。）
+（legacy compatibility machine field：仅用于显式声明兼容执行链。
+默认 v0.6 执行路径不依赖该字段；如未显式声明，由框架默认策略决定。
+可选。）
 
 Route Hint:
-（建议执行链：Hermes / WorkBuddy / Codex 分工；人类补充说明，仅供阅读，
+（建议执行信息：Hermes / WorkBuddy / Codex 分工；人类补充说明，仅供阅读，
 不参与机器路由；可选。）
+
+Execution Hint:
+（v0.6 optional human hint；用于补充执行偏好，不作为 Agent 调度控制字段。）
 
 AAF_TASK_END
